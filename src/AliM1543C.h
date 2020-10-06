@@ -156,12 +156,22 @@
  *(http://www.win.tue.nl/~aeb/linux/kbd/scancodes.html)
  *  .
  **/
-class CAliM1543C : public CPCIDevice, public CRunnable {
+class CAliM1543C;
+
+class CAliM1543C_Thread : public QThread {
+Q_OBJECT
+  CAliM1543C *parent;
+
+  void run() override;
+public:
+  CAliM1543C_Thread(CAliM1543C *parent) : QThread(nullptr), parent(parent) {};
+};
+
+class CAliM1543C : public CPCIDevice {
 public:
   virtual int SaveState(FILE *f);
   virtual int RestoreState(FILE *f);
 
-  virtual void run();
   virtual void check_state();
   virtual void WriteMem_Legacy(int index, u32 address, int dsize, u32 data);
   virtual u32 ReadMem_Legacy(int index, u32 address, int dsize);
@@ -178,8 +188,9 @@ public:
   void stop_threads();
 
 private:
-  CThread *myThread = nullptr;
-  CMutex *myRegLock;
+  friend class CAliM1543C_Thread;
+
+  CAliM1543C_Thread *myThread = nullptr;
   bool StopThread;
 
   // REGISTER 61 (NMI)
