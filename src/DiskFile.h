@@ -77,5 +77,6 @@ protected:
 
   void createDiskFile(const std::string &filename, int diskFileSize);
   std::string defaultFilename;
+  void checkFileWritable(const std::string& filename) const;
 };
 #endif //! defined(__DISKFILE_H__)
