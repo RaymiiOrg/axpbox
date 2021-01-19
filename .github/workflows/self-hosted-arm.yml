@@ -32,15 +32,10 @@ jobs:
       env:
         MAKEFLAGS: "-j2"
 
-    - name: Run test scripts
-      working-directory: ${{runner.workspace}}/axpbox
-      shell: bash
-      run: ${{runner.workspace}}/axpbox/test/run
-
     - name: Upload AXPbox binary
       uses: actions/upload-artifact@v1
       with:
-        name: AXPbox-linux-gcc-${{ env.BUILD_DATE }}
+        name: AXPbox-linux-ARM-gcc-${{ env.BUILD_DATE }}
         path: ${{runner.workspace}}/build/axpbox
       env:
         BUILD_DATE: ${{ steps.date.outputs.date }} 
