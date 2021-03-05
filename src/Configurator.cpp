@@ -347,8 +347,6 @@ CConfigurator::CConfigurator(class CConfigurator *parent, char *name,
   size_t child_len = 0;
 
   pParent = parent;
-  iNumChildren = 0;
-  iNumValues = 0;
   myName = name;
   myValue = value;
 
@@ -395,7 +393,6 @@ CConfigurator::CConfigurator(class CConfigurator *parent, char *name,
         memcpy(cur_value, &text[value_start], value_len);
         cur_value[value_len] = '\0';
 
-        //        printf("Calling strip_string for  <%s>. \n",cur_value);
         strip_string(cur_value);
         add_value(cur_name, cur_value);
 
@@ -433,18 +430,19 @@ CConfigurator::CConfigurator(class CConfigurator *parent, char *name,
 
           strip_string(cur_value);
 
-          pChildren[iNumChildren++] = new CConfigurator(
-              this, cur_name, cur_value, &text[child_start], child_len);
+          pChildren.push_back( new CConfigurator(
+              this, cur_name, cur_value, &text[child_start], child_len)
+          );
         }
       }
     }
   }
 
-  int i;
   if (parent == 0) {
     myFlags = 0;
-    for (i = 0; i < iNumChildren; i++) {
-      pChildren[i]->initialize();
+    CConfiguratorList::iterator child;
+    for (child = pChildren.begin(); child != pChildren.end(); child++) {
+      (*child)->initialize();
     }
   }
 }
@@ -498,9 +496,7 @@ char *CConfigurator::strip_string(char *c) {
  * Add a value to our list of values.
  **/
 void CConfigurator::add_value(char *n, char *v) {
-  pValues[iNumValues].name = n;
-  pValues[iNumValues].value = v;
-  iNumValues++;
+  pValues[n] = v;
 }
 
 /**
@@ -508,13 +504,12 @@ void CConfigurator::add_value(char *n, char *v) {
  * our list of values, return def.
  **/
 char *CConfigurator::get_text_value(const char *n, const char *def) {
-  int i;
-  for (i = 0; i < iNumValues; i++) {
-    if (!strcmp(pValues[i].name, n))
-      return pValues[i].value;
+  try {
+    return (char *)pValues.at(n).c_str();
   }
-
-  return (char *)def;
+  catch (const std::out_of_range& oor) {
+    return (char *)def;
+  }
 }
 
 /**
@@ -531,32 +526,33 @@ char *CConfigurator::get_text_value(const char *n, const char *def) {
  *  .
  **/
 bool CConfigurator::get_bool_value(const char *n, bool def) {
-  int i;
-  for (i = 0; i < iNumValues; i++) {
-    if (!strcmp(pValues[i].name, n)) {
-      switch (pValues[i].value[0]) {
-      case 't':
-      case 'T':
-      case 'y':
-      case 'Y':
-      case '1':
-        return true;
-
-      case 'f':
-      case 'F':
-      case 'n':
-      case 'N':
-      case '0':
-        return false;
-
-      default:
-        FAILURE_2(Configuration, "Illegal boolean value (%s) for %s",
-                  pValues[i].value, n);
-      }
-    }
+  const char *val;
+  try {
+    val = pValues.at(n).c_str();
+  }
+  catch (const std::out_of_range& oor) {
+    return def;
   }
 
-  return def;
+  switch (val[0]) {
+    case 't':
+    case 'T':
+    case 'y':
+    case 'Y':
+    case '1':
+      return true;
+
+    case 'f':
+    case 'F':
+    case 'n':
+    case 'N':
+    case '0':
+      return false;
+
+    default:
+      FAILURE_2(Configuration, "Illegal boolean value (%s) for %s",
+                val, n);
+  }
 }
 
 /**
@@ -564,50 +560,46 @@ bool CConfigurator::get_bool_value(const char *n, bool def) {
  * our list of values, return def.
  **/
 u64 CConfigurator::get_num_value(const char *n, bool decimal, u64 def) {
-  int i;
+  const char *val;
+  try {
+    val = pValues.at(n).c_str();
+  }
+  catch (const std::out_of_range& oor) {
+    return def;
+  }
+
   u64 multiplier = decimal ? 1000 : 1024;
-  for (i = 0; i < iNumValues; i++) {
-    if (!strcmp(pValues[i].name, n)) {
-      u64 retval = 0;
-      u64 partval = 0;
-      char *val = pValues[i].value;
-      int j = 0;
-      for (;;) {
-        while (val[j] && strchr("0123456789", val[j])) {
-          partval *= 10;
-          partval += val[j] - '0';
-          j++;
-        }
+  u64 retval = 0;
+  u64 partval = 0;
+  for (const char *p = val; *p != '\0'; ++p) {
+    if (isdigit(*p)) {
+      partval *= 10;
+      partval += *p - '0';
+    }
+    else {
+      switch (*p) {
+      case 'T':
+        partval *= multiplier;
 
-        switch (val[j]) {
-        case 'T':
-          partval *= multiplier;
+      case 'G':
+        partval *= multiplier;
 
-        case 'G':
-          partval *= multiplier;
+      case 'M':
+        partval *= multiplier;
 
-        case 'M':
-          partval *= multiplier;
+      case 'K':
+        retval += partval * multiplier;
+        partval = 0;
+        break;
 
-        case 'K':
-          retval += partval * multiplier;
-          partval = 0;
-          j++;
-          break;
-
-        case '\0':
-          retval += partval;
-          return retval;
-
-        default:
-          FAILURE_2(Configuration, "Illegal numeric value (%s) for %s",
-                    pValues[i].value, n);
-        }
+      default:
+        FAILURE_2(Configuration, "Illegal numeric value (%s) for %s",
+                  val, n);
       }
     }
   }
-
-  return def;
+  retval += partval;
+  return retval;
 }
 
 // THIS IS WHERE THINGS GET COMPLICATED...
@@ -916,8 +908,10 @@ void CConfigurator::initialize() {
     break;
   }
 
-  for (i = 0; i < iNumChildren; i++)
-    pChildren[i]->initialize();
+  CConfiguratorList::iterator child;
+  for (child = pChildren.begin(); child != pChildren.end(); child++) {
+    (*child)->initialize();
+  }
 
   if (myFlags & IS_CS)
     ((CSystem *)myDevice)->init();

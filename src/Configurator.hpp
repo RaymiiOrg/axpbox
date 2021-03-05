@@ -86,10 +86,11 @@
 #if !defined(__CONFIGURATOR_H__)
 #define __CONFIGURATOR_H__
 
-#define CFG_MAX_CHILDREN 25
-#define CFG_MAX_VALUES 50
-
 #include "StdAfx.hpp"
+
+#include <string>
+#include <list>
+#include <map>
 
 typedef enum {
   c_none,
@@ -155,18 +156,16 @@ public:
   void initialize();
 
 private:
+  typedef std::list<CConfigurator*> CConfiguratorList;
+  typedef std::map<std::string, std::string> SCfg_Value;
+
   class CConfigurator *pParent;
-  class CConfigurator *pChildren[CFG_MAX_CHILDREN];
-  int iNumChildren;
+  CConfiguratorList pChildren;
   char *myName;
   char *myValue;
   void *myDevice;
   classid myClassId;
   int myFlags;
-  int iNumValues;
-  struct SCfg_Value {
-    char *name;
-    char *value;
-  } pValues[CFG_MAX_VALUES];
+  SCfg_Value pValues;
 };
 #endif //! defined(__CONFIGURATOR_H__)
