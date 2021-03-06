@@ -147,13 +147,13 @@
  *
  * \author Camiel Vanderhoeven (camiel@camicom.com / http://www.camicom.com)
  **/
-#include "SystemComponent.hpp"
-#include "TraceEngine.hpp"
-
 #if !defined(INCLUDED_SYSTEM_H)
 #define INCLUDED_SYSTEM_H
 
-#define MAX_COMPONENTS 100
+#include <list>
+
+#include "SystemComponent.hpp"
+#include "TraceEngine.hpp"
 
 #if defined(PROFILE)
 #define PROFILE_FROM U64(0x8000)
@@ -182,21 +182,6 @@ extern bool profile_started;
 #if defined(LS_MASTER) || defined(LS_SLAVE)
 extern char *dbg_strptr;
 #endif
-
-/// Structure used for mapping memory ranges to devices.
-struct SMemoryUser {
-  CSystemComponent *component; /**< Device that occupies this range. */
-  int index; /**< Index within the device. Used by devices that occupy more than
-                one range. */
-  u64 base;  /**< Address of first byte. */
-  u64 length; /**< Number of bytes in range. */
-};
-
-/// Structure used for configuration values.
-struct SConfig {
-  char *key;   /**< Name of the value. */
-  char *value; /**< Value of the value. */
-};
 
 /**
  * \brief Emulated Typhoon 21272 chipset.
@@ -284,6 +269,7 @@ private:
   void tig_write(u32 address, u8 data);
 
   int iNumCPUs;
+  class CAlphaCPU *acCPUs[4];
   CFastMutex *cpu_lock_mutex;
 
   /// The state structure contains all elements that need to be saved to the
@@ -483,13 +469,19 @@ private:
   } state;
   void *memory;
 
-  //    void * memmap;
-  int iNumComponents;
-  CSystemComponent *acComponents[MAX_COMPONENTS];
-  int iNumMemories;
-  struct SMemoryUser *asMemories[MAX_COMPONENTS];
+  typedef std::list<CSystemComponent*> CSystemComponentList;
+  CSystemComponentList acComponents;
 
-  class CAlphaCPU *acCPUs[4];
+  /// Structure used for mapping memory ranges to devices.
+  struct SMemoryUser {
+    CSystemComponent *component; /**< Device that occupies this range. */
+    int index; /**< Index within the device. Used by devices that occupy more than
+                  one range. */
+    u64 base;  /**< Address of first byte. */
+    u64 length; /**< Number of bytes in range. */
+  };
+  typedef std::list<SMemoryUser*> SMemoryUserList;
+  SMemoryUserList asMemories;
 
   CConfigurator *myCfg;
 

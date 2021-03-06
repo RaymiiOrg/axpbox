@@ -386,15 +386,20 @@ CConfigurator::CConfigurator(class CConfigurator *parent, char *name,
     case STATE_VALUE:
       if (text[curtext] == ';') {
         value_len = curtext - value_start;
+
         cur_name = (char *)malloc(name_len + 1);
         memcpy(cur_name, &text[name_start], name_len);
         cur_name[name_len] = '\0';
+
         cur_value = (char *)malloc(value_len + 1);
         memcpy(cur_value, &text[value_start], value_len);
         cur_value[value_len] = '\0';
+        unquote_string(cur_value);
 
-        strip_string(cur_value);
         add_value(cur_name, cur_value);
+
+        free(cur_value);
+        free(cur_name);
 
         state = STATE_NONE;
       } else if (text[curtext] == '{') {
@@ -419,20 +424,22 @@ CConfigurator::CConfigurator(class CConfigurator *parent, char *name,
       else if (text[curtext] == '}') {
         child_depth--;
         if (!child_depth) {
+          child_len = curtext - child_start;
+
           cur_name = (char *)malloc(name_len + 1);
           memcpy(cur_name, &text[name_start], name_len);
           cur_name[name_len] = '\0';
+
           cur_value = (char *)malloc(value_len + 1);
           memcpy(cur_value, &text[value_start], value_len);
           cur_value[value_len] = '\0';
-          child_len = curtext - child_start;
-          state = STATE_NONE;
-
-          strip_string(cur_value);
+          unquote_string(cur_value);
 
           pChildren.push_back( new CConfigurator(
               this, cur_name, cur_value, &text[child_start], child_len)
           );
+
+          state = STATE_NONE;
         }
       }
     }
@@ -469,7 +476,7 @@ CConfigurator::~CConfigurator(void) {}
  * should be quoted as
  *   """c:\program files\putty\putty.exe"" telnet://localhost:8000"
  **/
-char *CConfigurator::strip_string(char *c) {
+char *CConfigurator::unquote_string(char *c) {
   char *pos = c;
   char *org = c + 1;
   bool end_it = false;

@@ -342,8 +342,6 @@ CSystem::CSystem(CConfigurator *cfg) {
   theSystem = this;
   myCfg = cfg;
 
-  iNumComponents = 0;
-  iNumMemories = 0;
   iNumCPUs = 0;
   iNumMemoryBits = (int)myCfg->get_num_value("memory.bits", false, 27);
 
@@ -398,15 +396,17 @@ CSystem::CSystem(CConfigurator *cfg) {
  * frees used memory.
  **/
 CSystem::~CSystem() {
-  int i;
-
   printf("Freeing memory in use by system...\n");
 
-  for (i = 0; i < iNumComponents; i++)
-    delete acComponents[i];
+  CSystemComponentList::iterator comp;
+  for (comp = acComponents.begin(); comp != acComponents.end(); comp++)
+    delete *comp;
+  acComponents.clear();
 
-  for (i = 0; i < iNumMemories; i++)
-    free(asMemories[i]);
+  SMemoryUserList::iterator mem;
+  for (mem = asMemories.begin(); mem != asMemories.end(); mem++)
+    delete *mem;
+  asMemories.clear();
 
   free(memory);
 }
@@ -424,12 +424,11 @@ void CSystem::ResetMem(unsigned int membits) {
  * Register a device.
  **/
 void CSystem::RegisterComponent(CSystemComponent *component) {
-  acComponents[iNumComponents] = component;
-  iNumComponents++;
+  acComponents.push_back( component );
 }
 
 void CSystem::UnregisterComponent(CSystemComponent *component) {
- iNumComponents--;
+  // acComponents.remove( component );
 }
 
 /**
@@ -464,58 +463,46 @@ int CSystem::RegisterCPU(class CAlphaCPU *cpu) {
  **/
 int CSystem::RegisterMemory(CSystemComponent *component, int index, u64 base,
                             u64 length) {
-  struct SMemoryUser *m;
-  int i;
+  SMemoryUserList::iterator mem;
 
 #if defined(CHECK_MEM_RANGES)
-  for (i = 0; i < iNumMemories; i++) {
-    if (component == asMemories[i]->component)
+  for (mem = asMemories.begin(); mem != asMemories.end(); mem++) {
+    if (component == (*mem)->component)
       continue;
 
     // check for overlaps
-    if (base >= asMemories[i]->base &&
-        base <= (asMemories[i]->base + asMemories[i]->length - 1)) {
+    if (base >= (*mem)->base &&
+        base <= (*mem)->base + (*mem)->length - 1) {
       printf(
           "WARNING: Start address for %s/%d (%016" PRIx64 "-%016" PRIx64 ")\n"
           "  is within memory range of %s/%d (%016" PRIx64 "-%016" PRIx64
           ").\n",
           component->devid_string, index, base, base + length - 1,
-          asMemories[i]->component->devid_string, asMemories[i]->index,
-          asMemories[i]->base, asMemories[i]->base + asMemories[i]->length - 1);
+          (*mem)->component->devid_string, (*mem)->index,
+          (*mem)->base, (*mem)->base + (*mem)->length - 1);
     }
 
-    if (base + length - 1 >= asMemories[i]->base &&
-        base + length - 1 <=
-            (asMemories[i]->base + asMemories[i]->length - 1)) {
+    if (base + length - 1 >= (*mem)->base &&
+        base + length - 1 <= (*mem)->base + (*mem)->length - 1) {
       printf("WARNING: End address for %s/%d (%016" PRIx64 "-%016" PRIx64 ")\n"
              "  is within memory range of %s/%d (%016" PRIx64 "-%016" PRIx64
              ").\n",
              component->devid_string, index, base, base + length - 1,
-             asMemories[i]->component->devid_string, asMemories[i]->index,
-             asMemories[i]->base,
-             asMemories[i]->base + asMemories[i]->length - 1);
+             (*mem)->component->devid_string, (*mem)->index,
+             (*mem)->base, (*mem)->base + (*mem)->length - 1);
     }
   }
 #endif // defined(CHECK_MEM_RANGES)
 
-  for (i = 0; i < iNumMemories; i++) {
-    if ((asMemories[i]->component == component) &&
-        (asMemories[i]->index == index)) {
-      asMemories[i]->base = base;
-      asMemories[i]->length = length;
+  for (mem = asMemories.begin(); mem != asMemories.end(); mem++) {
+    if ((*mem)->component == component && (*mem)->index == index) {
+      (*mem)->base = base;
+      (*mem)->length = length;
       return 0;
     }
   }
 
-  CHECK_ALLOCATION(
-      m = (struct SMemoryUser *)malloc(sizeof(struct SMemoryUser)));
-  m->component = component;
-  m->base = base;
-  m->length = length;
-  m->index = index;
-
-  asMemories[iNumMemories] = m;
-  iNumMemories++;
+  asMemories.push_back( new SMemoryUser {component, index, base, length} );
   return 0;
 }
 
@@ -530,18 +517,17 @@ void sigint_handler(int signum) { got_sigint = 1; }
  * Run the system by clocking the CPU(s) and devices.
  **/
 void CSystem::Run() {
-  int i;
-
   int k;
 
 #if defined(DUMP_MEMMAP)
   printf("ES40 Memory Map\n");
   printf("Physical Address Size     Device/Index\n");
   printf("---------------- -------- -------------------------\n");
-  for (i = 0; i < iNumMemories; i++) {
-    printf("%016" PRIx64 " %8x %s/%d\n", asMemories[i]->base,
-           asMemories[i]->length, asMemories[i]->component->devid_string,
-           asMemories[i]->index);
+  SMemoryUserList::iterator mem;
+  for (mem = asMemories.begin(); mem != asMemories.end(); mem++) {
+    printf("%016" PRIx64 " %8x %s/%d\n", (*mem)->base,
+           (*mem)->length, (*mem)->component->devid_string,
+           (*mem)->index);
   }
 #endif // defined(DUMP_MEMMAP)
 
@@ -554,8 +540,9 @@ void CSystem::Run() {
     if (got_sigint)
       FAILURE(Graceful, "CTRL-C detected");
     std::this_thread::sleep_for(std::chrono::milliseconds(100));
-    for (i = 0; i < iNumComponents; i++)
-      acComponents[i]->check_state();
+    CSystemComponentList::iterator comp;
+    for (comp = acComponents.begin(); comp != acComponents.end(); comp++)
+      (*comp)->check_state();
 #if !defined(HIDE_COUNTER)
 #if defined(PROFILE)
     printf("%d | %016" PRIx64 " | %" PRId64 " profiled instructions.  \r", k,
@@ -760,11 +747,11 @@ void CSystem::WriteMem(u64 address, int dsize, u64 data,
   {
 
     // check registered device memory ranges
-    for (i = 0; i < iNumMemories; i++) {
-      if ((a >= asMemories[i]->base) &&
-          (a < asMemories[i]->base + asMemories[i]->length)) {
-        asMemories[i]->component->WriteMem(
-            asMemories[i]->index, a - asMemories[i]->base, dsize, data);
+    SMemoryUserList::iterator mem;
+    for (mem = asMemories.begin(); mem != asMemories.end(); mem++) {
+      if (a >= (*mem)->base && a < (*mem)->base + (*mem)->length) {
+        (*mem)->component->WriteMem(
+            (*mem)->index, a - (*mem)->base, dsize, data);
         return;
       }
     }
@@ -1003,11 +990,11 @@ u64 CSystem::ReadMem(u64 address, int dsize, CSystemComponent *source) {
   {
 
     // check registered device memory ranges
-    for (i = 0; i < iNumMemories; i++) {
-      if ((a >= asMemories[i]->base) &&
-          (a < asMemories[i]->base + asMemories[i]->length))
-        return asMemories[i]->component->ReadMem(
-            asMemories[i]->index, a - asMemories[i]->base, dsize);
+    SMemoryUserList::iterator mem;
+    for (mem = asMemories.begin(); mem != asMemories.end(); mem++) {
+      if (a >= (*mem)->base && a < (*mem)->base + (*mem)->length)
+        return (*mem)->component->ReadMem(
+            (*mem)->index, a - (*mem)->base, dsize);
     }
 
     if ((a == U64(0x00000801FC000CFC)) && (dsize == 32)) {
@@ -1560,6 +1547,7 @@ u64 CSystem::pchip_csr_read(int num, u32 a) {
  * For a description of the PCHIP registers, see pchip_csr_read.
  **/
 void CSystem::pchip_csr_write(int num, u32 a, u64 data) {
+  CSystemComponentList::iterator comp;
   switch (a) {
   case 0x000:
   case 0x040:
@@ -1606,8 +1594,8 @@ void CSystem::pchip_csr_write(int num, u32 a, u64 data) {
     return;
 
   case 0x800: // PCI reset
-    for (int i = 0; i < iNumComponents; i++)
-      acComponents[i]->ResetPCI();
+    for (comp = acComponents.begin(); comp != acComponents.end(); comp++)
+      (*comp)->ResetPCI();
     return;
 
   default:
@@ -2374,22 +2362,24 @@ u64 CSystem::PCI_Phys_scatter_gather(u32 address, u64 wsm, u64 tba) {
  * Initialize all devices.
  **/
 void CSystem::init() {
-  for (int i = 0; i < iNumComponents; i++)
-    acComponents[i]->init();
+  CSystemComponentList::iterator comp;
+  for (comp = acComponents.begin(); comp != acComponents.end(); comp++)
+    (*comp)->init();
 }
 
 void CSystem::start_threads() {
   int i;
 
   printf("Start threads:");
-  for (i = 0; i < iNumComponents; i++) {
+  CSystemComponentList::iterator comp;
+  for (comp = acComponents.begin(); comp != acComponents.end(); comp++) {
 #ifdef IDB
     // When running with IDB, the trace engine takes care of managing the CPU,
     // so its thread shouldn't be started.
-    if (dynamic_cast<CAlphaCPU *>(acComponents[i]))
+    if (dynamic_cast<CAlphaCPU *>(*comp))
       continue;
 #endif
-    acComponents[i]->start_threads();
+    (*comp)->start_threads();
   }
   printf("\n");
 
@@ -2399,8 +2389,9 @@ void CSystem::start_threads() {
 
 void CSystem::stop_threads() {
   printf("Stop threads:");
-  for (int i = 0; i < iNumComponents; i++)
-    acComponents[i]->stop_threads();
+  CSystemComponentList::iterator comp;
+  for (comp = acComponents.begin(); comp != acComponents.end(); comp++)
+    (*comp)->stop_threads();
   printf("\n");
 }
 
@@ -2452,8 +2443,9 @@ void CSystem::SaveState(const char *fn) {
     //  Components should also save any non-initial memory-registrations and
     //  re-register upon restore!
     //
-    for (i = 0; i < iNumComponents; i++)
-      acComponents[i]->SaveState(f);
+    CSystemComponentList::iterator comp;
+    for (comp = acComponents.begin(); comp != acComponents.end(); comp++)
+      (*comp)->SaveState(f);
     fclose(f);
   }
 }
@@ -2509,8 +2501,9 @@ void CSystem::RestoreState(const char *fn) {
   //  Components should also save any non-initial memory-registrations and
   //  re-register upon restore!
   //
-  for (i = 0; i < iNumComponents; i++) {
-    if (acComponents[i]->RestoreState(f))
+  CSystemComponentList::iterator comp;
+  for (comp = acComponents.begin(); comp != acComponents.end(); comp++) {
+    if ((*comp)->RestoreState(f))
       FAILURE(Runtime, "Unable to restore system state");
   }
 

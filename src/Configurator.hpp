@@ -131,7 +131,7 @@ public:
                 char *text, size_t textlen);
   ~CConfigurator(void);
 
-  char *strip_string(char *c);
+  char *unquote_string(char *c);
   void add_value(char *n, char *v);
 
   char *get_text_value(const char *n) { return get_text_value(n, (char *)0); };
