@@ -742,40 +742,39 @@ void CAlphaCPU::execute() {
       // means we hava an interrupt to service, but we might have. This needs to
       // be checked.
 
-      /*
       if (state.pal_vms) {
         // PALcode base is set to 0x8000; meaning OpenVMS PALcode is currently
-      active. In this
-        // case, our VMS PALcode replacement routines are valid, and should be
-      used as it is
-        // faster than using the original PALcode.
+        // active. In this case, our VMS PALcode replacement routines are valid,
+        // and should be used as it is faster than using the original PALcode.
 
         if (state.eir & state.eien & 6)
-          if (vmspal_ent_ext_int(state.eir&state.eien & 6))
+          if (vmspal_ent_ext_int(state.eir & state.eien & 6))
             return;
 
         if (state.sir & state.sien & 0xfffc)
-          if (vmspal_ent_sw_int(state.sir&state.sien))
+          if (vmspal_ent_sw_int(state.sir & state.sien))
             return;
 
         if (state.asten && (state.aster & state.astrr & ((1<<(state.cm+1))-1) ))
-          if (vmspal_ent_ast_int(state.aster & state.astrr &
-      ((1<<(state.cm+1))-1) )) return;
+          if (vmspal_ent_ast_int(
+                state.aster & state.astrr & ((1<<(state.cm+1))-1)
+                ))
+            return;
 
         if (state.sir & state.sien)
-          if (vmspal_ent_sw_int(state.sir&state.sien))
+          if (vmspal_ent_sw_int(state.sir & state.sien))
             return;
       } else
-*/
       {
-
         // PALcode base is set to an unsupported value. We have no choice but to
         // transfer control to PALmode at the PALcode interrupt entry point.
-        //        if (state.eir & 8)
-        //        {
-        //          printf("%s: IP interrupt received%s...\n",devid_string,
-        //          (state.eien&8)?"(enabled)":"(masked)");
-        //        }
+
+        // if (state.eir & 8)
+        // {
+        //   printf("%s: IP interrupt received%s...\n",devid_string,
+        //   (state.eien&8)?"(enabled)":"(masked)");
+        // }
+
         if ((state.eien & state.eir) || (state.sien & state.sir) ||
             (state.asten &&
              (state.aster & state.astrr & ((1 << (state.cm + 1)) - 1)))) {
