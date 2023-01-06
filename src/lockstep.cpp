@@ -54,7 +54,8 @@ void lockstep_init() {
 #if defined(LS_MASTER)
   int result = -1;
   printf("Please enter the IP address of the lockstep slave to connect to: ");
-  scanf("%s", ls_IP);
+  (void)scanf("%s", ls_IP);
+  fflush(stdin);
 
   ls_Socket = socket(AF_INET, SOCK_STREAM, 0);
 

@@ -275,7 +275,8 @@ void CDEC21143::init() {
       inum = 0;
       while (inum < 1 || inum > i) {
         printf("%%NIC-Q-NICNO: Enter the interface number (1-%d):", i);
-        (void)!scanf("%d", &inum);
+        (void)scanf("%d", &inum);
+        fflush(stdin);
       }
     }
 
