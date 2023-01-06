@@ -32,8 +32,6 @@
  *
  * You could read the documentation from this file; but it would probably
  * be easier to go to http://es40.sourceforge.net.
- *
- * $Id: dox.cpp,v 1.20 2008/04/29 07:37:54 iamcamiel Exp $
  **/
 
 /**

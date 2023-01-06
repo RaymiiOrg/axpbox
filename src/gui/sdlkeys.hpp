@@ -49,14 +49,6 @@
  * <SDL/SDL_keysym.h>.  You can't fix it with #ifdef SDLK_SYM because
  * they are enums, so you'll just have to comment out the offending line.
  * The list was generated using symbols from SDL 1.2.3.
- *
- * $Id: sdlkeys.h,v 1.4 2008/03/14 15:31:29 iamcamiel Exp $
- * X-1.3        Camiel Vanderhoeven                             02-JAN-2008
- *      Comments.
- *
- * X-1.1        Camiel Vanderhoeven                             6-DEC-2007
- *      Initial version for ES40 emulator.
- *
  **/
 DEF_SDL_KEY(SDLK_UNKNOWN)
 DEF_SDL_KEY(SDLK_FIRST)
