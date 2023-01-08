@@ -414,7 +414,8 @@ void CDEC21143::stop_threads() {
 CDEC21143::~CDEC21143() {
   stop_threads();
 
-  pcap_close(fp);
+  if (fp)
+    pcap_close(fp);
   delete rx_queue;
 }
 

@@ -237,19 +237,24 @@ void CAlphaCPU::check_state() {
       ce_new = 200;
 
     if (ce_new != ce) {
-
-      //    printf("                                     time %12" PRId64 " | prev
-      //    %12" PRId64 "  \n",time,prev_time); printf("          count lapse %12"
-      //    LL "d | curr %12" PRId64 " | prev %12" PRId64 "
-      //    \n",icount_lapse,icount,prev_icount); printf("cc %12" PRId64 " | aim
-      //    %12" PRId64 " | diff %12" PRId64 " | prev %12" PRId64 "
-      //    \n",cc,cc_aim,cc_diff,prev_cc); printf("ce %12" PRId64 " | aim %12" LL
-      //    "d | diff %12" PRId64 " | new  %12" PRId64 "
-      //    \n",ce,ce_aim,ce_diff,ce_new);
-      //    printf("==========================================================================
-      //    \n");
+#if defined(DEBUG_CPU_TIMING_LOOP)
+      printf("                                    "
+             " time %12" PRId64 " | prev %12" PRId64 "\n",
+             time, prev_time);
+      printf("          count lapse %12" PRId64 " |"
+             " curr %12" PRId64 " | prev %12" PRId64 "\n",
+             icount_ lapse, icount, prev_icount);
+      printf("cc %12" PRId64 " | aim %12" PRId64 " |"
+             " diff %12" PRId64 " | prev %12" PRId64 "\n",
+             cc, cc_aim, cc_diff, prev_cc);
+      printf("ce %12" PRId64 " | aim %12" PRId64 " |"
+             " diff %12" PRId64 " | new  %12" PRId64 "\n",
+             ce, ce_aim, ce_diff, ce_new);
+      printf("======================================"
+             "====================================\n");
+      printf("cpu %d speed factor: %d\n", get_cpuid(), ce_new);
+#endif
       cc_per_instruction = ce_new;
-      //    printf("cpu %d speed factor: %d\n",get_cpuid(),ce_new);
     }
 
     prev_cc = cc;

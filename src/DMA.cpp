@@ -249,7 +249,7 @@ void CDMA::WriteMem(int index, u64 address, int dsize, u64 data) {
 
       case 5: // master reset
 #if defined(DEBUG_DMA)
-        printf("DMA-I-RESET: DMA %d reset.", index - DMA_IO_BASE);
+        printf("DMA-I-RESET: DMA %d reset.\n", index - DMA_IO_BASE);
 #endif
         for (int i = (num * 4); i < ((num + 1) * 4); i++)
           state.channel[i].a_lobyte = state.channel[i].c_lobyte = true;
