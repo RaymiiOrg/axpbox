@@ -320,13 +320,9 @@ CConfigurator::CConfigurator(class CConfigurator *parent, char *name,
           curtext++;
         else {
           if (text[curtext + 1] != ';' && text[curtext + 1] != '{') {
-            value_len = curtext - value_start;
-            cur_value = (char *)malloc(value_len + 1);
-            memcpy(cur_value, &text[value_start], value_len);
-            cur_value[value_len] = '\0';
-            FAILURE_1(Configuration,
-                      "Missing semicolon or brace after %s.",
-                      cur_value);
+            FAILURE_2(Configuration,
+                      "Missing semicolon or brace after %.*s.",
+                      (int)(curtext - value_start + 1), &text[value_start]);
           }
           state = STATE_VALUE;
         }
