@@ -255,11 +255,11 @@ void CDEC21143::init() {
 
     /* Print the list */
     for (d = alldevs; d; d = d->next) {
-      printf("%d. %s\n    ", ++i, d->name);
+      printf("%d. %s    ", ++i, d->name);
       if (d->description)
-        printf(" (%s)\n", d->description);
+        printf(" (%s)\r\n", d->description);
       else
-        printf(" (No description available)\n");
+        printf(" (No description available)\r\n");
     }
 
     if (i == 0)
@@ -269,9 +269,11 @@ void CDEC21143::init() {
       inum = 1;
     else {
       inum = 0;
+      int key;
+      printf("%%NIC-Q-NICNO: Enter the interface number (1-%d):", i);
       while (inum < 1 || inum > i) {
-        printf("%%NIC-Q-NICNO: Enter the interface number (1-%d):", i);
-        (void)!scanf("%d", &inum);
+        key = getchar();
+        inum = key - '0';   
       }
     }
 
