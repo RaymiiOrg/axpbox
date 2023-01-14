@@ -234,7 +234,7 @@ void CAliM1543C_ide::init() {
     thrController[i] = 0;
   }
 
-  printf("%%IDE-I-INIT: New IDE emulator initialized.\n");
+  printf("%%IDE-I-INIT: New IDE emulator initialized.\r\n");
 }
 
 void CAliM1543C_ide::start_threads() {
