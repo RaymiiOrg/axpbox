@@ -33,7 +33,7 @@ do
   fi
 
   # print last line and remove null byte from it
-  if [ "$(LC_ALL=C sed -n '$p' axp.log | LC_ALL=C sed 's/\x00//g')" == "P00>>>"  ]
+  if [ "$(LC_ALL=C sed -n '$p' axp.log | LC_ALL=C perl -np -e 's/\0/\n/g' )" == "P00>>>"  ]
   then
     echo
     break
