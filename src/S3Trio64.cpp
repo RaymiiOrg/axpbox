@@ -349,7 +349,7 @@ void CS3Trio64::init() {
 
   state.last_bpp = 8;
 
-  state.CRTC.reg[0x70] = 0;
+  state.CRTC.reg[0x70] = {0};
   state.CRTC.reg[0x09] = 16;
   state.CRTC.reg[0x2E] = 0x11;   // Device low ID register, 0x10 for Trio32, 0x11 for Trio64
   state.CRTC.reg[0x30] = 0xE1;   // Chip ID/REV Register (CHIP-ID/REV) (CR30) - 0xE1H on powerup.
