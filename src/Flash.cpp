@@ -57,7 +57,7 @@ CFlash::CFlash(CConfigurator *cfg, CSystem *c) : CSystemComponent(cfg, c) {
   RestoreStateF();
   state.mode = MODE_READ;
 
-  printf("%s: $Id: Flash.cpp,v 1.19 2008/03/24 22:11:50 iamcamiel Exp $\n",
+  printf("%s: Flash\n",
          devid_string);
 }
 

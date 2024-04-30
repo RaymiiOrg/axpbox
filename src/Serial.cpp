@@ -121,7 +121,7 @@ void CSerial::init() {
 
 
 
-  printf("%s: $Id: Serial.cpp,v 1.51 2008/06/03 09:07:56 iamcamiel Exp $\n",
+  printf("%s: Serial\n",
          devid_string);
 }
 

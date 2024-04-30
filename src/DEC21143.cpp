@@ -382,7 +382,7 @@ void CDEC21143::init() {
 
   ResetPCI();
 
-  printf("%s: $Id: DEC21143.cpp,v 1.36 2008/05/31 15:47:09 iamcamiel Exp $\n",
+  printf("%s: DEC21143\n",
          devid_string);
 }
 

@@ -62,7 +62,7 @@ CDMA::CDMA(CConfigurator *cfg, CSystem *c) : CSystemComponent(cfg, c) {
   state.controller[1].mask = 0xff;
 
   theDMA = this;
-  printf("dma: $Id: DMA.cpp,v 1.9 2008/04/29 09:24:52 iamcamiel Exp $\n");
+  printf("dma: DMA\n");
 }
 
 /**

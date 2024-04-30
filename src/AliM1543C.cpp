@@ -249,9 +249,6 @@ void CAliM1543C::init() {
   lpt_reset();
 
   myRegLock = new CMutex("ali-reg");
-
-  printf("%s: $Id: AliM1543C.cpp,v 1.66 2008/05/31 15:47:07 iamcamiel Exp $\n",
-         devid_string);
 }
 
 void CAliM1543C::start_threads() {

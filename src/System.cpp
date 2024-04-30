@@ -101,7 +101,7 @@ CSystem::CSystem(CConfigurator *cfg) {
 
   cpu_lock_mutex = new CFastMutex("cpu-locking-lock");
 
-  printf("%s(%s): $Id: System.cpp,v 1.79 2008/06/12 07:29:44 iamcamiel Exp $\n",
+  printf("%s(%s): $Id: System",
          cfg->get_myName(), cfg->get_myValue());
 }
 

@@ -336,7 +336,7 @@ void CCirrus::init() {
   state.graphics_ctrl.memory_mapping = 3; // color text mode
   state.vga_mem_updated = 1;
 
-  printf("%s: $Id: Cirrus.cpp,v 1.23 2008/05/31 15:47:09 iamcamiel Exp $\n",
+  printf("%s: Cirrus\n",
          devid_string);
 }
 

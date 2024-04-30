@@ -129,7 +129,7 @@ void CAlphaCPU::init() {
   state.r[22] = state.r[22 + 32] = state.iProcNum;
 
   printf(
-      "%s(%d): $Id: AlphaCPU.cpp,v 1.82 2009/03/16 01:33:27 iamcamiel Exp $\n",
+      "%s(%d): AlphaCPU\n",
       devid_string, state.iProcNum);
 }
 

@@ -593,7 +593,7 @@ void CSym53C810::init() {
 
   myRegLock = new CMutex("sym-reg");
 
-  printf("%s: $Id: Sym53C810.cpp,v 1.14 2008/05/31 15:47:13 iamcamiel Exp $\n",
+  printf("%s: Sym53C810\n",
          devid_string);
 }
 

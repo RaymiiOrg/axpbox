@@ -327,7 +327,7 @@ void CDPR::init() {
   //    3600:36FF 3600 SRM Reserved
   //    3700:37FF SRM Reserved
   //    3800:3AFF RMC RMC scratch space
-  printf("%s: $Id: DPR.cpp,v 1.23 2008/06/12 07:29:44 iamcamiel Exp $\n",
+  printf("%s: DPR\n",
          devid_string);
 }
 

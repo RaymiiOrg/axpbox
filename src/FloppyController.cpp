@@ -45,8 +45,7 @@ CFloppyController::CFloppyController(CConfigurator *cfg, CSystem *c, int id)
   state.status.rqm = 1;
   state.status.dio = 0;
 
-  printf("%s: $Id: FloppyController.cpp,v 1.16 2008/04/29 09:53:30 iamcamiel "
-         "Exp $\n",
+  printf("%s: $Id: FloppyController\n",
          devid_string);
 }
 

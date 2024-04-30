@@ -106,7 +106,7 @@ void CKeyboard::init() {
   state.kbd_controller_Qsize = 0;
   state.kbd_controller_Qsource = 0;
 
-  printf("kbc: $Id: Keyboard.cpp,v 1.10 2008/05/31 15:47:09 iamcamiel Exp $\n");
+  printf("kbc: Keyboard\n");
 }
 
 void CKeyboard::start_threads() {
