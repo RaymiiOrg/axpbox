@@ -65,6 +65,10 @@ private:
   bool acceptingSocket = false;
   bool breakHit;
 
+  std::unique_ptr<std::thread> connectThread;
+  std::atomic_bool connectThreadDead{false};
+  bool StopConnectThread = false;
+
   /// The state structure contains all elements that need to be saved to the
   /// statefile.
   struct SSrl_state {

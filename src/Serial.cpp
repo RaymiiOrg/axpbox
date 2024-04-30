@@ -86,8 +86,10 @@ void CSerial::init() {
 
   printf("%s: Waiting for connection on port %d.\n", devid_string, listenPort);
 
-  WaitForConnection();
-
+  if (!connectThread) {
+    StopConnectThread = false;
+    connectThread = std::make_unique<std::thread>([this](){
+      this->WaitForConnection();
 #if defined(IDB) && defined(LS_MASTER)
   struct sockaddr_in dest_addr;
   int result = -1;
@@ -113,7 +115,11 @@ void CSerial::init() {
   state.bLSR = 0x60; // THRE, TSRE
   state.bMSR = 0x30; // CTS, DSR
   state.bIIR = 0x01; // no interrupt
-  state.irq_active = false;
+      state.irq_active = false;
+    });
+  }
+
+
 
   printf("%s: $Id: Serial.cpp,v 1.51 2008/06/03 09:07:56 iamcamiel Exp $\n",
          devid_string);
@@ -132,6 +138,7 @@ void CSerial::start_threads() {
 void CSerial::stop_threads() {
   char buffer[5];
   StopThread = true;
+  StopConnectThread = true;
   if (myThread) {
     sprintf(buffer, "srl%d", state.iNumber);
     printf(" %s", buffer);
@@ -139,6 +146,12 @@ void CSerial::stop_threads() {
       myThread->join();
     }
     myThread = nullptr;
+  }
+  if (connectThread) {
+    if (!connectThread->joinable()) {
+      connectThread->join();
+    }
+    connectThread = nullptr;
   }
 }
 
@@ -318,6 +331,7 @@ void CSerial::run() {
   catch (CException &e) {
     printf("Exception in Serial thread: %s.\n", e.displayText().c_str());
     myThreadDead.store(true);
+    connectThreadDead.store(true);
     // Let the thread die...
   }
 }
@@ -333,6 +347,9 @@ void CSerial::check_state() {
 
   if (myThreadDead.load())
     FAILURE(Thread, "Serial thread has died");
+  if (connectThreadDead.load())
+    FAILURE(Thread, "Serial connection thread has died");
+
 }
 
 void CSerial::serial_menu() {
