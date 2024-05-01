@@ -69,7 +69,7 @@ CDiskDevice::CDiskDevice(CConfigurator *cfg, CSystem *sys, CDiskController *c,
 
 #else
   if (!handle) {
-    FAILURE_2(Runtime, "%s: Could not open device %s.", devid_string, filename);
+    FAILURE(Runtime, "%s: Could not open device %s.", devid_string, filename);
   }
 #endif
 

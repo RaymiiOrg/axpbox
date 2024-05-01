@@ -796,8 +796,7 @@ void CAlphaCPU::ieee_norm(UFP *r) {
     r->exp = r->exp - normtab[i];
   } /* decr exp */
 
-  return;
-}
+  }
 
 /**
  * \brief Round and pack IEEE floating-point value
@@ -909,7 +908,6 @@ void CAlphaCPU::ieee_trap(u64 trap, u32 instenb, u64 fpcrdsb, u32 ins) {
     real_trap |= trap;              // trap bit in EXC_SUM
   if (real_trap)
     ARITH_TRAP(real_trap | ((ins & I_FTRP_S) ? TRAP_SWC : 0), I_GETRC(ins));
-  return;
-}
+  }
 
 //\}

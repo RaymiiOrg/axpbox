@@ -219,10 +219,10 @@ void CAliM1543C_ide::init() {
 
   // start controller threads
   StopThread = false;
-  mtRegisters[0] = new CRWLock("ide0-registers");
-  mtRegisters[1] = new CRWLock("ide1-registers");
-  mtBusMaster[0] = new CRWLock("ide0-busmaster");
-  mtBusMaster[1] = new CRWLock("ide1-busmaster");
+  mtRegisters[0] = new CRWLock();
+  mtRegisters[1] = new CRWLock();
+  mtBusMaster[0] = new CRWLock();
+  mtBusMaster[1] = new CRWLock();
 
   for (int i = 0; i < 2; i++) {
     semController[i] = new CSemaphore(0, 1);      // disk controller
@@ -2268,7 +2268,6 @@ int CAliM1543C_ide::do_dma_transfer(int index, u8 *buffer, u32 buffersize,
  * Thread entry point.
  **/
 void CAliM1543C_ide::run(int index) {
-  try {
     for (;;) {
       semController[index]->wait();
       if (StopThread)
@@ -2296,9 +2295,3 @@ void CAliM1543C_ide::run(int index) {
     }
   }
 
-  catch (CException &e) {
-    printf("Exception in IDE thread: %s.\n", e.displayText().c_str());
-    thrControllerDead[index].store(true);
-    // Let the thread die...
-  }
-}

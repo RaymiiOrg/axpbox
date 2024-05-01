@@ -1306,7 +1306,7 @@ int CDisk::do_scsi_command() {
     if (state.scsi.cmd.data[2] & 0x0f) {
       FAILURE_2(NotImplemented,
                 "%s: I don't understand READ TOC/PMA/ATIP with format %01x.\n",
-                devid_string, state.scsi.cmd.data[2] & 0x0f);
+                devid_string, (state.scsi.cmd.data[2] & 0x0f))
     }
 
     if (state.scsi.cmd.data[6] > 1 && state.scsi.cmd.data[6] != 0xAA) {

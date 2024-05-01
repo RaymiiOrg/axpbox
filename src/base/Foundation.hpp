@@ -104,9 +104,8 @@
 //
 // Pull in basic definitions
 //
-#include "Bugcheck.hpp"
 #include "Types.hpp"
-#include <stdio.h>
+#include <cstdio>
 #include <string>
 
 #endif // Foundation_Foundation_INCLUDED

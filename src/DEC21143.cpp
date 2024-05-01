@@ -54,7 +54,6 @@
  * Thread entry point.
  **/
 void CDEC21143::run() {
-  try {
     for (;;) {
       if (StopThread)
         return;
@@ -83,13 +82,6 @@ void CDEC21143::run() {
 
       std::this_thread::sleep_for(std::chrono::milliseconds(20));
     }
-  }
-
-  catch (CException &e) {
-    printf("Exception in NIC thread: %s.\n", e.displayText().c_str());
-    myThreadDead.store(true);
-    // Let the thread die...
-  }
 }
 
 u32 dec21143_cfg_data[64] = {

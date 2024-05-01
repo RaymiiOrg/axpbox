@@ -156,7 +156,7 @@ public:
 #endif
 
 private:
-  TimeVal _ts;
+  TimeVal _ts{};
 };
 
 //

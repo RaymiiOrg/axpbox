@@ -40,7 +40,7 @@ inline string i2s(int x) {
  *
  * Throws a CLogicException when the input is not numeric.
  **/
-inline int s2i(const string x) {
+inline int s2i(const string& x) {
   istringstream i(x);
   int x1;
   char c;
@@ -89,8 +89,7 @@ public:
        */
       FreeTextQuestion::ask();
 
-      try {
-        /* Convert the answer to an integer.
+      /* Convert the answer to an integer.
          */
         value = s2i(mAnswer);
 
@@ -104,17 +103,12 @@ public:
          */
         cout << "\nPlease enter a value that is within the indicated range, or "
                 "'?' for help.\n\n";
-      } catch (CLogicException) {
-        /* The answer is not a number.
-         */
-        cout << "\nPlease enter an integer value.\n\n";
-      }
     }
   }
 
 protected:
   /** Low limit of the allowed range. */
-  int mLow;
+  int mLow{};
   /** High limit of the allowed range. */
-  int mHigh;
+  int mHigh{};
 };

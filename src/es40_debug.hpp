@@ -29,7 +29,9 @@
  * Anders Gavare.  All rights reserved.
  */
 
-#include <stdarg.h>
+#include <cstdio>
+#include <cstdlib>
+#include <memory>
 
 #if !defined(INCLUDED_DEBUG_H)
 #define INCLUDED_DEBUG_H
@@ -38,23 +40,23 @@
 #define FAILMSG_BUFSIZE 8000
 #define DEBUG_INDENTATION 4
 
-#ifdef HAVE___FUNCTION__
-#define FAILURE(cls, error_msg)                                                \
-  {                                                                            \
-    char where_msg[FAILMSG_BUFSIZE];;                                                       \
-    sprintf(where_msg, "%s, line %i, function '%s'", __FILE__, __LINE__,       \
-            __FUNCTION__);                                                     \
-    throw C##cls##Exception(error_msg, where_msg);                             \
-  }
+#define FAILURE(cls, format, ...) \
+    do { \
+        int size = std::snprintf(nullptr, 0, format, ##__VA_ARGS__) + 1; \
+        if (size <= 0) { \
+            std::fprintf(stderr, "Error: Failed to determine log message size.\n"); \
+            std::exit(EXIT_FAILURE); \
+        } \
+        std::unique_ptr<char[]> buffer(new char[size]); \
+        int written = std::snprintf(buffer.get(), size, format, ##__VA_ARGS__); \
+        if (written < 0 || written >= size) { \
+            std::fprintf(stderr, "Error: Failed to format log message.\n"); \
+            std::exit(EXIT_FAILURE); \
+        } \
+        std::fprintf(stderr, "%s, line %i, function '%s'\n", buffer.get(), __LINE__, __FILE__); \
+        std::exit(EXIT_FAILURE); \
+    } while(0)
 
-#else
-#define FAILURE(cls, error_msg)                                                \
-  {                                                                            \
-    char where_msg[FAILMSG_BUFSIZE];                                           \
-    sprintf(where_msg, "%s, line %i", __FILE__, __LINE__);                     \
-    throw C##cls##Exception(error_msg, where_msg);                             \
-  }
-#endif /*  !HAVE___FUNCTION__  */
 
 #define FAILURE_1(cls, error_msg, a)                                           \
   {                                                                            \
@@ -115,7 +117,4 @@
     }                                                                          \
   }
 
-void debug_indentation(int diff);
-void debug(char *fmt, ...);
-void fatal(char *fmt, ...);
 #endif

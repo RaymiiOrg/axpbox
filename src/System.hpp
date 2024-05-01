@@ -103,9 +103,15 @@ struct SConfig {
  **/
 class CSystem {
 public:
+  enum EXIT_STATUS {
+    UNKNOWN = -1,
+    GRACEFUL,
+    ERROR,
+    LAST
+  };
   void DumpMemory(unsigned int filenum);
   char *PtrToMem(u64 address);
-  unsigned int get_memory_bits();
+  unsigned int get_memory_bits() const;
   void RestoreState(const char *fn);
   void SaveState(const char *fn);
   u64 PCI_Phys(int pcibus, u32 address);
@@ -115,7 +121,7 @@ public:
   int LoadROM();
   u64 ReadMem(u64 address, int dsize, CSystemComponent *source);
   void WriteMem(u64 address, int dsize, u64 data, CSystemComponent *source);
-  void Run();
+  int Run();
   int SingleStep();
 
   void init();
@@ -164,7 +170,7 @@ private:
   void tig_write(u32 address, u8 data);
 
   int iNumCPUs;
-  CFastMutex *cpu_lock_mutex;
+  CMutex *cpu_lock_mutex;
 
   /// The state structure contains all elements that need to be saved to the
   /// statefile.

@@ -30,6 +30,7 @@
 #define INCLUDED_ALIM1543C_H_
 
 #include "PCIDevice.hpp"
+#include <array>
 
 #define PIT_OFFSET_MAX 6
 
@@ -77,29 +78,28 @@
  **/
 class CAliM1543C : public CPCIDevice {
 public:
-  virtual int SaveState(FILE *f);
-  virtual int RestoreState(FILE *f);
+  int SaveState(FILE *file) override;
+  int RestoreState(FILE *file) override;
 
-  virtual void check_state();
-  virtual void WriteMem_Legacy(int index, u32 address, int dsize, u32 data);
-  virtual u32 ReadMem_Legacy(int index, u32 address, int dsize);
+  void check_state() override;
+  void WriteMem_Legacy(int index, u32 address, int dsize, u32 data) override;
+  u32 ReadMem_Legacy(int index, u32 address, int dsize) override;
 
   void do_pit_clock();
 
   CAliM1543C(CConfigurator *cfg, class CSystem *c, int pcibus, int pcidev);
-  virtual ~CAliM1543C();
+  ~CAliM1543C() override;
   void pic_interrupt(int index, int intno);
   void pic_deassert(int index, int intno);
 
-  void init();
-  void start_threads();
-  void stop_threads();
+  void init() final;
+  void start_threads() final;
+  void stop_threads() final;
   void run();
 
 private:
   std::unique_ptr<std::thread> myThread;
   std::atomic_bool myThreadDead{false};
-  CMutex *myRegLock;
   bool StopThread;
 
   struct tm get_time();
@@ -111,7 +111,7 @@ private:
   // REGISTERS 70 - 73: TOY
   u8 toy_read(u32 address);
   void toy_write(u32 address, u8 data);
-  void toy_handle_periodic_interrupt(u8 data);
+  void toy_handle_periodic_interrupt();
   void toy_update_irqf();
 
   // Timer/Counter
@@ -138,8 +138,8 @@ private:
     u8 reg_61;
 
     // REGISTERS 70 - 73: TOY
-    u8 toy_stored_data[256];
-    u8 toy_access_ports[4];
+    std::array<u8, 256> toy_stored_data;
+    std::array<u8, 4> toy_access_ports;
 
     // TOY periodic interrupt last fire
     clock_t toy_pi_last_fire;

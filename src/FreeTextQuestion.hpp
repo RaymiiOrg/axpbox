@@ -28,6 +28,8 @@
 
 #include "Question.hpp"
 
+#include <utility>
+
 /**
  * Question class that allows free-format text input.
  **/
@@ -37,25 +39,25 @@ public:
    * Define a list of options to show following the question,
    * to show the user what values are acceptable.
    **/
-  void setOptions(string options) { mOptions = options; }
+  void setOptions(string options) { mOptions = std::move(options); }
 
   /**
    * Ask the question, and return the answer.
    **/
-  virtual string ask() {
+  string ask() override {
     for (;;) {
       cout << mQuestion;
 
       /* If there is an options list, display it after the
        * question enclosed in ().
        */
-      if (mOptions != "")
+      if (!mOptions.empty())
         cout << " (" << mOptions << ")";
 
       /* If there is a default value, display it after the
        * question enclosed in [].
        */
-      if (mDefault != "")
+      if (!mDefault.empty())
         cout << " [" << mDefault << "]";
 
       cout << ": ";
@@ -75,7 +77,7 @@ public:
       /* If the question is answered with <return>, set the
        * answer to the default answer.
        */
-      if (mAnswer == "")
+      if (mAnswer.empty())
         mAnswer = mDefault;
 
       /* Return the answer.

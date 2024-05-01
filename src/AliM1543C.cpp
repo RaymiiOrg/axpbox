@@ -178,7 +178,7 @@ u32 ali_cfg_mask[64] = {
  **/
 CAliM1543C::CAliM1543C(CConfigurator *cfg, CSystem *c, int pcibus, int pcidev)
     : CPCIDevice(cfg, c, pcibus, pcidev) {
-  if (theAli != 0)
+  if (theAli != nullptr)
     FAILURE(Configuration, "More than one Ali");
   theAli = this;
 }
@@ -217,10 +217,12 @@ void CAliM1543C::init() {
 
   // PIT Setup
   add_legacy_io(6, 0x40, 4);
-  for (i = 0; i < 3; i++)
+  for (i = 0; i < 3; i++) {
     state.pit_status[i] = 0x40; // invalid/null counter
-  for (i = 0; i < 9; i++)
+}
+  for (i = 0; i < 9; i++) {
     state.pit_counter[i] = 0;
+}
 
   add_legacy_io(7, 0x20, 2);
   add_legacy_io(8, 0xa0, 2);
@@ -240,15 +242,15 @@ void CAliM1543C::init() {
   // Initialize parallel port
   add_legacy_io(27, 0x3bc, 4);
   filename = myCfg->get_text_value("lpt.outfile");
-  if (filename) {
+  if (filename != nullptr) {
     lpt = fopen(filename, "ab");
   } else {
-    lpt = NULL;
+    lpt = nullptr;
   }
 
   lpt_reset();
 
-  myRegLock = new CMutex("ali-reg");
+  new CMutex();
 }
 
 void CAliM1543C::start_threads() {
@@ -274,7 +276,7 @@ void CAliM1543C::stop_threads() {
 CAliM1543C::~CAliM1543C() {
   stop_threads();
 
-  if (lpt)
+  if (lpt != nullptr)
     fclose(lpt);
 }
 
@@ -284,11 +286,11 @@ CAliM1543C::~CAliM1543C() {
  * @return The time.
  */
 struct tm CAliM1543C::get_time() {
-  struct tm time_out;
+  struct tm time_out{};
   time_t time_raw;
 
   // Timezone setting from configuration file
-  std::string timezone{myCfg->get_text_value("timezone", "local")};
+  std::string _timezone{myCfg->get_text_value("timezone", "local")};
 
   // Time base (local or utc)
   std::string timebase;
@@ -301,36 +303,36 @@ struct tm CAliM1543C::get_time() {
   time(&time_raw);
 
   // Set time base
-  if (timezone.rfind("local") == 0) {
+  if (_timezone.rfind("local") == 0) {
     timebase = "local";
-  } else if (timezone.rfind("utc") == 0) {
+  } else if (_timezone.rfind("utc") == 0) {
     timebase = "utc";
   } else {
-    FAILURE_1(Configuration, "Invalid timezone %s", timezone.c_str());
+    FAILURE_1(Configuration, "Invalid timezone %s", _timezone.c_str());
   }
 
   // Characters remaining after time base
-  int remaining_chars = timezone.length() - timebase.length();
+  int remaining_chars = _timezone.length() - timebase.length();
 
   if (remaining_chars > 0 &&
-      timezone.at(timezone.length() - remaining_chars) == '+') {
+      _timezone.at(_timezone.length() - remaining_chars) == '+') {
     // An offset is included in the timezone
     offset_present = true;
-    sscanf(timezone.c_str() + timezone.length() - remaining_chars + 1, "%ld",
+    sscanf(_timezone.c_str() + _timezone.length() - remaining_chars + 1, "%ld",
            &offset);
     remaining_chars -= std::to_string(offset).length() + 1;
 
     if (remaining_chars != 1) {
       // Offset type always has one character
-      FAILURE_1(Configuration, "Invalid timezone %s", timezone.c_str());
+      FAILURE_1(Configuration, "Invalid timezone %s", _timezone.c_str());
     }
   } else if (remaining_chars > 0) {
-    FAILURE_1(Configuration, "Invalid timezone %s", timezone.c_str());
+    FAILURE_1(Configuration, "Invalid timezone %s", _timezone.c_str());
   }
 
   if (offset_present) {
     // Apply POSIX time offset (seconds, minutes, hours, days)
-    switch (timezone.at(timezone.length() - 1)) {
+    switch (_timezone.at(_timezone.length() - 1)) {
     case 's':
       time_raw += offset;
       break;
@@ -348,7 +350,7 @@ struct tm CAliM1543C::get_time() {
       break;
     default:
       FAILURE_1(Configuration, "Invalid timezone offset type %c",
-                timezone.at(timezone.length() - 1));
+                _timezone.at(_timezone.length() - 1));
     }
   }
 
@@ -363,12 +365,12 @@ struct tm CAliM1543C::get_time() {
     gmtime_s(&time_out, &time_raw);
   } else {
     // This shouldn't happen
-    FAILURE_1(Configuration, "Invalid timezone %s", timezone.c_str());
+    FAILURE_1(Configuration, "Invalid timezone %s", _timezone.c_str());
   }
 
   if (offset_present) {
     // Apply date offset (months, years)
-    switch (timezone.at(timezone.length() - 1)) {
+    switch (_timezone.at(_timezone.length() - 1)) {
     case 'M':
       time_out.tm_year += offset / 12;
       time_out.tm_mon += offset % 12;
@@ -528,7 +530,7 @@ u8 CAliM1543C::reg_61_read() {
  * Write port 61h (speaker/ miscellaneous).
  **/
 void CAliM1543C::reg_61_write(u8 data) {
-  state.reg_61 = (state.reg_61 & 0xf0) | (((u8)data) & 0x0f);
+  state.reg_61 = (state.reg_61 & 0xf0) | ((data) & 0x0f);
 }
 
 /**
@@ -545,13 +547,13 @@ u8 CAliM1543C::toy_read(u32 address) {
  * clock values.
  **/
 void CAliM1543C::toy_write(u32 address, u8 data) {
-  struct tm stime;
+  struct tm stime{};
   static long read_count = 0;
   static long hold_count = 0;
 
   // printf("%%ALI-I-WRITETOY: write port %02x: 0x%02x\n", (u32)(0x70 +
   // address), data);
-  state.toy_access_ports[address] = (u8)data;
+  state.toy_access_ports[address] = data;
 
   switch (address) {
   case 0:
@@ -565,12 +567,13 @@ void CAliM1543C::toy_write(u32 address, u8 data) {
         // binary
         state.toy_stored_data[0] = (u8)(stime.tm_sec);
         state.toy_stored_data[2] = (u8)(stime.tm_min);
-        if (state.toy_stored_data[RTC_REG_B] & RTC_2412) // 24-hour
+        if (state.toy_stored_data[RTC_REG_B] & RTC_2412) { // 24-hour
           state.toy_stored_data[4] = (u8)(stime.tm_hour);
-        else
+        } else {
           // 12-hour
           state.toy_stored_data[4] =
               (u8)(((stime.tm_hour / 12) ? 0x80 : 0) | (stime.tm_hour % 12));
+}
         state.toy_stored_data[6] = (u8)(stime.tm_wday + 1);
         state.toy_stored_data[7] = (u8)(stime.tm_mday);
         state.toy_stored_data[8] = (u8)(stime.tm_mon + 1);
@@ -581,10 +584,10 @@ void CAliM1543C::toy_write(u32 address, u8 data) {
             (u8)(((stime.tm_sec / 10) << 4) | (stime.tm_sec % 10));
         state.toy_stored_data[2] =
             (u8)(((stime.tm_min / 10) << 4) | (stime.tm_min % 10));
-        if (state.toy_stored_data[0x0b] & 2) // 24-hour
+        if (state.toy_stored_data[0x0b] & 2) { // 24-hour
           state.toy_stored_data[4] =
               (u8)(((stime.tm_hour / 10) << 4) | (stime.tm_hour % 10));
-        else { // 12-hour
+        } else { // 12-hour
           state.toy_stored_data[4] = (u8)(((stime.tm_hour / 12) ? 0x80 : 0) |
                                           (((stime.tm_hour % 12) / 10) << 4) |
                                           ((stime.tm_hour % 12) % 10));
@@ -606,7 +609,7 @@ void CAliM1543C::toy_write(u32 address, u8 data) {
       if (state.toy_stored_data[RTC_REG_A] & RTC_UIP) {
         // Once the UIP line goes high, we have to stay high for 2228us.
         hold_count--;
-        if (hold_count == 0 || (state.toy_stored_data[RTC_REG_B] & RTC_SET)) {
+        if (hold_count == 0 || ((state.toy_stored_data[RTC_REG_B] & RTC_SET) != 0)) {
           // Set UIP low and trigger the related interrupt.
           state.toy_stored_data[RTC_REG_A] &= ~RTC_UIP;
           state.toy_stored_data[RTC_REG_C] |= RTC_UF;
@@ -629,25 +632,27 @@ void CAliM1543C::toy_write(u32 address, u8 data) {
       }
     }
 
-    toy_handle_periodic_interrupt(data);
+    toy_handle_periodic_interrupt();
     toy_update_irqf();
 
     // Assign specified data to port so it can be read by the program
     state.toy_access_ports[1] = state.toy_stored_data[data & 0x7f];
 
     // Register C is cleared after a read, and we don't care if it's a write
-    if (data == RTC_REG_C)
+    if (data == RTC_REG_C) {
       state.toy_stored_data[data & 0x7f] = 0;
+}
 
     break;
   case 1:
     if (state.toy_access_ports[0] == RTC_REG_B &&
-        data & 0x040) // If we're writing to register B, we make register C look
+        data & 0x040) { // If we're writing to register B, we make register C look
                       // like it fired.
                       // TODO: Do actual interrupt implementation instead of
                       //       a workaround.
       state.toy_stored_data[RTC_REG_C] = 0xf0;
-    state.toy_stored_data[state.toy_access_ports[0] & 0x7f] = (u8)data;
+}
+    state.toy_stored_data[state.toy_access_ports[0] & 0x7f] = data;
     break;
 
   case 2:
@@ -655,7 +660,7 @@ void CAliM1543C::toy_write(u32 address, u8 data) {
     break;
 
   case 3:
-    state.toy_stored_data[0x80 + (state.toy_access_ports[2] & 0x7f)] = (u8)data;
+    state.toy_stored_data[0x80 + (state.toy_access_ports[2] & 0x7f)] = data;
     break;
   }
 }
@@ -663,7 +668,7 @@ void CAliM1543C::toy_write(u32 address, u8 data) {
 /**
  * Handle RTC periodic interrupt.
  **/
-void CAliM1543C::toy_handle_periodic_interrupt(u8 data) {
+void CAliM1543C::toy_handle_periodic_interrupt() {
   /*
    See sys/dev/ic/mc146818reg.h and sys/arch/alpha/alpha/mcclock.c in NetBSD and
    the RTC datasheet: https://www.nxp.com/docs/en/data-sheet/MC146818.pdf.
@@ -676,7 +681,7 @@ void CAliM1543C::toy_handle_periodic_interrupt(u8 data) {
   int rate_pow = state.toy_stored_data[RTC_REG_A] & 0x0f;
   double period = (1 << rate_pow) / 65536.0;
 
-  if (state.toy_stored_data[RTC_REG_A] & MC_BASE_32_KHz) {
+  if ((state.toy_stored_data[RTC_REG_A] & MC_BASE_32_KHz) != 0) {
     if (rate_pow == 0x1) {
       period = 1 / 256.0;
     } else if (rate_pow == 0x2) {
@@ -684,7 +689,7 @@ void CAliM1543C::toy_handle_periodic_interrupt(u8 data) {
     }
   }
 
-  if (rate_pow && (timedelta >= period)) {
+  if ((rate_pow != 0) && (timedelta >= period)) {
     // Elapsed time since last check is equal or greater than the specified
     // period - fire the interrupt by setting the PF flag in register C
     // (see page 16 in the datasheet).
@@ -697,15 +702,16 @@ void CAliM1543C::toy_handle_periodic_interrupt(u8 data) {
  * Update RTC interrupt request flag
  **/
 void CAliM1543C::toy_update_irqf() {
-  if ((state.toy_stored_data[RTC_REG_B] & RTC_PIE &&
-       state.toy_stored_data[RTC_REG_C] & RTC_PF) ||
-      (state.toy_stored_data[RTC_REG_B] & RTC_UIE &&
-       state.toy_stored_data[RTC_REG_C] & RTC_UF) ||
-      (state.toy_stored_data[RTC_REG_B] & RTC_AIE &&
-       state.toy_stored_data[RTC_REG_C] & RTC_AF))
+  if (((state.toy_stored_data[RTC_REG_B] & RTC_PIE) != 0) &&
+          ((state.toy_stored_data[RTC_REG_C] & RTC_PF) != 0) ||
+      (((state.toy_stored_data[RTC_REG_B] & RTC_UIE) != 0) &&
+       ((state.toy_stored_data[RTC_REG_C] & RTC_UF) != 0)) ||
+      (((state.toy_stored_data[RTC_REG_B] & RTC_AIE) != 0) &&
+       ((state.toy_stored_data[RTC_REG_C] & RTC_AF) != 0))) {
     state.toy_stored_data[RTC_REG_C] |= RTC_IRQF;
-  else
+  } else {
     state.toy_stored_data[RTC_REG_C] &= ~RTC_IRQF;
+}
 }
 
 /**
@@ -772,8 +778,9 @@ void CAliM1543C::pit_write(u32 address, u8 data) {
       state.pit_counter[address + PIT_OFFSET_MAX] = state.pit_counter[address];
       if (state.pit_mode[address] == 3) {
         state.pit_mode[address] = 2;
-      } else
+      } else {
         state.pit_status[address] &= ~0xc0; // no longer high, counter valid.
+}
       break;
 
     case 2:
@@ -807,12 +814,12 @@ void CAliM1543C::pit_clock() {
   int i;
   for (i = 0; i < 3; i++) {
     // decrement the counter.
-    if (state.pit_status[i] & 0x40)
+    if ((state.pit_status[i] & 0x40) != 0)
       continue;
     PIT_DEC(state.pit_counter[i]);
     switch ((state.pit_status[i] & 0x0e) >> 1) {
     case 0: // interrupt at terminal
-      if (!state.pit_counter[i]) {
+      if (state.pit_counter[i] == 0U) {
         state.pit_status[i] |= 0xc0; // out pin high, no count set.
       }
       break;
@@ -846,7 +853,6 @@ void CAliM1543C::pit_clock() {
  * Thread entry point.
  **/
 void CAliM1543C::run() {
-  try {
     for (;;) {
       std::this_thread::sleep_for(std::chrono::milliseconds(1));
       if (StopThread)
@@ -855,12 +861,6 @@ void CAliM1543C::run() {
     }
   }
 
-  catch (CException &e) {
-    printf("Exception in Ali thread: %s.\n", e.displayText().c_str());
-    myThreadDead.store(true);
-    // Let the thread die...
-  }
-}
 
 #define PIT_RATIO 1
 

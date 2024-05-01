@@ -51,7 +51,6 @@
 void CAlphaCPU::release_threads() { mySemaphore.set(); }
 
 void CAlphaCPU::run() {
-  try {
     mySemaphore.wait();
     while (state.wait_for_start) {
       if (StopThread)
@@ -65,11 +64,6 @@ void CAlphaCPU::run() {
       for (int i = 0; i < 1000000; i++)
         execute();
     }
-  } catch (CException &e) {
-    printf("Exception in CPU thread: %s.\n", e.displayText().c_str());
-    myThreadDead.store(true);
-    // Let the thread die...
-  }
 }
 
 /**

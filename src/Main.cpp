@@ -31,7 +31,7 @@ int main_sim(int argc, char *argv[]);
 int main_cfg(int argc, char *argv[]);
 
 int main(int argc, char **argv) {
-  if (argc <= 1 || (strcmp(argv[1], "run") && strcmp(argv[1], "configure"))) {
+  if (argc <= 1 || (strcmp(argv[1], "run") != 0 && strcmp(argv[1], "configure") != 0)) {
     std::cerr << "AXPBox Alpha Emulator";
 #ifdef PACKAGE_GITSHA
     std::cerr << " (commit " << std::string(PACKAGE_GITSHA) << ")";

@@ -438,6 +438,7 @@ inline u64 fsqrt64(u64 asig, s32 exp) {
     u64 a2 = (addr) + (align);                                                 \
     if ((a1 ^ a2) & ~U64(0x1fff)) /* 8K page boundary crossed*/                \
     {                                                                          \
+      pbc = true; \
       state.fault_va = addr;                                                   \
       state.exc_sum = ((REG_1 &0x1f) << 8);                                    \
       state.mm_stat = (I_GETOP(ins) << 4) | ((flags & ACCESS_WRITE) ? 1 : 0);  \

@@ -99,7 +99,7 @@ CSystem::CSystem(CConfigurator *cfg) {
   } else
     CHECK_ALLOCATION(memory = calloc(1 << iNumMemoryBits, 1));
 
-  cpu_lock_mutex = new CFastMutex("cpu-locking-lock");
+  cpu_lock_mutex = new CMutex();
 
   printf("%s(%s): $Id: System",
          cfg->get_myName(), cfg->get_myValue());
@@ -148,14 +148,14 @@ void CSystem::UnregisterComponent(CSystemComponent *component) {
  * Get the number of bits that corresponds to the amount of RAM installed.
  * (e.g. 28 = 256 MB, 29 = 512 MB, 30 = 1 GB)
  **/
-unsigned int CSystem::get_memory_bits() { return iNumMemoryBits; }
+unsigned int CSystem::get_memory_bits() const { return iNumMemoryBits; }
 
 /**
  * Obtain a pointer to system memory.
  **/
 char *CSystem::PtrToMem(u64 address) {
   if (address >> iNumMemoryBits) // Non Memory
-    return 0;
+    return nullptr;
 
   return &(((char *)memory)[(int)address]);
 }
@@ -241,7 +241,7 @@ void sigint_handler(int signum) { got_sigint = 1; }
 /**
  * Run the system by clocking the CPU(s) and devices.
  **/
-void CSystem::Run() {
+int CSystem::Run() {
   int i;
 
   int k;
@@ -264,7 +264,8 @@ void CSystem::Run() {
 
   for (k = 0;; k++) {
     if (got_sigint)
-      FAILURE(Graceful, "CTRL-C detected");
+      return EXIT_STATUS::GRACEFUL;
+
     std::this_thread::sleep_for(std::chrono::milliseconds(100));
     for (i = 0; i < iNumComponents; i++)
       acComponents[i]->check_state();
@@ -278,8 +279,6 @@ void CSystem::Run() {
 #endif // defined(HIDE_COUNTER)
   }
 
-  //  printf ("%%SYS-W-SHUTDOWN: CTRL-C or Device Failed\n");
-  //  return 1;
 }
 
 /**
@@ -326,7 +325,7 @@ int CSystem::SingleStep() {
 u64 lastport;
 #endif // defined(DEBUG_PORTACCESS)
 void CSystem::cpu_lock(int cpuid, u64 address) {
-  SCOPED_FM_LOCK(cpu_lock_mutex);
+  MUTEX_LOCK(cpu_lock_mutex);
 
   //  printf("cpu%d: lock %" PRIx64 ".   \n",cpuid,address);
   state.cpu_lock_flags |= (1 << cpuid);
@@ -334,7 +333,7 @@ void CSystem::cpu_lock(int cpuid, u64 address) {
 }
 
 bool CSystem::cpu_unlock(int cpuid) {
-  SCOPED_FM_LOCK(cpu_lock_mutex);
+  MUTEX_UNLOCK(cpu_lock_mutex);
 
   bool retval;
   retval = state.cpu_lock_flags & (1 << cpuid);
@@ -345,7 +344,7 @@ bool CSystem::cpu_unlock(int cpuid) {
 }
 
 void CSystem::cpu_break_lock(int cpuid, CSystemComponent *source) {
-  SCOPED_FM_LOCK(cpu_lock_mutex);
+  MUTEX_UNLOCK(cpu_lock_mutex);
   printf("cpu%d: lock broken by %s.   \n", cpuid, source->devid_string);
   state.cpu_lock_flags &= ~(1 << cpuid);
 }

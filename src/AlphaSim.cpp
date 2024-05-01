@@ -47,7 +47,7 @@ const char *path[] = {
     "./es40.cfg", "/etc/es40.cfg", "/usr/etc/es40.cfg",
     "/usr/local/etc/es40.cfg",
 #endif
-    0};
+    nullptr};
 
 #ifdef DEBUG_BACKTRACE
 #ifdef __GNUG__
@@ -99,14 +99,14 @@ void segv_handler(int signum) {
  *  .
  **/
 int main_sim(int argc, char *argv[]) {
-  const char *filename = 0;
+  const char *filename = nullptr;
   FILE *f;
 
 #ifdef HAS_BACKTRACE
   signal(SIGSEGV, &segv_handler);
   signal(SIGUSR1, &segv_handler);
 #endif
-  try {
+
 #if defined(IDB) && (defined(LS_MASTER) || defined(LS_SLAVE))
     lockstep_init();
 #endif
@@ -121,21 +121,21 @@ int main_sim(int argc, char *argv[]) {
       for (int i = 0; path[i]; i++) {
         filename = path[i];
         f = fopen(filename, "r");
-        if (f != NULL) {
+        if (f != nullptr) {
           fclose(f);
           filename = path[i];
           break;
         } else {
-          filename = NULL;
+          filename = nullptr;
         }
       }
-      if (filename == NULL)
+      if (filename == nullptr)
         FAILURE(FileNotFound, "configuration file");
     }
     char *ch1;
     size_t ll1;
     f = fopen(filename, "rb");
-    if (f == NULL)
+    if (f == nullptr)
       FAILURE(File, "configuration file");
     fseek(f, 0, SEEK_END);
     ll1 = ftell(f);
@@ -171,10 +171,10 @@ int main_sim(int argc, char *argv[]) {
     else
       trc->run_script(NULL);
 #else
-    theSystem->Run();
+   int exitCode = theSystem->Run();
 #endif
-  } catch (CGracefulException &e) {
-    printf("Exiting gracefully: %s\n", e.displayText().c_str());
+  if (exitCode == 1) {
+    fprintf(stdout, "Exiting gracefully:\n");
 
     theSystem->stop_threads();
 
@@ -213,12 +213,8 @@ int main_sim(int argc, char *argv[]) {
     }
 #endif
     delete theSystem;
-  } catch (CException &e) {
-    printf("Emulator Failure: %s\n", e.displayText().c_str());
-    if (theSystem) {
-      theSystem->stop_threads();
-      delete theSystem;
-    }
+  } else {
+    FAILURE("Emulator", "System Failure");
   }
   return 0;
 }

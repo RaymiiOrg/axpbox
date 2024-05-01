@@ -47,20 +47,20 @@
 
 #endif // defined(_WIN32)
 
-typedef uint8_t u8;
-typedef uint16_t u16;
-typedef uint32_t u32;
-typedef uint64_t u64;
+using u8 = uint8_t;
+using u16 = uint16_t;
+using u32 = uint32_t;
+using u64 = uint64_t;
 
-typedef int8_t s8;
-typedef int16_t s16;
-typedef int32_t s32;
-typedef int64_t s64;
+using s8 = int8_t;
+using s16 = int16_t;
+using s32 = int32_t;
+using s64 = int64_t;
 
-typedef u8 u_int8_t;
-typedef u16 u_int16_t;
-typedef u32 u_int32_t;
-typedef u64 u_int64_t;
+using u_int8_t = u8;
+using u_int16_t = u16;
+using u_int32_t = u32;
+using u_int64_t = u64;
 
 #define HAVE_U_INT8_T 1
 #define HAVE_INT8_T 1
@@ -91,7 +91,7 @@ inline u64 sext_u64_8(u64 a) {
  * Sign-extend a 12-bit value to 64 bits.
  **/
 inline u64 sext_u64_12(u64 a) {
-  return (((a)&U64(0x0000000000000800)) ? ((a) | U64(0xfffffffffffff000))
+  return ((((a)&U64(0x0000000000000800)) != 0U) ? ((a) | U64(0xfffffffffffff000))
                                         : ((a) & U64(0x0000000000000fff)));
 }
 
@@ -99,7 +99,7 @@ inline u64 sext_u64_12(u64 a) {
  * Sign-extend a 13-bit value to 64 bits.
  **/
 inline u64 sext_u64_13(u64 a) {
-  return (((a)&U64(0x0000000000001000)) ? ((a) | U64(0xffffffffffffe000))
+  return ((((a)&U64(0x0000000000001000)) != 0U) ? ((a) | U64(0xffffffffffffe000))
                                         : ((a) & U64(0x0000000000001fff)));
 }
 
@@ -123,7 +123,7 @@ inline u64 sext_u64_16(u64 a) {
  * Sign-extend a 21-bit value to 64 bits.
  **/
 inline u64 sext_u64_21(u64 a) {
-  return (((a)&U64(0x0000000000100000)) ? ((a) | U64(0xffffffffffe00000))
+  return ((((a)&U64(0x0000000000100000)) != 0U) ? ((a) | U64(0xffffffffffe00000))
                                         : ((a) & U64(0x00000000001fffff)));
 }
 
@@ -147,18 +147,18 @@ inline u64 sext_u64_32(u64 a) {
  * Sign-extend a 48-bit value to 64 bits.
  **/
 inline u64 sext_u64_48(u64 a) {
-  return (((a)&U64(0x0000800000000000)) ? ((a) | U64(0xffff000000000000))
+  return ((((a)&U64(0x0000800000000000)) != 0U) ? ((a) | U64(0xffff000000000000))
                                         : ((a) & U64(0x0000ffffffffffff)));
 }
 
 inline bool test_bit_64(u64 x, int bit) {
-  return (x & (U64(0x1) << bit)) ? true : false;
+  return (x & (U64(0x1) << bit)) != 0;
 }
 
 /**
  * Sign-extend a 24-bit value to 32 bits.
  **/
 inline u32 sext_u32_24(u32 a) {
-  return (((a)&0x00800000) ? ((a) | 0xff000000) : ((a)&0x00ffffff));
+  return ((((a)&0x00800000) != 0U) ? ((a) | 0xff000000) : ((a)&0x00ffffff));
 }
 #endif // INCLUDED_DATATYPES_H

@@ -64,10 +64,10 @@
 class CAlphaCPU : public CSystemComponent {
 public:
   void flush_icache_asm();
-  virtual int SaveState(FILE *f);
-  virtual int RestoreState(FILE *f);
+  int SaveState(FILE *f) override;
+  int RestoreState(FILE *f) override;
   void irq_h(int number, bool assert, int delay);
-  int get_cpuid();
+  int get_cpuid() const;
   void flush_icache();
 
   void run();
@@ -75,22 +75,22 @@ public:
   void release_threads();
 
   void set_PAL_BASE(u64 pb);
-  virtual void check_state();
+  void check_state() final;
   CAlphaCPU(CConfigurator *cfg, CSystem *system);
-  virtual ~CAlphaCPU();
+  ~CAlphaCPU() override;
   u64 get_r(int i, bool translate);
   u64 get_f(int i);
   void set_r(int reg, u64 val);
   void set_f(int reg, u64 val);
-  u64 get_prbr(void);
-  u64 get_hwpcb(void);
-  u64 get_pc();
-  u64 get_pal_base();
+  u64 get_prbr();
+  u64 get_hwpcb();
+  u64 get_pc() const;
+  u64 get_pal_base() const;
 
   void enable_icache();
   void restore_icache();
 
-  bool get_waiting() { return state.wait_for_start; };
+  bool get_waiting() const { return state.wait_for_start; };
   void stop_waiting() { state.wait_for_start = false; };
 #ifdef IDB
   u64 get_current_pc_physical();
@@ -99,12 +99,12 @@ public:
   u64 get_last_read_loc() { return last_read_loc; }
   u64 get_last_write_loc() { return last_write_loc; }
 #endif
-  u64 get_clean_pc();
+  u64 get_clean_pc() const;
   void next_pc();
   void set_pc(u64 p_pc);
   void add_pc(u64 a_pc);
 
-  u64 get_speed() { return cpu_hz; };
+  u64 get_speed() const { return cpu_hz; };
 
   u64 va_form(u64 address, bool bIBOX);
 
@@ -114,9 +114,9 @@ public:
 #endif
   int virt2phys(u64 virt, u64 *phys, int flags, bool *asm_bit, u32 instruction);
 
-  virtual void init();
-  virtual void start_threads();
-  virtual void stop_threads();
+  void init() final;
+  void start_threads() final;
+  void stop_threads() final;
 
 private:
   std::unique_ptr<std::thread> myThread;
@@ -134,8 +134,8 @@ private:
   void tbis(u64 virt, int flags);
 
   /* Floating Point routines */
-  u64 ieee_lds(u32 op);
-  u32 ieee_sts(u64 op);
+  static u64 ieee_lds(u32 op);
+  static u32 ieee_sts(u64 op);
   u64 ieee_cvtst(u64 op, u32 ins);
   u64 ieee_cvtts(u64 op, u32 ins);
   s32 ieee_fcmp(u64 s1, u64 s2, u32 ins, u32 trap_nan);
@@ -146,17 +146,17 @@ private:
   u64 ieee_fdiv(u64 s1, u64 s2, u32 ins, u32 dp);
   u64 ieee_sqrt(u64 op, u32 ins, u32 dp);
   int ieee_unpack(u64 op, UFP *r, u32 ins);
-  void ieee_norm(UFP *r);
+  static void ieee_norm(UFP *r);
   u64 ieee_rpack(UFP *r, u32 ins, u32 dp);
   void ieee_trap(u64 trap, u32 instenb, u64 fpcrdsb, u32 ins);
-  u64 vax_ldf(u32 op);
-  u64 vax_ldg(u64 op);
-  u32 vax_stf(u64 op);
-  u64 vax_stg(u64 op);
+  static u64 vax_ldf(u32 op);
+  static u64 vax_ldg(u64 op);
+  static u32 vax_stf(u64 op);
+  static u64 vax_stg(u64 op);
   void vax_trap(u64 mask, u32 ins);
   void vax_unpack(u64 op, UFP *r, u32 ins);
   void vax_unpack_d(u64 op, UFP *r, u32 ins);
-  void vax_norm(UFP *r);
+  static void vax_norm(UFP *r);
   u64 vax_rpack(UFP *r, u32 ins, u32 dp);
   u64 vax_rpack_d(UFP *r, u32 ins);
   int vax_fcmp(u64 s1, u64 s2, u32 ins);
@@ -567,7 +567,7 @@ inline u64 CAlphaCPU::va_form(u64 address, bool bIBOX) {
 /**
  * Return processor number.
  **/
-inline int CAlphaCPU::get_cpuid() { return state.iProcNum; }
+inline int CAlphaCPU::get_cpuid() const { return state.iProcNum; }
 
 /**
  * Assert or release an external interrupt line to the cpu.
@@ -590,8 +590,8 @@ inline void CAlphaCPU::irq_h(int number, bool assert, int delay) {
     state.eir &= ~(U64(0x1) << number);
     state.irq_h_timer[number] = 0;
     state.check_timers = false;
-    for (int i = 0; i < 6; i++) {
-      if (state.irq_h_timer[i])
+    for (int i : state.irq_h_timer) {
+      if (i)
         state.check_timers = true;
     }
   }
@@ -600,7 +600,7 @@ inline void CAlphaCPU::irq_h(int number, bool assert, int delay) {
 /**
  * Return program counter value.
  **/
-inline u64 CAlphaCPU::get_pc() { return state.pc; }
+inline u64 CAlphaCPU::get_pc() const { return state.pc; }
 
 #ifdef IDB
 
@@ -613,7 +613,7 @@ inline u64 CAlphaCPU::get_current_pc_physical() { return state.pc_phys; }
 /**
  * Return program counter value without PALmode bit.
  **/
-inline u64 CAlphaCPU::get_clean_pc() { return state.pc & ~U64(0x3); }
+inline u64 CAlphaCPU::get_clean_pc() const { return state.pc & ~U64(0x3); }
 
 /**
  * Jump to next instruction
@@ -670,13 +670,13 @@ inline void CAlphaCPU::set_f(int reg, u64 value) { state.f[reg] = value; }
 /**
  * Get the PALcode base register.
  **/
-inline u64 CAlphaCPU::get_pal_base() { return state.pal_base; }
+inline u64 CAlphaCPU::get_pal_base() const { return state.pal_base; }
 
 /**
  * Get the processor base register.
  * A bit fuzzy...
  **/
-inline u64 CAlphaCPU::get_prbr(void) {
+inline u64 CAlphaCPU::get_prbr() {
   u64 v_prbr; // virtual
   u64 p_prbr; // physical
   bool b;
@@ -695,7 +695,7 @@ inline u64 CAlphaCPU::get_prbr(void) {
 /**
  * Get the hardware process control block address.
  **/
-inline u64 CAlphaCPU::get_hwpcb(void) {
+inline u64 CAlphaCPU::get_hwpcb() {
   u64 v_pcb; // virtual
   u64 p_pcb; // physical
   bool b;

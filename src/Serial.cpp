@@ -86,40 +86,33 @@ void CSerial::init() {
 
   printf("%s: Waiting for connection on port %d.\n", devid_string, listenPort);
 
-  if (!connectThread) {
-    StopConnectThread = false;
-    connectThread = std::make_unique<std::thread>([this](){
-      this->WaitForConnection();
+ WaitForConnection();
 #if defined(IDB) && defined(LS_MASTER)
-  struct sockaddr_in dest_addr;
-  int result = -1;
+      struct sockaddr_in dest_addr;
+      int result = -1;
 
-  throughSocket = socket(AF_INET, SOCK_STREAM, 0);
+      throughSocket = socket(AF_INET, SOCK_STREAM, 0);
 
-  dest_addr.sin_family = AF_INET;
-  dest_addr.sin_port = htons((u16)(base + number));
-  dest_addr.sin_addr.s_addr = inet_addr(ls_IP);
+      dest_addr.sin_family = AF_INET;
+      dest_addr.sin_port = htons((u16)(base + number));
+      dest_addr.sin_addr.s_addr = inet_addr(ls_IP);
 
-  printf("%s: Waiting to initiate remote connection to %s.\n", devid_string,
-         ls_IP);
+      printf("%s: Waiting to initiate remote connection to %s.\n", devid_string,
+             ls_IP);
 
-  while (result == -1) {
-    result = connect(throughSocket, (struct sockaddr *)&dest_addr,
-                     sizeof(struct sockaddr));
-  }
+      while (result == -1) {
+        result = connect(throughSocket, (struct sockaddr *)&dest_addr,
+                         sizeof(struct sockaddr));
+      }
 #endif
-  state.rcvW = 0;
-  state.rcvR = 0;
+      state.rcvW = 0;
+      state.rcvR = 0;
 
-  state.bLCR = 0x00;
-  state.bLSR = 0x60; // THRE, TSRE
-  state.bMSR = 0x30; // CTS, DSR
-  state.bIIR = 0x01; // no interrupt
+      state.bLCR = 0x00;
+      state.bLSR = 0x60; // THRE, TSRE
+      state.bMSR = 0x30; // CTS, DSR
+      state.bIIR = 0x01; // no interrupt
       state.irq_active = false;
-    });
-  }
-
-
 
   printf("%s: Serial\n",
          devid_string);
@@ -138,7 +131,6 @@ void CSerial::start_threads() {
 void CSerial::stop_threads() {
   char buffer[5];
   StopThread = true;
-  StopConnectThread = true;
   if (myThread) {
     sprintf(buffer, "srl%d", state.iNumber);
     printf(" %s", buffer);
@@ -146,12 +138,6 @@ void CSerial::stop_threads() {
       myThread->join();
     }
     myThread = nullptr;
-  }
-  if (connectThread) {
-    if (!connectThread->joinable()) {
-      connectThread->join();
-    }
-    connectThread = nullptr;
   }
 }
 
@@ -319,7 +305,6 @@ void CSerial::receive(const char *data) {
  * Thread entry point.
  **/
 void CSerial::run() {
-  try {
     for (;;) {
       if (StopThread)
         return;
@@ -328,13 +313,6 @@ void CSerial::run() {
     }
   }
 
-  catch (CException &e) {
-    printf("Exception in Serial thread: %s.\n", e.displayText().c_str());
-    myThreadDead.store(true);
-    connectThreadDead.store(true);
-    // Let the thread die...
-  }
-}
 
 /**
  * Check if threads are still running.
@@ -347,9 +325,6 @@ void CSerial::check_state() {
 
   if (myThreadDead.load())
     FAILURE(Thread, "Serial thread has died");
-  if (connectThreadDead.load())
-    FAILURE(Thread, "Serial connection thread has died");
-
 }
 
 void CSerial::serial_menu() {

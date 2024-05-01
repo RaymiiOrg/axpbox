@@ -65,12 +65,12 @@
 //
 
 #include "Timestamp.hpp"
-#include "Exception.hpp"
+#include "es40_debug.hpp"
 #include <algorithm>
 #if defined(POCO_OS_FAMILY_UNIX)
 #include <sys/time.h>
 #include <sys/times.h>
-#include <time.h>
+#include <ctime>
 #include <unistd.h>
 #elif defined(POCO_OS_FAMILY_WINDOWS)
 #include "UnWindows.hpp"
@@ -82,7 +82,7 @@ CTimestamp::CTimestamp(TimeVal tv) { _ts = tv; }
 
 CTimestamp::CTimestamp(const CTimestamp &other) { _ts = other._ts; }
 
-CTimestamp::~CTimestamp() {}
+CTimestamp::~CTimestamp() = default;
 
 CTimestamp &CTimestamp::operator=(const CTimestamp &other) {
   _ts = other._ts;
@@ -97,13 +97,13 @@ CTimestamp &CTimestamp::operator=(TimeVal tv) {
 void CTimestamp::swap(CTimestamp &timestamp) { std::swap(_ts, timestamp._ts); }
 
 CTimestamp CTimestamp::fromEpochTime(std::time_t t) {
-  return CTimestamp(TimeVal(t) * resolution());
+  return {TimeVal(t) * resolution()};
 }
 
 CTimestamp CTimestamp::fromUtcTime(UtcTimeVal val) {
   val -= (TimeDiff(0x01b21dd2) << 32) + 0x13814000;
   val /= 10;
-  return CTimestamp(val);
+  return {val};
 }
 
 void CTimestamp::update() {
@@ -124,9 +124,10 @@ void CTimestamp::update() {
 
 #else
 
-  struct timeval tv;
-  if (gettimeofday(&tv, NULL))
-    throw CSystemException("cannot get time of day");
+  struct timeval tv{};
+  if (gettimeofday(&tv, nullptr))
+    FAILURE("System", "cannot get time of day");
+
   _ts = TimeVal(tv.tv_sec) * resolution() + tv.tv_usec;
 
 #endif

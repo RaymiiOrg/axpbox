@@ -1700,20 +1700,12 @@ void CKeyboard::check_state() {
  * Thread entry point.
  **/
 void CKeyboard::run() {
-  try {
     for (;;) {
       if (StopThread)
         return;
       execute();
       std::this_thread::sleep_for(std::chrono::milliseconds(20));
     }
-  }
-
-  catch (CException &e) {
-    printf("Exception in kbd thread: %s.\n", e.displayText().c_str());
-    myThreadDead.store(true);
-    // Let the thread die...
-  }
 }
 
 static u32 kb_magic1 = 0x65481687;

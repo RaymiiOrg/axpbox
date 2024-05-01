@@ -541,7 +541,6 @@ static u32 osym_cfg_mask[64] = {
  *   .
  **/
 void CSym53C810::run() {
-  try {
     for (;;) {
       mySemaphore.wait();
       if (StopThread)
@@ -552,13 +551,6 @@ void CSym53C810::run() {
         MUTEX_UNLOCK(myRegLock);
       }
     }
-  }
-
-  catch (CException &e) {
-    printf("Exception in SYM thread: %s.\n", e.displayText().c_str());
-    myThreadDead.store(true);
-    // Let the thread die...
-  }
 }
 
 /**
@@ -591,7 +583,7 @@ void CSym53C810::init() {
 
   chip_reset();
 
-  myRegLock = new CMutex("sym-reg");
+  myRegLock = new CMutex();
 
   printf("%s: Sym53C810\n",
          devid_string);

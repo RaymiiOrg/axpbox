@@ -79,7 +79,6 @@ static const u8 ccdat[16][4] = {
  *   .
  **/
 void CCirrus::run() {
-  try {
     // initialize the GUI (and let it know our tilesize)
     bx_gui->init(state.x_tilesize, state.y_tilesize);
     for (;;) {
@@ -100,13 +99,6 @@ void CCirrus::run() {
       bx_gui->unlock();
     }
   }
-
-  catch (CException &e) {
-    printf("Exception in Cirrus thread: %s.\n", e.displayText().c_str());
-    myThreadDead.store(true);
-    // Let the thread die...
-  }
-}
 
 /** Size of ROM image */
 static unsigned int rom_max;

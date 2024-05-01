@@ -373,7 +373,7 @@ u64 CAlphaCPU::vax_fdiv(u64 s1, u64 s2, u32 ins, u32 dp) {
   a.exp = a.exp - b.exp + G_BIAS + 1; /* unbiased exp */
   a.frac = a.frac >> 1;               /* allow 1 bit left */
   b.frac = b.frac >> 1;
-  a.frac = ufdiv64(a.frac, b.frac, 55, NULL); /* divide */
+  a.frac = ufdiv64(a.frac, b.frac, 55, nullptr); /* divide */
   vax_norm(&a);                               /* normalize */
   return vax_rpack(&a, ins, dp);              /* round and pack */
 }
@@ -454,9 +454,7 @@ void CAlphaCPU::vax_unpack(u64 op, UFP *r, u32 ins) {
     return;
   }
 
-  r->frac = (r->frac | FPR_HB) << FPR_GUARD; /* ins hidden bit, guard */
-  return;
-}
+  r->frac = (r->frac | FPR_HB) << FPR_GUARD; }
 
 /**
  * \brief Unpack VAX D-floating-point value
@@ -483,8 +481,7 @@ void CAlphaCPU::vax_unpack_d(u64 op, UFP *r, u32 ins) {
   }
 
   r->exp = r->exp + G_BIAS - D_BIAS;         /* change to G bias */
-  r->frac = (r->frac | FDR_HB) << FDR_GUARD; /* ins hidden bit, guard */
-  return;
+  r->frac = (r->frac | FDR_HB) << FDR_GUARD;
 }
 
 /**
@@ -519,7 +516,6 @@ void CAlphaCPU::vax_norm(UFP *r) {
     r->exp = r->exp - normtab[i];
   } /* decr exp */
 
-  return;
 }
 
 /**

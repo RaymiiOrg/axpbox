@@ -576,7 +576,6 @@ u32 sym_cfg_mask[64] = {
  *   .
  **/
 void CSym53C895::run() {
-  try {
     for (;;) {
       mySemaphore.wait();
       if (StopThread)
@@ -587,13 +586,7 @@ void CSym53C895::run() {
         MUTEX_UNLOCK(myRegLock);
       }
     }
-  }
 
-  catch (CException &e) {
-    printf("Exception in SYM thread: %s.\n", e.displayText().c_str());
-    myThreadDead.store(true);
-    // Let the thread die...
-  }
 }
 
 /**
@@ -623,7 +616,7 @@ void CSym53C895::init() {
 
   chip_reset();
 
-  myRegLock = new CMutex("sym-reg");
+  myRegLock = new CMutex();
 
   printf("%s: Sym53C895",
          devid_string);

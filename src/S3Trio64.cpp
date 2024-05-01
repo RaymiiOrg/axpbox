@@ -79,7 +79,6 @@ static const u8 ccdat[16][4] = {
  *   .
  **/
 void CS3Trio64::run() {
-  try {
     // initialize the GUI (and let it know our tilesize)
     bx_gui->init(state.x_tilesize, state.y_tilesize);
     for (;;) {
@@ -101,12 +100,6 @@ void CS3Trio64::run() {
     }
   }
 
-  catch (CException &e) {
-    printf("Exception in S3 thread: %s.\n", e.displayText().c_str());
-    myThreadDead.store(true);
-    // Let the thread die...
-  }
-}
 
 /** Size of ROM image */
 static unsigned int rom_max;
@@ -349,7 +342,6 @@ void CS3Trio64::init() {
 
   state.last_bpp = 8;
 
-  state.CRTC.reg[0x70] = {0};
   state.CRTC.reg[0x09] = 16;
   state.CRTC.reg[0x2E] = 0x11;   // Device low ID register, 0x10 for Trio32, 0x11 for Trio64
   state.CRTC.reg[0x30] = 0xE1;   // Chip ID/REV Register (CHIP-ID/REV) (CR30) - 0xE1H on powerup.

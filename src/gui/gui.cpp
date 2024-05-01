@@ -72,7 +72,7 @@ static user_key_t user_keys[N_USER_KEYS] = {
 
 bx_gui_c::bx_gui_c(void) {
   framebuffer = NULL;
-  guiMutex = new CMutex("gui-lock");
+  guiMutex = new CMutex();
 }
 
 bx_gui_c::~bx_gui_c() {
