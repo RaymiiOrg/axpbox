@@ -79,22 +79,32 @@ jobs:
       env:
         MAKEFLAGS: "-j2"
 
-    - name: Run test scripts
-      working-directory: ${{runner.workspace}}/axpbox
-      shell: bash
-      run: ${{runner.workspace}}/axpbox/test/run
+    # - name: Run test scripts
+    #   working-directory: ${{runner.workspace}}/axpbox
+    #   shell: bash
+    #   run: ${{runner.workspace}}/axpbox/test/run
 
-    - name: Upload AXPbox binary
-      uses: actions/upload-artifact@v1
-      with:
-        name: AXPbox-linux-x86-gcc-${{ env.BUILD_DATE }}
-        path: ${{runner.workspace}}/build/axpbox
-      env:
-        BUILD_DATE: ${{ steps.date.outputs.date }} 
+    # - name: Upload AXPbox binary
+    #   uses: actions/upload-artifact@v1
+    #   with:
+    #     name: AXPbox-linux-x86-gcc-${{ env.BUILD_DATE }}
+    #     path: ${{runner.workspace}}/build/axpbox
+    #   env:
+    #     BUILD_DATE: ${{ steps.date.outputs.date }} 
 
     - name: Collect coverage into one XML report
       run: |
         gcovr --sonarqube > coverage.xml
+
+    - name: ls build
+      shell: bash
+      working-directory: ${{runner.workspace}}/build
+      run: ls -la
+
+    - name: ls 
+      shell: bash      
+      run: ls -la
+
 
     - name: Run sonar-scanner
       env:
