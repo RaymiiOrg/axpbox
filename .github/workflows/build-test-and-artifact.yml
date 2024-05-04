@@ -93,6 +93,7 @@ jobs:
     #     BUILD_DATE: ${{ steps.date.outputs.date }} 
 
     - name: Collect coverage into one XML report
+      working-directory: ${{runner.workspace}}/build
       run: |
         gcovr --sonarqube > coverage.xml
 
@@ -105,8 +106,8 @@ jobs:
       shell: bash      
       run: ls -la
 
-
     - name: Run sonar-scanner
+      working-directory: ${{runner.workspace}}/build
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
