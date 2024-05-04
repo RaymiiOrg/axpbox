@@ -12,7 +12,7 @@ jobs:
 
     - name: Get current date
       id: date
-      run: echo "::set-output name=date::$(date +'%Y-%m-%dT%H%M')"
+      run: echo "name=date::$(date +'%Y-%m-%dT%H%M')" >> $GITHUB_OUTPUT
 
     - name: Install build dependencies
       run: sudo apt -y update && sudo apt -y install libpcap-dev libsdl-dev netcat-openbsd
@@ -46,17 +46,23 @@ jobs:
         BUILD_DATE: ${{ steps.date.outputs.date }}
 
   linux-x86-gcc:
-    runs-on: "ubuntu-20.04"
+    runs-on: "ubuntu-22.04"
 
     steps:
-    - uses: actions/checkout@v2
+    - uses: actions/checkout@v3
+
+    - name: Install sonar-scanner and build-wrapper
+      uses: SonarSource/sonarcloud-github-c-cpp@v2
 
     - name: Get current date
       id: date
-      run: echo "::set-output name=date::$(date +'%Y-%m-%dT%H%M')"
+      run: echo "name=date::$(date +'%Y-%m-%dT%H%M')" >> $GITHUB_OUTPUT
+      
+    - name: Install gcovr
+      run: pip install gcovr
 
     - name: Install build dependencies
-      run: sudo apt -y update && sudo apt -y install libpcap-dev libsdl-dev netcat-openbsd
+      run: sudo apt -y update && sudo apt -y install libpcap-dev libsdl1.2-dev netcat-openbsd
 
     - name: Create build environment
       run: cmake -E make_directory ${{runner.workspace}}/build
@@ -64,7 +70,7 @@ jobs:
     - name: Configure CMake
       shell: bash
       working-directory: ${{runner.workspace}}/build
-      run: cmake $GITHUB_WORKSPACE -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_FLAGS="-Wall"
+      run: cmake $GITHUB_WORKSPACE -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_FLAGS="-Wall" -DCMAKE_EXPORT_COMPILE_COMMANDS=1
 
     - name: Build
       working-directory: ${{runner.workspace}}/build
@@ -85,6 +91,18 @@ jobs:
         path: ${{runner.workspace}}/build/axpbox
       env:
         BUILD_DATE: ${{ steps.date.outputs.date }} 
+
+    - name: Collect coverage into one XML report
+      working-directory: ${{runner.workspace}}/build
+      run: |
+        gcovr --sonarqube > coverage.xml
+
+    - name: Run sonar-scanner
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+      run: |
+        sonar-scanner
 
   linux-arm-gcc-crosscompile:
     runs-on: "ubuntu-20.04"
@@ -138,8 +156,6 @@ jobs:
     runs-on: windows-2019
     steps:
     - uses: actions/checkout@v2
-
-
 
     - name: Create npcap sdk folder
       working-directory: ${{runner.workspace}}\
