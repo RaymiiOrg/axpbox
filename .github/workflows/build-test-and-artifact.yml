@@ -62,7 +62,7 @@ jobs:
       run: pip install gcovr
 
     - name: Install build dependencies
-      run: sudo apt -y update && sudo apt -y install libpcap-dev libsdl-dev netcat-openbsd
+      run: sudo apt -y update && sudo apt -y install libpcap-dev libsdl1.2-dev netcat-openbsd
 
     - name: Create build environment
       run: cmake -E make_directory ${{runner.workspace}}/build
