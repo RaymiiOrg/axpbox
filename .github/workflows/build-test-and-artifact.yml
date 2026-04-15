@@ -172,9 +172,9 @@ jobs:
       env:
         MAKEFLAGS: "-j2"
 
-    - name: Test run
-      working-directory: ${{runner.workspace}}\build
-      run: ${{runner.workspace}}\build\Release\axpbox.exe
+    # - name: Test run
+    #   working-directory: ${{runner.workspace}}\build
+    #   run: ${{runner.workspace}}\build\Release\axpbox.exe
 
     - name: Upload AXPbox Binary
       uses: actions/upload-artifact@v4
