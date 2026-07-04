@@ -29,6 +29,7 @@
 #include "System.hpp"
 #include "AlphaCPU.hpp"
 #include "DPR.hpp"
+#include "Flash.hpp"
 #include "StdAfx.hpp"
 #include "lockstep.hpp"
 
@@ -1548,7 +1549,7 @@ u8 CSystem::tig_read(u32 a) {
   case 0x30000040: // smir
     return state.tig.FwWrite;
   case 0x30000100: // mod_info
-    return 0;
+    return state.tig.ModInfo;
   case 0x300003c0: // ttcr
     return state.tig.HaltA;
   case 0x30000480: // clr_pwr_flt_det
@@ -1571,7 +1572,7 @@ void CSystem::tig_write(u32 a, u8 data) {
     state.tig.FwWrite = data;
     return;
   case 0x30000100: // mod_info
-    printf("Soft reset: %02x\n", data);
+    state.tig.ModInfo = data;
     return;
   case 0x300003c0: // ttcr
     state.tig.HaltA = data;
@@ -1580,6 +1581,16 @@ void CSystem::tig_write(u32 a, u8 data) {
     return;
   case 0x300005c0: // ev6_halt
     state.tig.HaltB = data;
+    return;
+  case 0x30000600: // srcr0
+  case 0x30000640: // srcr1
+    // Empirical: LFU writes 0x30 here when exiting after an update.
+    if (data & 0x30) {
+      printf("%%SYS-I-RESETREQ: TIG SRCR write %07x=%02x\n", a, data);
+      if (theSROM)
+        theSROM->FlushIfDirty();
+      RequestSystemReset();
+    }
     return;
   default:
     printf("Unknown TIG %07x write with %02x attempted.\n", a, data);
@@ -1597,7 +1608,74 @@ int CSystem::LoadROM() {
   int j;
   u64 temp;
   u32 scratch;
+  bool loadedFromFlash = false;
 
+  // If flash.rom contains a partitioned ES40 image (CPQ header at the SRM
+  // partition), execute its embedded self-decompressor to inflate the console
+  // into low RAM just like the cl67srmrom.exe path would.
+  if (theSROM && theSROM->HasBootFirmware()) {
+    printf("%%SYS-I-READFLASH: Reading boot ROM image from %s.\n",
+           myCfg->get_text_value("rom.flash", "flash.rom"));
+
+    const u8 *flash = theSROM->GetFlashBytes();
+    const u32 srm_off = 0x00010000;
+    const u32 srm_len = 0x000E0000;
+
+    printf("%%SYS-I-DECOMP: Decompressing SRM image from flash.\n0%%");
+    fflush(stdout);
+
+    // The SRM partition is wrapped in a 0x40-byte CPQ header. The
+    // self-decompressing payload is not position independent and expects
+    // to be loaded exactly like the cl67srmrom.exe path: payload at
+    // 0x900000, PC=0x900001, PAL_BASE=0x900000.
+    const u64 load_base = U64(0x0000000000900000);
+    const u32 cpq_hdr_len = 0x40;
+
+    memcpy(PtrToMem(load_base), flash + srm_off + cpq_hdr_len,
+           srm_len - cpq_hdr_len);
+
+    acCPUs[0]->set_pc(load_base | 1);
+    acCPUs[0]->set_PAL_BASE(load_base);
+    acCPUs[0]->enable_icache();
+
+    bool decomp_ok = true;
+    j = 0;
+    while (acCPUs[0]->get_clean_pc() > U64(0x200000)) {
+      for (i = 0; i < 1800000; i++) {
+        SingleStep();
+        if (acCPUs[0]->get_clean_pc() < U64(0x200000))
+          break;
+      }
+      j++;
+      if (j < 50) {
+        printf("%d%%", j * 2);
+        fflush(stdout);
+      } else {
+        printf(".");
+        fflush(stdout);
+      }
+      if (j > 500) {
+        printf("\n%%SYS-F-DECOMPFAIL: SRM decompressor did not return to low "
+               "memory.\n");
+        decomp_ok = false;
+        break;
+      }
+    }
+    printf("100%%\n");
+
+    acCPUs[0]->restore_icache();
+
+    if (decomp_ok) {
+      for (i = 0; i < iNumCPUs; i++)
+        acCPUs[i]->set_pc(acCPUs[0]->get_pc());
+      for (i = 0; i < iNumCPUs; i++)
+        acCPUs[i]->set_PAL_BASE(acCPUs[0]->get_pal_base());
+
+      loadedFromFlash = true;
+    }
+  }
+
+  if (!loadedFromFlash) {
   f = fopen(myCfg->get_text_value("rom.decompressed", "decompressed.rom"),
             "rb");
   if (!f) {
@@ -1672,6 +1750,7 @@ int CSystem::LoadROM() {
     (void)!fread(buffer, 1, 0x200000, f);
     fclose(f);
   }
+  } // !loadedFromFlash
 
 #if !defined(SRM_NO_SPEEDUPS) || !defined(SRM_NO_IDE)
   printf("%%SYM-I-PATCHROM: Patching ROM for speed.\n");

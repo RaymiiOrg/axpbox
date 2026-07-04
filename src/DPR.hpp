@@ -26,6 +26,10 @@
  * serve the general public.
  */
 
+/**
+ * \file
+ * Contains the definitions for the emulated Dual Port Ram and RMC devices.
+ **/
 #if !defined(INCLUDED_DPR_H)
 #define INCLUDED_DPR_H
 

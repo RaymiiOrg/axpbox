@@ -222,6 +222,7 @@ private:
       u8 FwWrite;
       u8 HaltA;
       u8 HaltB;
+      u8 ModInfo;
     } tig;
 
     /**

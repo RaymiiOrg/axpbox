@@ -26,6 +26,10 @@
  * serve the general public.
  */
 
+/**
+ * \file
+ * Contains the code for the emulated Dual Port Ram and RMC devices.
+ **/
 #include "DPR.hpp"
 #include "AlphaCPU.hpp"
 #include "Serial.hpp"
@@ -76,22 +80,34 @@ void CDPR::init() {
 
     // powerup time BCD:
     time_t now = time(NULL);
+    bool faked = false;
 
-    // Check for absolute time override at system level
+    // Optional absolute time override (sys0 "time" config; same UTC parser
+    // as AliM1543C). DPR::init runs before AliM1543C::init, so we stay
+    // silent on parse failure — bad values trip AliM1543C's FAILURE_1
+    // before the guest starts.
     char *faketime = myCfg->get_text_value("time");
     if (faketime) {
-      struct tm ft;
-      memset(&ft, 0, sizeof(ft));
-      ft.tm_isdst = -1;
+      struct tm ft = {};
       if (sscanf(faketime, "%d-%d-%d %d:%d:%d", &ft.tm_year, &ft.tm_mon,
                  &ft.tm_mday, &ft.tm_hour, &ft.tm_min, &ft.tm_sec) >= 3) {
         ft.tm_year -= 1900;
         ft.tm_mon -= 1;
-        now = mktime(&ft);
+#ifdef _WIN32
+        time_t set_time = _mkgmtime(&ft);
+#else
+        time_t set_time = timegm(&ft);
+#endif
+        if (set_time != (time_t)-1) {
+          now = set_time;
+          faked = true;
+        }
       }
     }
 
-    struct tm *t = localtime(&now);
+    // Display in UTC when faketime is in effect (matches the TOY clock);
+    // host local otherwise (preserves existing behavior).
+    struct tm *t = faked ? gmtime(&now) : localtime(&now);
     state.ram[i * 0x20 + 0x10] = ToBCD(t->tm_hour);
     state.ram[i * 0x20 + 0x11] = ToBCD(t->tm_min);
     state.ram[i * 0x20 + 0x12] = ToBCD(t->tm_sec);
@@ -321,16 +337,16 @@ void CDPR::init() {
   }
 
   // 34A0:34A7 SROM Array 0 to DIMM ID translation
-  //                                                                            Bits<4:0>
-  //            Bits<7:5>
-  //            0 = Exists, No Error                    Bits <2:0> =
-  //            1 = Expected Missing DIMM                       + 1 (1-8)
-  //            2 = Error - Missing DIMM(s)             Bits <4:3> =
-  //            4 = Error - Illegal MMB                 (0-3) DIMM(s)
-  //            6 = Error - Incompatible DIMM(s)
-  //    34A8:34AF SROM Repeat for Array 1 of Array 0 34A0:34A7
-  //    34B0:34B7 SROM Repeat for Array 2 of Array 0 34A0:34A7
-  //    34B8:34CF SROM Repeat for Array 3 of Array 0 34A0:34A7
+  //                                                                             Bits<4:0>
+  //             Bits<7:5>
+  //             0 = Exists, No Error                    Bits <2:0> =
+  //             1 = Expected Missing DIMM                       + 1 (1-8)
+  //             2 = Error - Missing DIMM(s)             Bits <4:3> =
+  //             4 = Error - Illegal MMB                 (0-3) DIMM(s)
+  //             6 = Error - Incompatible DIMM(s)
+  //     34A8:34AF SROM Repeat for Array 1 of Array 0 34A0:34A7
+  //     34B0:34B7 SROM Repeat for Array 2 of Array 0 34A0:34A7
+  //     34B8:34CF SROM Repeat for Array 3 of Array 0 34A0:34A7
   for (i = 0; i < 0x20; i++)
     state.ram[0x34a0 + i] = i;
 
@@ -342,8 +358,7 @@ void CDPR::init() {
   //    3600:36FF 3600 SRM Reserved
   //    3700:37FF SRM Reserved
   //    3800:3AFF RMC RMC scratch space
-  printf("%s: $Id: DPR.cpp,v 1.23 2008/06/12 07:29:44 iamcamiel Exp $\n",
-         devid_string);
+  printf("%s: $Id$\n", devid_string);
 }
 
 /**
@@ -501,14 +516,14 @@ void CDPR::WriteMem(int index, u64 address, int dsize, u64 data) {
     case 3:
 
       // OCP-Write
-#if defined(DEBUG_DPR)
-      sprintf(trcbuffer,
-              "%%%%DPR-I-OCP: OCP Text set to \"0123456789abcdef\"\r\n");
-      memcpy(trcbuffer + 29, &(state.ram[0x3500]), 16);
-
-      //                    srl[0]->write(trcbuffer);
-      printf(trcbuffer);
-#endif
+      //#if defined(DEBUG_DPR)
+      {
+        char buf[17];
+        memcpy(buf, &(state.ram[0x3500]), 16);
+        buf[16] = 0;
+        fprintf(stderr, "%%%%DPR-I-OCP: OCP message: [%s]\n", buf);
+      }
+      //#endif
       state.ram[0xfc] = 0;
       break;
 
@@ -612,7 +627,7 @@ int CDPR::SaveState(FILE *f) {
   fwrite(&ss, sizeof(long), 1, f);
   fwrite(&state, sizeof(state), 1, f);
   fwrite(&dpr_magic2, sizeof(u32), 1, f);
-  printf("%s: %ld bytes saved.\n", "dpr", ss);
+  printf("dpr: %ld bytes saved.\n", ss);
   return 0;
 }
 
@@ -636,7 +651,7 @@ int CDPR::RestoreState(FILE *f) {
     return -1;
   }
 
-  r = fread(&ss, sizeof(long), 1, f);
+  fread(&ss, sizeof(long), 1, f);
   if (r != 1) {
     printf("%s: unexpected end of file!\n", "dpr");
     return -1;
@@ -647,7 +662,7 @@ int CDPR::RestoreState(FILE *f) {
     return -1;
   }
 
-  r = fread(&state, sizeof(state), 1, f);
+  fread(&state, sizeof(state), 1, f);
   if (r != 1) {
     printf("%s: unexpected end of file!\n", "dpr");
     return -1;
@@ -664,7 +679,7 @@ int CDPR::RestoreState(FILE *f) {
     return -1;
   }
 
-  printf("%s: %ld bytes restored.\n", "dpr", ss);
+  printf("dpr: %ld bytes restored.\n", ss);
   return 0;
 }
 
