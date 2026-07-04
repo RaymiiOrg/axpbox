@@ -26,14 +26,43 @@
  * serve the general public.
  */
 
-#include "Serial.hpp"
-#include "AliM1543C.hpp"
+ /**
+  * \file
+  * Contains the code for the emulated Serial Port devices.
+ **/
+
+  // =============================================================================
+  // Design:
+  //
+  //   socket --> recv() --> raw buf --> cook IAC --> staging buffer --> FIFO
+  //                                                      |              |
+  //                                                      |              v
+  //                                                 every execute()   guest reads
+  //                                                   (~20 ms)       via ReadMem
+  //
+  //   - recv() and IAC cooking happen every RECV_TICKS cycles (~200ms).
+  //     Cooked data goes into the staging buffer.
+  //   - drain_staging() runs every execute() cycle (~20ms) but only
+  //     delivers one character when the guest has consumed the previous
+  //     one (FIFO empty).  This self-clocks to the emulated CPU speed,
+  //     matching how a real UART works — the next character doesn't
+  //     arrive until the line shifts it in, and the CPU is always fast
+  //     enough to read it before then.
+  //   - If staging still has data, recv() is skipped — TCP provides
+  //     backpressure at the OS level.
+  // =============================================================================
+
 #include "StdAfx.hpp"
+#include "Serial.hpp"
 #include "System.hpp"
+#include "AliM1543C.hpp"
 
 #include "lockstep.hpp"
 
-#define RECV_TICKS 10
+#define UART_BASE_CLOCK  1843200
+#define CYCLE_TIME_MS    20
+
+#define RECV_TICKS  10
 
 int iCounter = 0;
 
@@ -44,282 +73,497 @@ int iCounter = 0;
 /**
  * Constructor.
  **/
-CSerial::CSerial(CConfigurator *cfg, CSystem *c, u16 number)
-    : CSystemComponent(cfg, c) {
-  state.iNumber = number;
-  breakHit = false;
+CSerial::CSerial(CConfigurator* cfg, CSystem* c, u16 number) : CSystemComponent(cfg, c)
+{
+	state.iNumber = number;
 }
 
 /**
  * Initialize the Serial port device.
  **/
-void CSerial::init() {
-  listenPort = (int)myCfg->get_num_value("port", false, 8000 + state.iNumber);
-  if (!(listenAddress = myCfg->get_text_value("address"))) {
-    listenAddress = "0.0.0.0";
-  }
-  cSystem->RegisterMemory(this, 0,
-                          U64(0x00000801fc0003f8) - (0x100 * state.iNumber), 8);
+void CSerial::init()
+{
+	disabled = myCfg->get_bool_value("disabled");
+	raw_mode = myCfg->get_bool_value("raw_mode");
+	null_attach = myCfg->get_bool_value("null_attach");
+	listenPort = (int)myCfg->get_num_value("port", false, 8000 + state.iNumber);
+	if (!(listenAddress = myCfg->get_text_value("address")))
+		listenAddress = "0.0.0.0";
 
-  // Start Telnet server
+	char    s[1000];
+	char* nargv = s;
+	int     i = 0;
+
+	cSystem->RegisterMemory(this, 0,
+		U64(0x00000801fc0003f8) - (0x100 * state.iNumber), 8);
+
+	if (disabled)
+	{
+		// Port is claimed in the address map but presents itself as a missing UART:
+		// scratchpad writes don't stick, MSR/LSR read 0xff, IIR=0xff. KDCOM and
+		// SERIAL.SYS conclude "no UART here" and skip further probing/polling.
+		state.rcvW = 0;
+		state.rcvR = 0;
+		listenSocket = INVALID_SOCKET;
+		connectSocket = INVALID_SOCKET;
+		printf("%s: disabled - guest will see no UART at this address.\n", devid_string);
+		return;
+	}
+
+	if (null_attach)
+	{
+		// Bit-bucket UART: port exists in the address map and presents itself as a
+		// healthy idle 16550 — TX shift register always empty (THRE/TSRE), modem
+		// signals up (CTS/DSR), RX FIFO permanently empty. TX bytes from the guest
+		// are silently discarded; nothing ever arrives at RX. No socket is opened,
+		// no I/O thread runs, no <BREAK> menu. ReadMem/WriteMem stay on the normal
+		// path so register reads return live values (e.g. LSR=0x60 because rcvR==rcvW),
+		// MCR.LOOP self-test still works (loopback writes go to rcvBuffer, never the
+		// socket), and TX-empty interrupts still fire when the guest enables IER.bit1.
+		state.rcvW = 0;
+		state.rcvR = 0;
+		state.bTHR = 0x00;
+		state.bRDR = 0x00;
+		state.bBRB_LSB = 0x00;
+		state.bBRB_MSB = 0x00;
+		state.bIER = 0x00;
+		state.bIIR = 0x01;  // no interrupt pending
+		state.bFCR = 0x00;
+		state.bLCR = 0x00;
+		state.bMCR = 0x00;
+		state.bLSR = 0x60;  // THRE, TSRE
+		state.bMSR = 0x30;  // CTS, DSR
+		state.bSPR = 0x00;
+		state.serial_cycles = 0;
+		state.thre_pending = false;
+		iac_carry_len = 0;
+		in_subneg = false;
+		stageLen = 0;
+		myThread = nullptr;
+		listenSocket = INVALID_SOCKET;
+		connectSocket = INVALID_SOCKET;
+		printf("%s: null_attach - TX discarded, RX always empty.\n", devid_string);
+		return;
+	}
+
+	// Start Telnet server
 #if defined(_WIN32)
+
   // Windows Sockets only work after calling WSAStartup.
-  WSADATA wsa;
-  WSAStartup(0x0101, &wsa);
+	WSADATA wsa;
+	WSAStartup(0x0101, &wsa);
 #endif // defined (_WIN32)
-  struct sockaddr_in Address;
+	struct sockaddr_in  Address;
 
-  listenSocket = (int)socket(AF_INET, SOCK_STREAM, 0);
-  if (listenSocket == INVALID_SOCKET) {
-    printf("Could not open socket to listen on!\n");
-  }
+	socklen_t           nAddressSize = sizeof(struct sockaddr_in);
 
-  inet_aton(listenAddress, (in_addr *) &Address.sin_addr.s_addr);
-  Address.sin_port = htons((u16)(listenPort));
-  Address.sin_family = AF_INET;
+	listenSocket = (int)socket(AF_INET, SOCK_STREAM, 0);
+	if (listenSocket == INVALID_SOCKET)
+	{
+		printf("Could not open socket to listen on!\n");
+	}
 
-  int optval = 1;
-  setsockopt(listenSocket, SOL_SOCKET, SO_REUSEADDR, (char *)&optval,
-             sizeof(optval));
-  bind(listenSocket, (struct sockaddr *)&Address, sizeof(Address));
-  listen(listenSocket, 1);
+	Address.sin_addr.s_addr = inet_addr(listenAddress);
+	if (Address.sin_addr.s_addr == INADDR_NONE)
+		Address.sin_addr.s_addr = INADDR_ANY;
+	Address.sin_port = htons((u16)(listenPort));
+	Address.sin_family = AF_INET;
 
-  printf("%s: Waiting for connection on port %d.\n", devid_string, listenPort);
+	int optval = 1;
+	setsockopt(listenSocket, SOL_SOCKET, SO_REUSEADDR, (char*)&optval,
+		sizeof(optval));
+	bind(listenSocket, (struct sockaddr*)&Address, sizeof(Address));
+	listen(listenSocket, 8);
 
-  WaitForConnection();
+	printf("%s: Waiting for connection on port %d.\n", devid_string, listenPort);
+
+	WaitForConnection();
 
 #if defined(IDB) && defined(LS_MASTER)
-  struct sockaddr_in dest_addr;
-  int result = -1;
+	struct sockaddr_in  dest_addr;
+	int                 result = -1;
 
-  throughSocket = socket(AF_INET, SOCK_STREAM, 0);
+	throughSocket = socket(AF_INET, SOCK_STREAM, 0);
 
-  dest_addr.sin_family = AF_INET;
-  dest_addr.sin_port = htons((u16)(base + number));
-  dest_addr.sin_addr.s_addr = inet_addr(ls_IP);
+	dest_addr.sin_family = AF_INET;
+	dest_addr.sin_port = htons((u16)(listenPort + state.iNumber));
+	dest_addr.sin_addr.s_addr = inet_addr(ls_IP);
 
-  printf("%s: Waiting to initiate remote connection to %s.\n", devid_string,
-         ls_IP);
+	printf("%s: Waiting to initiate remote connection to %s.\n", devid_string,
+		ls_IP);
 
-  while (result == -1) {
-    result = connect(throughSocket, (struct sockaddr *)&dest_addr,
-                     sizeof(struct sockaddr));
-  }
+	while (result == -1)
+	{
+		result = connect(throughSocket, (struct sockaddr*)&dest_addr,
+			sizeof(struct sockaddr));
+	}
 #endif
-  state.rcvW = 0;
-  state.rcvR = 0;
+	state.rcvW = 0;
+	state.rcvR = 0;
 
-  state.bLCR = 0x00;
-  state.bLSR = 0x60; // THRE, TSRE
-  state.bMSR = 0x30; // CTS, DSR
-  state.bIIR = 0x01; // no interrupt
-  state.irq_active = false;
+	state.bTHR = 0x00;
+	state.bRDR = 0x00;
+	state.bBRB_LSB = 0x00;
+	state.bBRB_MSB = 0x00;
+	state.bIER = 0x00;
+	state.bIIR = 0x01;  // no interrupt
+	state.bFCR = 0x00;
+	state.bLCR = 0x00;
+	state.bMCR = 0x00;  // Important: reads of MCR.LOOP gate the case-0 LOOP-mode write path
+	state.bLSR = 0x60;  // THRE, TSRE
+	state.bMSR = 0x30;  // CTS, DSR
+	state.bSPR = 0x00;
+	state.serial_cycles = 0;
+	state.thre_pending = false;
+	iac_carry_len = 0;
+	in_subneg = false;
+	stageLen = 0;
+	myThread = nullptr;
 
-  printf("%s: $Id: Serial.cpp,v 1.51 2008/06/03 09:07:56 iamcamiel Exp $\n",
-         devid_string);
+	printf("%s: $Id$\n",
+		devid_string);
 }
 
-void CSerial::start_threads() {
-  char buffer[5];
-  if (!myThread) {
-    sprintf(buffer, "srl%d", state.iNumber);
-    printf(" %s", buffer);
-    StopThread = false;
-    myThread = std::make_unique<std::thread>([this](){ this->run(); });
-  }
+void CSerial::start_threads()
+{
+	char  buffer[5];
+	if (disabled || null_attach)
+		return;
+	if (!myThread)
+	{
+		sprintf(buffer, "srl%d", state.iNumber);
+		printf(" %s", buffer);
+		StopThread = false;
+		myThread = std::make_unique<std::thread>([this]() { this->run(); });
+	}
 }
 
-void CSerial::stop_threads() {
-  char buffer[5];
-  StopThread = true;
-  if (myThread) {
-    sprintf(buffer, "srl%d", state.iNumber);
-    printf(" %s", buffer);
-    if (!acceptingSocket) {
-      myThread->join();
-    }
-    myThread = nullptr;
-  }
+void CSerial::stop_threads()
+{
+	char buffer[5];
+	if (disabled || null_attach)
+		return;
+	StopThread = true;
+	if (myThread)
+	{
+		sprintf(buffer, "srl%d", state.iNumber);
+		printf(" %s", buffer);
+		if (!acceptingSocket)
+			myThread->join();
+		myThread = nullptr;
+	}
 }
 
 /**
  * Destructor.
  **/
-CSerial::~CSerial() { stop_threads(); }
+CSerial::~CSerial()
+{
+	stop_threads();
+}
 
-u64 CSerial::ReadMem(int index, u64 address, int dsize) {
-  u8 d;
+u64 CSerial::ReadMem(int index, u64 address, int dsize)
+{
+	u8  d;
 
-  switch (address) {
-  case 0: // data buffer
-    if (state.bLCR & 0x80) {
-      return state.bBRB_LSB;
-    } else {
-      if (state.rcvR != state.rcvW) {
-        state.bRDR = state.rcvBuffer[state.rcvR];
-        state.rcvR++;
-        if (state.rcvR == FIFO_SIZE)
-          state.rcvR = 0;
-        TRC_DEV4("Read character %02x (%c) on serial port %d\n", state.bRDR,
-                 printable(state.bRDR), state.iNumber);
+	if (disabled)
+		return 0xffu;  // missing-UART signature
+
+	switch (address)
+	{
+	case 0: // data buffer
+		if (state.bLCR & 0x80)
+		{
+			return state.bBRB_LSB;
+		}
+		else
+		{
+			if (state.rcvR != state.rcvW)
+			{
+				state.bRDR = state.rcvBuffer[state.rcvR];
+				state.rcvR++;
+				if (state.rcvR == FIFO_SIZE)
+					state.rcvR = 0;
+				TRC_DEV4("Read character %02x (%c) on serial port %d\n", state.bRDR,
+					printable(state.bRDR), state.iNumber);
 #if defined(DEBUG_SERIAL)
-        printf("Read character %02x (%c) on serial port %d\n", state.bRDR,
-               printable(state.bRDR), state.iNumber);
+				printf("Read character %02x (%c) on serial port %d\n", state.bRDR,
+					printable(state.bRDR), state.iNumber);
 #endif
-      } else {
-        TRC_DEV2("Read past FIFO on serial port %d\n", state.iNumber);
+			}
+			else
+			{
+				TRC_DEV2("Read past FIFO on serial port %d\n", state.iNumber);
 #if defined(DEBUG_SERIAL)
-        printf("Read past FIFO on serial port %d\n", state.iNumber);
+				printf("Read past FIFO on serial port %d\n", state.iNumber);
 #endif
-      }
+			}
 
-      return state.bRDR;
-    }
+			// Received-data interrupt follows the FIFO — it may have just emptied.
+			eval_interrupts();
+			return state.bRDR;
+		}
 
-  case 1:
-    if (state.bLCR & 0x80) {
-      return state.bBRB_MSB;
-    } else {
-      return state.bIER;
-    }
+	case 1:
+		if (state.bLCR & 0x80)
+		{
+			return state.bBRB_MSB;
+		}
+		else
+		{
+			return state.bIER;
+		}
 
-  case 2: // interrupt cause
-    d = state.bIIR;
-    state.bIIR = 0x01;
-    return d;
+	case 2: //interrupt cause
+		d = state.bIIR;
+		if (d == 0x02)
+			state.thre_pending = false;  // reading IIR acknowledges THRE
+		eval_interrupts();               // recompute IIR and re-drive the IRQ line
+		return d;
 
-  case 3:
-    return state.bLCR;
+	case 3:
+		return state.bLCR;
 
-  case 4:
-    return state.bMCR;
+	case 4:
+		return state.bMCR;
 
-  case 5: // serialization state
-    if (state.rcvR != state.rcvW)
-      state.bLSR = 0x61; // THRE, TSRE, RxRD
-    else
-      state.bLSR = 0x60; // THRE, TSRE
-    return state.bLSR;
+	case 5: //serialization state
+		if (state.rcvR != state.rcvW)
+			state.bLSR = 0x61;    // THRE, TSRE, RxRD
+		else
+			state.bLSR = 0x60;    // THRE, TSRE
+		return state.bLSR;
 
-  case 6:
-    return state.bMSR;
+	case 6:
+		return state.bMSR;
 
-  default:
-    return state.bSPR;
-  }
+	default:
+		return state.bSPR;
+	}
 }
 
-void CSerial::WriteMem(int index, u64 address, int dsize, u64 data) {
-  u8 d;
-  char s[5];
-  d = (u8)data;
+void CSerial::WriteMem(int index, u64 address, int dsize, u64 data)
+{
+	u8    d;
+	d = (u8)data;
 
-  switch (address) {
-  case 0:
-    if (state.bLCR & 0x80) // divisor latch access bit set
-    {
+	if (disabled)
+		return;  // ignore guest writes to a disabled port
 
-      // LSB of divisor latch
-      state.bBRB_LSB = d;
-    } else {
+	switch (address)
+	{
+	case 0:
+		if (state.bLCR & 0x80)   // divisor latch access bit set
+		{
 
-      // Transmit Hold Register
-      sprintf(s, "%c", d);
-      write(s);
-      TRC_DEV4("Write character %02x (%c) on serial port %d\n", d, printable(d),
-               state.iNumber);
+			// LSB of divisor latch
+			state.bBRB_LSB = d;
+		}
+		else
+		{
+			if (state.bMCR & 0x10)
+			{
+				// MCR.LOOP set: deliver TX byte to our own RX FIFO instead of the wire.
+				// Windows 2000 UART detection writes a sentinel here and expects to read it back via LSR.DR.
+				int nextW = state.rcvW + 1;
+				if (nextW == FIFO_SIZE)
+					nextW = 0;
+				if (nextW != state.rcvR)
+				{
+					state.rcvBuffer[state.rcvW] = (char)d;
+					state.rcvW = nextW;
+				}
+			}
+			else
+			{
+				// Transmit Hold Register
+				write((const char*)&d, 1);
+			}
+			TRC_DEV4("Write character %02x (%c) on serial port %d\n", d, printable(d),
+				state.iNumber);
 #if defined(DEBUG_SERIAL)
-      printf("Write character %02x (%c) on serial port %d\n", d, printable(d),
-             state.iNumber);
+			printf("Write character %02x (%c) on serial port %d\n", d, printable(d),
+				state.iNumber);
 #endif
-      eval_interrupts();
-    }
-    break;
+			// TX is instantaneous: the holding register is empty again, so
+			// re-arm THRE (delivered only if the THRE interrupt is enabled).
+			state.thre_pending = true;
+			eval_interrupts();
+		}
+		break;
 
-  case 1:
-    if (state.bLCR & 0x80) // divisor latch access bit set
-    {
+	case 1:
+		if (state.bLCR & 0x80)   // divisor latch access bit set
+		{
 
-      // MSB of divisor latch
-      state.bBRB_MSB = d;
-    } else {
+			// MSB of divisor latch
+			state.bBRB_MSB = d;
+		}
+		else
+		{
+			// Interrupt Enable Register.  Enabling the THRE interrupt while the
+			// (instantly-drained) holding register is empty arms one THRE edge.
+			u8 prev_ier = state.bIER;
+			state.bIER = d;
+			if ((d & 0x02) && !(prev_ier & 0x02))
+				state.thre_pending = true;
+			eval_interrupts();
+		}
+		break;
 
-      // Interrupt Enable Register
-      state.bIER = d;
-      eval_interrupts();
-    }
-    break;
+	case 2:
+		state.bFCR = d;
+		break;
 
-  case 2:
-    state.bFCR = d;
-    break;
+	case 3:
+		state.bLCR = d;
+		break;
 
-  case 3:
-    state.bLCR = d;
-    break;
+	case 4:
+	{
+		u8 prev_mcr = state.bMCR;
+		state.bMCR = d;
+		if (d & 0x10)
+		{
+			// MCR.LOOP set: mirror modem-control output bits into MSR status bits.
+			// PC16550D loopback: DTR->DSR, RTS->CTS, OUT1->RI, OUT2->DCD.
+			// Windows 2000 SERIAL.SYS uses this to confirm a 16550 by toggling MCR.OUT1
+			// and watching MSR.RI track it.
+			u8 status = 0;
+			if (d & 0x01) status |= 0x20;  // DTR  -> DSR
+			if (d & 0x02) status |= 0x10;  // RTS  -> CTS
+			if (d & 0x04) status |= 0x40;  // OUT1 -> RI
+			if (d & 0x08) status |= 0x80;  // OUT2 -> DCD
+			state.bMSR = status | (state.bMSR & 0x0f);
+		}
+		else
+		{
+			// Loopback released: present the default "modem connected" status the rest of the code assumes.
+			state.bMSR = (state.bMSR & 0x0f) | 0x30;
+		}
+		if (prev_mcr != d)
+			printf("SRL%d: MCR %02x -> %02x (LOOP=%d DTR=%d RTS=%d OUT1=%d OUT2=%d), MSR now %02x\n",
+				state.iNumber, prev_mcr, d,
+				(d >> 4) & 1, d & 1, (d >> 1) & 1, (d >> 2) & 1, (d >> 3) & 1,
+				state.bMSR);
+		break;
+	}
 
-  case 4:
-    state.bMCR = d;
-    break;
-
-  default:
-    state.bSPR = d;
-  }
+	default:
+		state.bSPR = d;
+	}
 }
 
-void CSerial::eval_interrupts() {
-  state.bIIR = 0x01; // no interrupt
-  if ((state.bIER & 0x01) && (state.rcvR != state.rcvW))
-    state.bIIR = 0x04;
-  else if (state.bIER & 0x2) // transmitter buffer empty enabled?
-    state.bIIR = 0x02;       // transmitter buffer empty
-  else
-    state.bIIR = 0x01; // no interrupt
-  if (state.bIIR > 0x01) {
-    if (!state.irq_active)
-      theAli->pic_interrupt(0, 4 - state.iNumber);
-  } else {
-    if (state.irq_active)
-      theAli->pic_deassert(0, 4 - state.iNumber);
-  }
+void CSerial::eval_interrupts()
+{
+	if (disabled)
+		return;
+
+	// RX-available is a level (follows the receive FIFO); THR-empty is edge-
+	// latched in thre_pending (set on THR write / THRE enable, cleared on IIR
+	// read) because es40's instant TX would make a plain THRE level storm.
+	state.bIIR = 0x01;        // no interrupt
+	if ((state.bIER & 0x01) && (state.rcvR != state.rcvW))
+		state.bIIR = 0x04;    // received data available
+	else if ((state.bIER & 0x02) && state.thre_pending)
+		state.bIIR = 0x02;    // transmitter holding register empty
+
+	// Drive IRQ4 (serial0) / IRQ3 (serial1) as a level following the cause;
+	// pic_set_line() makes one edge per rising transition, retracting on fall.
+	theAli->pic_set_line(0, 4 - state.iNumber, state.bIIR > 0x01);
 }
 
-void CSerial::write(const char *s) {
-  send(connectSocket, s, (int)strlen(s) + 1, 0);
+void CSerial::write(const char* s, int dsize)
+{
+	if (disabled || null_attach)
+		return;  // null_attach: drop TX silently; no socket to send on
+	int val = send(connectSocket, s, dsize, 0);
 }
 
-void CSerial::receive(const char *data) {
-  char *x;
-
-  x = (char *)data;
-
-  while (*x) {
-    state.rcvBuffer[state.rcvW++] = *x;
-    if (state.rcvW == FIFO_SIZE)
-      state.rcvW = 0;
-    x++;
-    eval_interrupts();
-  }
+void CSerial::write_cstr(const char* s)
+{
+	write(s, (int)strlen(s));
 }
+
+/**
+ * receive  — Push data into the FIFO.  Returns number of bytes consumed.
+ *            Stops when FIFO is full.
+ **/
+
+int CSerial::receive(const char* data, int dsize)
+{
+	int consumed = 0;
+
+	while (dsize)
+	{
+		int nextW = state.rcvW + 1;
+		if (nextW == FIFO_SIZE)
+			nextW = 0;
+
+		if (nextW == state.rcvR)
+			break;  // FIFO full
+
+		state.rcvBuffer[state.rcvW] = *data;
+		state.rcvW = nextW;
+		data++;
+		dsize--;
+		consumed++;
+		eval_interrupts();
+	}
+
+	return consumed;
+}
+
+/**
+ * drain_staging  — Move data from the staging buffer into the FIFO,
+ *                  limited to max_bytes.  Compacts after partial drain.
+ **/
+void CSerial::drain_staging()
+{
+	if (stageLen == 0)
+		return;
+
+	// Only deliver when the guest has consumed the previous character.
+	// This self-clocks to the emulated CPU speed, just like a real
+	// UART where the next character doesn't arrive until the baud
+	// rate shifts it in — and the CPU is always fast enough to read
+	// it before then.
+	if (state.rcvR != state.rcvW)
+		return;  // previous character not yet read
+
+	// Deliver exactly one character
+	receive(stageBuf, 1);
+	stageLen--;
+	if (stageLen > 0)
+		memmove(stageBuf, stageBuf + 1, stageLen);
+}
+
 
 /**
  * Thread entry point.
  **/
-void CSerial::run() {
-  try {
-    for (;;) {
-      if (StopThread)
-        return;
-      execute();
-      std::this_thread::sleep_for(std::chrono::milliseconds(5));
-    }
-  }
+void CSerial::run()
+{
+	if (disabled)
+		return;
+	try
+	{
+		for (;;)
+		{
+			if (StopThread)
+				return;
+			execute();
+			std::this_thread::sleep_for(std::chrono::milliseconds(5));
+		}
+	}
 
-  catch (CException &e) {
-    printf("Exception in Serial thread: %s.\n", e.displayText().c_str());
-    myThreadDead.store(true);
-    // Let the thread die...
-  }
+	catch (CException& e)
+	{
+		printf("Exception in Serial thread: %s.\n", e.displayText().c_str());
+		myThreadDead.store(true);
+
+		// Let the thread die...
+	}
 }
 
 /**
@@ -327,335 +571,520 @@ void CSerial::run() {
  *
  * Enter serial port menu if <break> was received.
  **/
-void CSerial::check_state() {
-  if (breakHit)
-    serial_menu();
+void CSerial::check_state()
+{
+	if (disabled || null_attach)
+		return;
+	if (breakHit)
+		serial_menu();
 
-  if (myThreadDead.load())
-    FAILURE(Thread, "Serial thread has died");
+	if (myThreadDead.load())
+		FAILURE(Thread, "Serial thread has died");
 }
 
-void CSerial::serial_menu() {
-  fd_set readset;
-  unsigned char buffer[FIFO_SIZE + 1];
-  ssize_t size;
-  struct timeval tv;
-  bool exitLoop = false;
+void CSerial::serial_menu()
+{
+	fd_set          readset;
+	unsigned char   buffer[FIFO_SIZE + 1];
+	ssize_t         size;
+	struct timeval  tv;
+	bool            exitLoop = false;
 
-  cSystem->stop_threads();
+	cSystem->stop_threads();
 
-  write("\r\n<BREAK> received. What do you want to do?\r\n");
-  write("     0. Continue\r\n");
+	write_cstr("\r\n<BREAK> received. What do you want to do?\r\n");
+	write_cstr("     0. Continue\r\n");
 #if defined(IDB)
-  write("     1. End run\r\n");
+	write_cstr("     1. End run\r\n");
 #else
-  write("     1. Exit emulator gracefully\r\n");
-  write("     2. Abort emulator (no changes saved)\r\n");
-  write("     3. Save state to autosave.axp and continue\r\n");
-  write("     4. Load state from autosave.axp and continue\r\n");
+	write_cstr("     1. Exit emulator gracefully\r\n");
+	write_cstr("     2. Abort emulator (no changes saved)\r\n");
+	write_cstr("     3. Save state to autosave.axp and continue\r\n");
+	write_cstr("     4. Load state from autosave.axp and continue\r\n");
 #endif
-  while (!exitLoop) {
-    FD_ZERO(&readset);
-    FD_SET(connectSocket, &readset);
-    tv.tv_sec = 60;
-    tv.tv_usec = 0;
-    if (select(connectSocket + 1, &readset, NULL, NULL, &tv) <= 0) {
-      write("%SRL-I-TIMEOUT: no timely answer received. Continuing "
-            "emulation.\r\n");
-      break; // leave loop
-    }
+	while (!exitLoop)
+	{
+		FD_ZERO(&readset);
+		FD_SET(connectSocket, &readset);
+		tv.tv_sec = 60;
+		tv.tv_usec = 0;
+		if (select(connectSocket + 1, &readset, NULL, NULL, &tv) <= 0)
+		{
+			write_cstr("%SRL-I-TIMEOUT: no timely answer received. Continuing emulation.\r\n");
+			break;  // leave loop
+		}
 
 #if defined(_WIN32) || defined(__VMS)
-    size = recv(connectSocket, (char *)buffer, FIFO_SIZE, 0);
+		size = recv(connectSocket, (char*)buffer, FIFO_SIZE, 0);
 #else
-    size = read(connectSocket, &buffer, FIFO_SIZE);
+		size = read(connectSocket, &buffer, FIFO_SIZE);
 #endif
-    switch (buffer[0]) {
-    case '0':
-      write("%SRL-I-CONTINUE: continuing emulation.\r\n");
-      exitLoop = true;
-      break;
+		switch (buffer[0])
+		{
+		case '0':
+			write_cstr("%SRL-I-CONTINUE: continuing emulation.\r\n");
+			exitLoop = true;
+			break;
 
-    case '1':
-      write("%SRL-I-EXIT: exiting emulation gracefully.\r\n");
-      FAILURE(Graceful, "Graceful exit");
-      exitLoop = true;
-      break;
+		case '1':
+			write_cstr("%SRL-I-EXIT: exiting emulation gracefully.\r\n");
+			FAILURE(Graceful, "Graceful exit");
+			break;
 
-    case '2':
-      write("%SRL-I-ABORT: aborting emulation.\r\n");
-      FAILURE(Abort, "Aborting");
-      exitLoop = true;
-      break;
+		case '2':
+			write_cstr("%SRL-I-ABORT: aborting emulation.\r\n");
+			FAILURE(Abort, "Aborting");
+			break;
 
-    case '3':
-      write("%SRL-I-SAVESTATE: Saving state to autosave.axp.\r\n");
-      cSystem->SaveState("autosave.axp");
-      write("%SRL-I-CONTINUE: continuing emulation.\r\n");
-      exitLoop = true;
-      break;
+		case '3':
+			write_cstr("%SRL-I-SAVESTATE: Saving state to autosave.axp.\r\n");
+			cSystem->SaveState("autosave.axp");
+			write_cstr("%SRL-I-CONTINUE: continuing emulation.\r\n");
+			exitLoop = true;
+			break;
 
-    case '4':
-      write("%SRL-I-LOADSTATE: Loading state from autosave.axp.\r\n");
-      cSystem->RestoreState("autosave.axp");
-      write("%SRL-I-CONTINUE: continuing emulation.\r\n");
-      exitLoop = true;
-      break;
+		case '4':
+			write_cstr("%SRL-I-LOADSTATE: Loading state from autosave.axp.\r\n");
+			cSystem->RestoreState("autosave.axp");
+			write_cstr("%SRL-I-CONTINUE: continuing emulation.\r\n");
+			exitLoop = true;
+			break;
 
-    default:
-      write("%SRL-W-INVALID: Not a valid answer.\r\n");
-    }
-  }
+		default:
+			write_cstr("%SRL-W-INVALID: Not a valid answer.\r\n");
+			break;
+		}
+	}
 
-  breakHit = false;
-  cSystem->start_threads();
+	breakHit = false;
+	cSystem->start_threads();
 }
 
-void CSerial::execute() {
-  fd_set readset;
-  unsigned char buffer[FIFO_SIZE + 1];
-  unsigned char cbuffer[FIFO_SIZE + 1]; // cooked buffer
-  unsigned char *b;
+// ---------------------------------------------------------------------------
+// execute  — Main loop body, called every ~20ms from the serial thread.
+// ---------------------------------------------------------------------------
+void CSerial::execute()
+{
+	fd_set          readset;
+	unsigned char   raw[FIFO_SIZE + 16];
+	unsigned char   cbuffer[FIFO_SIZE + 1];
+	unsigned char*  b;
+	unsigned char*  c;
+	unsigned char*  end;
+	ssize_t         size;
+	struct timeval  tv;
 
-  // cooked buffer
-  unsigned char *c;
-  ssize_t size;
-  struct timeval tv;
+	drain_staging();
 
-  state.serial_cycles++;
-  if (state.serial_cycles >= RECV_TICKS) {
-    FD_ZERO(&readset);
-    FD_SET(connectSocket, &readset);
-    tv.tv_sec = 0;
-    tv.tv_usec = 0;
-    if (select(connectSocket + 1, &readset, NULL, NULL, &tv) > 0) {
+	// ------------------------------------------------------------------
+	// Every RECV_TICKS cycles: read from the socket and cook telnet out
+	// ------------------------------------------------------------------
+	state.serial_cycles++;
+	if (state.serial_cycles >= RECV_TICKS)
+	{
+		// If staging buffer still has data, don't pull more off the socket.
+		// TCP backpressure holds the rest at the OS level.
+		if (stageLen > 0)
+		{
+			state.serial_cycles = 0;
+			eval_interrupts();
+			return;
+		}
+
+		FD_ZERO(&readset);
+		FD_SET(connectSocket, &readset);
+		tv.tv_sec = 0;
+		tv.tv_usec = 0;
+		if (select(connectSocket + 1, &readset, NULL, NULL, &tv) > 0)
+		{
+			unsigned char* recv_buf = raw + iac_carry_len;
+
 #if defined(_WIN32) || defined(__VMS)
-
-      // Windows Sockets has no direct equivalent of BSD's read
-      size = recv(connectSocket, (char *)buffer, FIFO_SIZE, 0);
+			size = recv(connectSocket, (char*)recv_buf, FIFO_SIZE, 0);
 #else
-      size = read(connectSocket, &buffer, FIFO_SIZE);
+			size = read(connectSocket, recv_buf, FIFO_SIZE);
 #endif
 
-      extern int got_sigint;
-      if (size == 0 && !got_sigint) {
-        printf("%%SRL-W-DISCONNECT: Write socket closed on other end for "
-               "serial port %d.\n",
-               state.iNumber);
-        printf("-SRL-I-WAITFOR: Waiting for a new connection on port %d.\n",
-               listenPort);
-        WaitForConnection();
-        return;
-      }
+			extern int  got_sigint;
+			if (size <= 0 && !got_sigint)
+			{
+				printf("%%SRL-W-DISCONNECT: Write socket closed on other end for serial port %d.\n",
+					state.iNumber);
+				printf("-SRL-I-WAITFOR: Waiting for a new connection on port %d.\n",
+					listenPort);
+				WaitForConnection();
+				return;
+			}
 
-      buffer[size + 1] = 0; // force null termination.
-      b = buffer;
-      c = cbuffer;
-      while ((ssize_t)(b - buffer) < size) {
-        if (*b == 0x0a) {
-          b++; // skip LF
-          continue;
-        }
+			if (size <= 0)
+			{
+				state.serial_cycles = 0;
+				eval_interrupts();
+				return;
+			}
 
-        if (*b == IAC) {
-          if (*(b + 1) == IAC) { // escaped IAC.
-            b++;
-          } else if (*(b + 1) >= WILL) { // will/won't/do/don't
-            b += 3; // skip this byte, and following two. (telnet escape)
-            continue;
-          } else if (*(b + 1) == SB) { // skip until IAC SE
-            b += 2;                    // now we're at start of subnegotiation.
-            while (*b != IAC && *(b + 1) != SE)
-              b++;
-            b += 2;
-            continue;
-          } else if (*(b + 1) == BREAK) { // break (== halt button?)
-            b += 2;
-            breakHit = true;
-          } else if (*(b + 1) == AYT) { // are you there?
-          } else {                      // misc single byte command.
-            b += 2;
-            continue;
-          }
-        }
+			// Prepend carryover from partial telnet sequence
+			if (iac_carry_len > 0)
+			{
+				memcpy(raw, iac_carry, iac_carry_len);
+				size += iac_carry_len;
+				iac_carry_len = 0;
+			}
 
-        *c = *b;
-        c++;
-        b++;
-      }
+			// raw_mode: skip telnet IAC cooking AND the staging buffer's baud-rate
+			// drip-feed.  The byte stream must stay 8-bit clean and flow at line
+			// rate for windbg/kgdb, which sends arbitrary binary (including 0xff)
+			// in KD packets and times out if delivery is throttled.
+			if (raw_mode)
+			{
+				int delivered = receive((const char*)raw, (int)size);
+				if (delivered < (int)size)
+					printf("%%SRL-W-RAWFULL: raw_mode FIFO full on port %d, dropped %d byte(s)\n",
+						state.iNumber, (int)size - delivered);
+				state.serial_cycles = 0;
+				eval_interrupts();
+				return;
+			}
 
-      *c = 0; // null terminate it.
-      this->receive((const char *)&cbuffer);
-    }
+			b = raw;
+			c = cbuffer;
+			end = raw + size;
 
-    state.serial_cycles = 0;
-  }
+			while (b < end)
+			{
+				// ----- Subnegotiation scan (SB ... IAC SE) -----
+				if (in_subneg)
+				{
+					while (b < end)
+					{
+						if (*b == IAC)
+						{
+							if (b + 1 >= end)
+							{
+								iac_carry[0] = IAC;
+								iac_carry_len = 1;
+								b = end;
+								break;
+							}
+							if (*(b + 1) == SE)
+							{
+								b += 2;
+								in_subneg = false;
+								break;
+							}
+							else if (*(b + 1) == IAC)
+							{
+								b += 2;
+							}
+							else
+							{
+								b += 2;
+							}
+						}
+						else
+						{
+							b++;
+						}
+					}
+					continue;
+				}
 
-  eval_interrupts();
+				// ----- Telnet IAC with bounds-safe lookahead -----
+				if (*b == IAC)
+				{
+					ssize_t remaining = end - b;
+
+					if (remaining < 2)
+					{
+						iac_carry[0] = IAC;
+						iac_carry_len = 1;
+						b = end;
+						break;
+					}
+
+					unsigned char cmd = *(b + 1);
+
+					if (cmd == IAC)
+					{
+						*c++ = 0xFF;
+						b += 2;
+						continue;
+					}
+					else if (cmd >= WILL && cmd <= DONT)
+					{
+						if (remaining < 3)
+						{
+							for (ssize_t i = 0; i < remaining; i++)
+								iac_carry[i] = b[i];
+							iac_carry_len = (int)remaining;
+							b = end;
+							break;
+						}
+						b += 3;
+						continue;
+					}
+					else if (cmd == SB)
+					{
+						in_subneg = true;
+						b += 2;
+						continue;
+					}
+					else if (cmd == BREAK)
+					{
+						breakHit = true;
+						b += 2;
+						continue;
+					}
+					else if (cmd == AYT)
+					{
+						b += 2;
+						continue;
+					}
+					else
+					{
+						b += 2;
+						continue;
+					}
+				}
+
+				// ----- Normal data byte -----
+				*c = *b;
+				c++;
+				b++;
+			}
+
+			// Move cooked data into the staging buffer.
+			// drain_staging() will drip-feed it into the FIFO at baud rate
+			// on subsequent execute() cycles.
+			if (c > cbuffer)
+			{
+				int cooked_len = (int)(c - cbuffer);
+
+				if (cooked_len <= (int)(STAGE_SIZE - stageLen))
+				{
+					memcpy(stageBuf + stageLen, cbuffer, cooked_len);
+					stageLen += cooked_len;
+				}
+				else
+				{
+					// Staging buffer full — this means the guest is severely
+					// behind.  Copy what fits; the rest is lost, but this
+					// should only happen under extreme conditions.
+					int space = STAGE_SIZE - stageLen;
+					if (space > 0)
+					{
+						memcpy(stageBuf + stageLen, cbuffer, space);
+						stageLen += space;
+					}
+#if defined(DEBUG_SERIAL)
+					printf("%%SRL-W-STAGEDROP: staging buffer full on port %d, "
+						"dropped %d bytes\n", state.iNumber, cooked_len - space);
+#endif
+				}
+			}
+		}
+
+		state.serial_cycles = 0;
+	}
+
+	eval_interrupts();
 }
 
-static u32 srl_magic1 = 0x5A15A15A;
-static u32 srl_magic2 = 0x1A51A51A;
+
+static u32  srl_magic1 = 0x5A15A15A;
+static u32  srl_magic2 = 0x1A51A51A;
 
 /**
  * Save state to a Virtual Machine State file.
  **/
-int CSerial::SaveState(FILE *f) {
-  long ss = sizeof(state);
+int CSerial::SaveState(FILE* f)
+{
+	long  ss = sizeof(state);
 
-  fwrite(&srl_magic1, sizeof(u32), 1, f);
-  fwrite(&ss, sizeof(long), 1, f);
-  fwrite(&state, sizeof(state), 1, f);
-  fwrite(&srl_magic2, sizeof(u32), 1, f);
-  printf("%s: %d bytes saved.\n", devid_string, (int)ss);
-  return 0;
+	fwrite(&srl_magic1, sizeof(u32), 1, f);
+	fwrite(&ss, sizeof(long), 1, f);
+	fwrite(&state, sizeof(state), 1, f);
+	fwrite(&srl_magic2, sizeof(u32), 1, f);
+	printf("%s: %d bytes saved.\n", devid_string, (int)ss);
+	return 0;
 }
 
 /**
  * Restore state from a Virtual Machine State file.
  **/
-int CSerial::RestoreState(FILE *f) {
-  long ss;
-  u32 m1;
-  u32 m2;
-  size_t r;
+int CSerial::RestoreState(FILE* f)
+{
+	long    ss;
+	u32     m1;
+	u32     m2;
+	size_t  r;
 
-  r = fread(&m1, sizeof(u32), 1, f);
-  if (r != 1) {
-    printf("%s: unexpected end of file!\n", devid_string);
-    return -1;
-  }
+	r = fread(&m1, sizeof(u32), 1, f);
+	if (r != 1)
+	{
+		printf("%s: unexpected end of file!\n", devid_string);
+		return -1;
+	}
 
-  if (m1 != srl_magic1) {
-    printf("%s: MAGIC 1 does not match!\n", devid_string);
-    return -1;
-  }
+	if (m1 != srl_magic1)
+	{
+		printf("%s: MAGIC 1 does not match!\n", devid_string);
+		return -1;
+	}
 
-  r = fread(&ss, sizeof(long), 1, f);
-  if (r != 1) {
-    printf("%s: unexpected end of file!\n", devid_string);
-    return -1;
-  }
+	fread(&ss, sizeof(long), 1, f);
+	if (r != 1)
+	{
+		printf("%s: unexpected end of file!\n", devid_string);
+		return -1;
+	}
 
-  if (ss != sizeof(state)) {
-    printf("%s: STRUCT SIZE does not match!\n", devid_string);
-    return -1;
-  }
+	if (ss != sizeof(state))
+	{
+		printf("%s: STRUCT SIZE does not match!\n", devid_string);
+		return -1;
+	}
 
-  r = fread(&state, sizeof(state), 1, f);
-  if (r != 1) {
-    printf("%s: unexpected end of file!\n", devid_string);
-    return -1;
-  }
+	fread(&state, sizeof(state), 1, f);
+	if (r != 1)
+	{
+		printf("%s: unexpected end of file!\n", devid_string);
+		return -1;
+	}
 
-  r = fread(&m2, sizeof(u32), 1, f);
-  if (r != 1) {
-    printf("%s: unexpected end of file!\n", devid_string);
-    return -1;
-  }
+	r = fread(&m2, sizeof(u32), 1, f);
+	if (r != 1)
+	{
+		printf("%s: unexpected end of file!\n", devid_string);
+		return -1;
+	}
 
-  if (m2 != srl_magic2) {
-    printf("%s: MAGIC 1 does not match!\n", devid_string);
-    return -1;
-  }
+	if (m2 != srl_magic2)
+	{
+		printf("%s: MAGIC 1 does not match!\n", devid_string);
+		return -1;
+	}
 
-  printf("%s: %d bytes restored.\n", devid_string, (int)ss);
-  return 0;
+	printf("%s: %d bytes restored.\n", devid_string, (int)ss);
+	return 0;
 }
 
-void CSerial::WaitForConnection() {
-  struct sockaddr_in Address;
-  socklen_t nAddressSize = sizeof(struct sockaddr_in);
-  const char *telnet_options = "%c%c%c";
-  char buffer[8];
-  char s[1000];
-  char *nargv = s;
-  int i = 0;
+void CSerial::WaitForConnection()
+{
+	struct sockaddr_in  Address;
+	socklen_t           nAddressSize = sizeof(struct sockaddr_in);
+	const char* telnet_options = "%c%c%c";
+	char                buffer[8];
+	char                s[1000];
+	char* nargv = s;
+	int                 i = 0;
 
 #if !defined(LS_SLAVE)
-  char s2[200];
-  char *argv[20];
+	char                s2[200];
+	char* argv[20];
 
-  strncpy(s, myCfg->get_text_value("action", ""), 999);
-  s[999] = '\0';
+	strncpy(s, myCfg->get_text_value("action", ""), 999);
+	s[999] = '\0';
 
-  // printf("%s: Specified : %s\n",devid_string,s);
-  if (strcmp(s, "")) {
+	//printf("%s: Specified : %s\n",devid_string,s);
+	if (strcmp(s, ""))
+	{
 
-    // spawn external program (telnet client)...
-    while (*nargv) {
-      argv[i] = nargv;
-      if (nargv[0] == '\"')
-        nargv = strchr(nargv + 1, '\"');
-      if (nargv)
-        nargv = strchr(nargv, ' ');
-      if (!nargv)
-        break;
-      *nargv++ = '\0';
-      i++;
-      argv[i] = NULL;
-    }
+		// spawn external program (telnet client)...
+		while (*nargv)
+		{
+			argv[i] = nargv;
+			if (nargv[0] == '\"')
+				nargv = strchr(nargv + 1, '\"');
+			if (nargv)
+				nargv = strchr(nargv, ' ');
+			if (!nargv)
+				break;
+			*nargv++ = '\0';
+			i++;
+			argv[i] = NULL;
+		}
 
-    argv[i + 1] = NULL;
-    strcpy(s2, argv[0]);
-    nargv = s2;
-    if (nargv[0] == '\"') {
-      nargv++;
-      *(strchr(nargv, '\"')) = '\0';
-    }
+		argv[i + 1] = NULL;
+		strcpy(s2, argv[0]);
+		nargv = s2;
+		if (nargv[0] == '\"')
+		{
+			nargv++;
+			*(strchr(nargv, '\"')) = '\0';
+		}
 
-    // printf("%s: Starting %s\n", devid_string,nargv);
+		//printf("%s: Starting %s\n", devid_string,nargv);
 #if defined(_WIN32)
-    if (_spawnvp(_P_NOWAIT, nargv, argv) < 0)
-      FAILURE_1(Runtime, "Exec of '%s' has failed.\n", argv[0]);
+		if (_spawnvp(_P_NOWAIT, nargv, argv) < 0)
+			FAILURE_1(Runtime, "Exec of '%s' has failed.\n", argv[0]);
 #elif !defined(__VMS)
-    pid_t child;
-    int status;
-    if (!(child = fork())) {
-      execvp(argv[0], argv);
-      FAILURE_1(Runtime, "Exec of '%s' failed.\n", argv[0]);
-    } else {
-      sleep(1);                         // give it a chance to start up.
-      waitpid(child, &status, WNOHANG); // reap it, if needed.
-      if (kill(child, 0) < 0) {         // uh oh, no kiddo.
-        FAILURE_1(Runtime, "Exec of '%s' has failed.\n", argv[0]);
-      }
-    }
+		pid_t child;
+		int   status;
+		if (!(child = fork()))
+		{
+			execvp(argv[0], argv);
+			FAILURE_1(Runtime, "Exec of '%s' failed.\n", argv[0]);
+		}
+		else
+		{
+			sleep(1); // give it a chance to start up.
+			waitpid(child, &status, WNOHANG); // reap it, if needed.
+			if (kill(child, 0) < 0)
+			{ // uh oh, no kiddo.
+				FAILURE_1(Runtime, "Exec of '%s' has failed.\n", argv[0]);
+			}
+		}
 #endif
-  }
+	}
 #endif
-  Address.sin_addr.s_addr = INADDR_ANY;
-  Address.sin_port = htons((u16)listenPort);
-  Address.sin_family = AF_INET;
+	Address.sin_addr.s_addr = INADDR_ANY;
+	Address.sin_port = htons((u16)listenPort);
+	Address.sin_family = AF_INET;
 
-  //  Wait until we have a connection
-  connectSocket = INVALID_SOCKET;
-  while (connectSocket == INVALID_SOCKET) {
-    acceptingSocket = true;
-    connectSocket =
-        (int)accept(listenSocket, (struct sockaddr *)&Address, &nAddressSize);
-    acceptingSocket = false;
-  }
+	//  Wait until we have a connection
+	connectSocket = INVALID_SOCKET;
+	while (connectSocket == INVALID_SOCKET)
+	{
+		acceptingSocket = true;
+		connectSocket = (int)accept(listenSocket, (struct sockaddr*)&Address,
+			&nAddressSize);
+		acceptingSocket = false;
+	}
 
-  state.serial_cycles = 0;
+	iac_carry_len = 0;
+	in_subneg = false;
+	stageLen = 0;
 
-  // Send some control characters to the telnet client to handle
-  // character-at-a-time mode.
-  sprintf(buffer, telnet_options, IAC, DO, TELOPT_ECHO);
-  this->write(buffer);
+	state.serial_cycles = 0;
 
-  sprintf(buffer, telnet_options, IAC, DO, TELOPT_NAWS);
-  write(buffer);
 
-  sprintf(buffer, telnet_options, IAC, DO, TELOPT_LFLOW);
-  this->write(buffer);
+	if (state.iNumber != 1 && !raw_mode) // skip for kgdb-default port and any raw-mode port
+	{
+		// Send some control characters to the telnet client to handle
+		// character-at-a-time mode.
+		sprintf(buffer, telnet_options, IAC, DO, TELOPT_ECHO);
+		write_cstr(buffer);
 
-  sprintf(buffer, telnet_options, IAC, WILL, TELOPT_ECHO);
-  this->write(buffer);
+		sprintf(buffer, telnet_options, IAC, DO, TELOPT_NAWS);
+		write_cstr(buffer);
 
-  sprintf(buffer, telnet_options, IAC, WILL, TELOPT_SGA);
-  this->write(buffer);
+		sprintf(buffer, telnet_options, IAC, DO, TELOPT_LFLOW);
+		write_cstr(buffer);
 
-  sprintf(s, "This is serial port #%d on ES40 Emulator\r\n", state.iNumber);
-  this->write(s);
+		sprintf(buffer, telnet_options, IAC, WILL, TELOPT_ECHO);
+		write_cstr(buffer);
+
+		sprintf(buffer, telnet_options, IAC, WILL, TELOPT_SGA);
+		write_cstr(buffer);
+
+		// we do these two to avoid a weird character spam in the client
+		unsigned char opt_do_binary[3] = { IAC, DO,   TELOPT_BINARY }; // tell client to send raw
+		unsigned char opt_will_binary[3] = { IAC, WILL, TELOPT_BINARY }; // tell client to receive raw
+		write((const char*)opt_do_binary, 3);
+		write((const char*)opt_will_binary, 3);
+
+		sprintf(s, "This is serial port #%d on ES40 Emulator\r\n", state.iNumber);
+		write_cstr(s);
+	}
 }

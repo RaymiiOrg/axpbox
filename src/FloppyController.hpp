@@ -26,27 +26,34 @@
  * serve the general public.
  */
 
+ /**
+  * \file
+  * Contains the definitions for the emulated Floppy Controller devices.
+ **/
 #if !defined(INCLUDED_FLOPPYCONTROLLER_H)
 #define INCLUDED_FLOPPYCONTROLLER_H
 
-#include "DMA.hpp"
 #include "DiskController.hpp"
 #include "SystemComponent.hpp"
+#include "DMA.hpp"
 
-/**
- * \brief Emulated floppy-drive controller.
- **/
-class CFloppyController : public CSystemComponent, public CDiskController {
+  /**
+   * \brief Emulated floppy-drive controller.
+   **/
+class CFloppyController : public CSystemComponent, public CDiskController
+{
 public:
-  virtual u64 ReadMem(int index, u64 address, int dsize);
-  virtual void WriteMem(int index, u64 address, int dsize, u64 data);
-  CFloppyController(class CConfigurator *cfg, class CSystem *c, int id);
-  virtual ~CFloppyController();
-  virtual int RestoreState(FILE *f);
-  virtual int SaveState(FILE *f);
+  virtual u64   ReadMem(int index, u64 address, int dsize);
+  virtual void  WriteMem(int index, u64 address, int dsize, u64 data);
+  CFloppyController(class CConfigurator* cfg, class CSystem* c, int id);
+  virtual       ~CFloppyController();
+  virtual int   RestoreState(FILE* f);
+  virtual int   SaveState(FILE* f);
+  virtual void  init();
 
 private:
   void do_interrupt();
+  void clear_interrupt();
   u8 get_status();
 
   struct {
@@ -77,6 +84,8 @@ private:
     u8 cmd_res_max;
 
     bool interrupt;
+    u8 dor;
+    u8 reset_sense_cnt;
 
   } state;
 };
@@ -90,41 +99,41 @@ private:
 #define FDC_REG_DIR 7
 
 #define SEL_DRIVE state.drive[state.drive_select]
-#define SEL_FDISK get_disk(0, state.drive_select)
+#define SEL_FDISK get_disk(0,state.drive_select)
 #define DRIVE(i) state.drive[i]
-#define FDISK(i) get_disk(0, i)
+#define FDISK(i) get_disk(0,i)
 
 //
 // These defines were stolen from the Linux 1.0 fdreg.h file :)
 //
 /* Bits of FD_ST0 */
-#define ST0_DS 0x03   /* drive select mask */
-#define ST0_HA 0x04   /* Head (Address) */
-#define ST0_NR 0x08   /* Not Ready */
-#define ST0_ECE 0x10  /* Equipment chech error */
-#define ST0_SE 0x20   /* Seek end */
-#define ST0_INTR 0xC0 /* Interrupt code mask */
+#define ST0_DS		0x03		/* drive select mask */
+#define ST0_HA		0x04		/* Head (Address) */
+#define ST0_NR		0x08		/* Not Ready */
+#define ST0_ECE		0x10		/* Equipment chech error */
+#define ST0_SE		0x20		/* Seek end */
+#define ST0_INTR	0xC0		/* Interrupt code mask */
 
 /* Bits of FD_ST1 */
-#define ST1_MAM 0x01 /* Missing Address Mark */
-#define ST1_WP 0x02  /* Write Protect */
-#define ST1_ND 0x04  /* No Data - unreadable */
-#define ST1_OR 0x10  /* OverRun */
-#define ST1_CRC 0x20 /* CRC error in data or addr */
-#define ST1_EOC 0x80 /* End Of Cylinder */
+#define ST1_MAM		0x01		/* Missing Address Mark */
+#define ST1_WP		0x02		/* Write Protect */
+#define ST1_ND		0x04		/* No Data - unreadable */
+#define ST1_OR		0x10		/* OverRun */
+#define ST1_CRC		0x20		/* CRC error in data or addr */
+#define ST1_EOC		0x80		/* End Of Cylinder */
 
 /* Bits of FD_ST2 */
-#define ST2_MAM 0x01 /* Missing Addess Mark (again) */
-#define ST2_BC 0x02  /* Bad Cylinder */
-#define ST2_SNS 0x04 /* Scan Not Satisfied */
-#define ST2_SEH 0x08 /* Scan Equal Hit */
-#define ST2_WC 0x10  /* Wrong Cylinder */
-#define ST2_CRC 0x20 /* CRC error in data field */
-#define ST2_CM 0x40  /* Control Mark = deleted */
+#define ST2_MAM		0x01		/* Missing Addess Mark (again) */
+#define ST2_BC		0x02		/* Bad Cylinder */
+#define ST2_SNS		0x04		/* Scan Not Satisfied */
+#define ST2_SEH		0x08		/* Scan Equal Hit */
+#define ST2_WC		0x10		/* Wrong Cylinder */
+#define ST2_CRC		0x20		/* CRC error in data field */
+#define ST2_CM		0x40		/* Control Mark = deleted */
 
 /* Bits of FD_ST3 */
-#define ST3_HA 0x04 /* Head (Address) */
-#define ST3_TZ 0x10 /* Track Zero signal (1=track 0) */
-#define ST3_WP 0x40 /* Write Protect */
+#define ST3_HA		0x04		/* Head (Address) */
+#define ST3_TZ		0x10		/* Track Zero signal (1=track 0) */
+#define ST3_WP		0x40		/* Write Protect */
 
 #endif // !defined(INCLUDED_FLOPPYCONTROLLER_H)

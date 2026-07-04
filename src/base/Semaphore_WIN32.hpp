@@ -89,8 +89,13 @@ private:
 // inlines
 //
 inline void CSemaphoreImpl::setImpl() {
+  // Saturate at the maximum instead of throwing: device models signal
+  // "work pending" semaphores without tracking whether the worker has
+  // already been woken (matches the ES40-Emu semaphore semantics).
+  // ReleaseSemaphore fails with ERROR_TOO_MANY_POSTS when full.
   if (!ReleaseSemaphore(_sema, 1, NULL)) {
-    throw CSystemException("cannot signal semaphore");
+    if (GetLastError() != ERROR_TOO_MANY_POSTS)
+      throw CSystemException("cannot signal semaphore");
   }
 }
 

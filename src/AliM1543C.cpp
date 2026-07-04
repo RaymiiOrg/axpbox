@@ -28,503 +28,504 @@
  * serve the general public.
  */
 
-#include "AliM1543C.hpp"
+ /**
+  * \file
+  * Contains the code for the emulated Ali M1543C chipset devices.
+ **/
 #include "StdAfx.hpp"
+#include "AliM1543C.hpp"
 #include "System.hpp"
 #include "VGA.hpp"
 
 #ifdef DEBUG_PIC
-bool pic_messages = false;
+bool  pic_messages = false;
 #endif
 
-/* Timer Calibration: Instructions per Microsecond (assuming 1 clock = 1
- * instruction) */
-#define IPus 847
+/* Timer Calibration: Instructions per Microsecond (assuming 1 clock = 1 instruction) */
+#define IPus  847
 
-u32 ali_cfg_data[64] = {
-    /*00*/ 0x153310b9, // CFID: vendor + device
-    /*04*/ 0x0200000f, // CFCS: command + status
-    /*08*/ 0x060100c3, // CFRV: class + revision
-    /*0c*/ 0x00000000, // CFLT: latency timer + cache line size
-    /*10*/ 0x00000000, // BAR0:
-    /*14*/ 0x00000000, // BAR1:
-    /*18*/ 0x00000000, // BAR2:
-    /*1c*/ 0x00000000, // BAR3:
-    /*20*/ 0x00000000, // BAR4:
-    /*24*/ 0x00000000, // BAR5:
-    /*28*/ 0x00000000, // CCIC: CardBus
-    /*2c*/ 0x00000000, // CSID: subsystem + vendor
-    /*30*/ 0x00000000, // BAR6: expansion rom base
-    /*34*/ 0x00000000, // CCAP: capabilities pointer
-    /*38*/ 0x00000000,
-    /*3c*/ 0x00000000, // CFIT: interrupt configuration
-    0,
-    0,
-    0,
-    0,
-    0,
-    /*54*/ 0x00000200, //
-    0,
-    0,
-    0,
-    0,
-    0,
-    0,
-    0,
-    0,
-    0,
-    0,
-    0,
-    0,
-    0,
-    0,
-    0,
-    0,
-    0,
-    0,
-    0,
-    0,
-    0,
-    0,
-    0,
-    0,
-    0,
-    0,
-    0,
-    0,
-    0,
-    0,
-    0,
-    0,
-    0,
-    0,
-    0,
-    0,
-    0,
-    0,
-    0,
-    0,
-    0,
-    0};
+u32   ali_cfg_data[64] = {
+	/*00*/ 0x153310b9,  // CFID: vendor + device
+	/*04*/ 0x0200000f,  // CFCS: command + status
+	/*08*/ 0x060100c3,  // CFRV: class + revision
+	/*0c*/ 0x00000000,  // CFLT: latency timer + cache line size
+	/*10*/ 0x00000000,  // BAR0:
+	/*14*/ 0x00000000,  // BAR1:
+	/*18*/ 0x00000000,  // BAR2:
+	/*1c*/ 0x00000000,  // BAR3:
+	/*20*/ 0x00000000,  // BAR4:
+	/*24*/ 0x00000000,  // BAR5:
+	/*28*/ 0x00000000,  // CCIC: CardBus
+	/*2c*/ 0x00000000,  // CSID: subsystem + vendor
+	/*30*/ 0x00000000,  // BAR6: expansion rom base
+	/*34*/ 0x00000000,  // CCAP: capabilities pointer
+	/*38*/ 0x00000000,
+	/*3c*/ 0x00000000,  // CFIT: interrupt configuration
+	/*40*/ 0x00000000,
+	// 0x44 byte = IDENRI (IDE channel 0 IRQ route).  0x0d → IRQ 14.
+	/*44*/ 0x0000000d,
+	/*48*/ 0x00000000,  // PIRT[A:D] PCI INTx route — programmed by firmware
+	/*4c*/ 0x00000000,
+	/*50*/ 0x00000000,
+	/*54*/ 0x00000200,
+	/*58*/ 0x00000000,
+	/*5c*/ 0x00000000, /*60*/ 0x00000000, /*64*/ 0x00000000,
+	/*68*/ 0x00000000, /*6c*/ 0x00000000, /*70*/ 0x00000000,
+	// 0x74 byte = USBIR (USB IRQ route),       0x03 → IRQ 10
+	// 0x75 byte = IDENRII (IDE chan 1 route),  0x0f → IRQ 15
+	// 0x76 byte = SCIIR (SCI route),           0x00 → disabled at reset
+	// 0x77 byte = SMBIR (SMBus / SCI route),   0x01 → IRQ  9
+	/*74*/ 0x01000f03,
+	0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
+};
 
-u32 ali_cfg_mask[64] = {
-    /*00*/ 0x00000000, // CFID: vendor + device
-    /*04*/ 0x00000000, // CFCS: command + status
-    /*08*/ 0x00000000, // CFRV: class + revision
-    /*0c*/ 0x00000000, // CFLT: latency timer + cache line size
-    /*10*/ 0x00000000, // BAR0
-    /*14*/ 0x00000000, // BAR1: CBMA
-    /*18*/ 0x00000000, // BAR2:
-    /*1c*/ 0x00000000, // BAR3:
-    /*20*/ 0x00000000, // BAR4:
-    /*24*/ 0x00000000, // BAR5:
-    /*28*/ 0x00000000, // CCIC: CardBus
-    /*2c*/ 0x00000000, // CSID: subsystem + vendor
-    /*30*/ 0x00000000, // BAR6: expansion rom base
-    /*34*/ 0x00000000, // CCAP: capabilities pointer
-    /*38*/ 0x00000000,
-    /*3c*/ 0x00000000, // CFIT: interrupt configuration
-    /*40*/ 0xffcfff7f,
-    /*44*/ 0xff00cbdf,
-    /*48*/ 0xffffffff,
-    /*4c*/ 0x000000ff,
-    /*50*/ 0xffff8fff,
-    /*54*/ 0xf0ffff00,
-    /*58*/ 0x030f0d7f,
-    0,
-    0,
-    0,
-    0,
-    0,
-    0,
-    0,
-    0,
-    0,
-    0,
-    0,
-    0,
-    0,
-    0,
-    0,
-    0,
-    0,
-    0,
-    0,
-    0,
-    0,
-    0,
-    0,
-    0,
-    0,
-    0,
-    0,
-    0,
-    0,
-    0,
-    0,
-    0,
-    0,
-    0,
-    0,
-    0,
-    0,
-    0,
-    0,
-    0,
-    0};
+u32   ali_cfg_mask[64] = {
+	/*00*/ 0x00000000,  // CFID: vendor + device
+	/*04*/ 0x00000000,  // CFCS: command + status
+	/*08*/ 0x00000000,  // CFRV: class + revision
+	/*0c*/ 0x00000000,  // CFLT: latency timer + cache line size
+	/*10*/ 0x00000000,  // BAR0
+	/*14*/ 0x00000000,  // BAR1: CBMA
+	/*18*/ 0x00000000,  // BAR2:
+	/*1c*/ 0x00000000,  // BAR3:
+	/*20*/ 0x00000000,  // BAR4:
+	/*24*/ 0x00000000,  // BAR5:
+	/*28*/ 0x00000000,  // CCIC: CardBus
+	/*2c*/ 0x00000000,  // CSID: subsystem + vendor
+	/*30*/ 0x00000000,  // BAR6: expansion rom base
+	/*34*/ 0x00000000,  // CCAP: capabilities pointer
+	/*38*/ 0x00000000,
+	/*3c*/ 0x00000000,  // CFIT: interrupt configuration
+	// Chipset-config wmask.  Byte-granular bits set here mark each PCI-config
+	// byte as OS-writable; bits left clear are read-only.  Without writable
+	// bits in 0x5c-0x77, AlphaBIOS's writes to USB / IDE-1 / SCI / SMBus IRQ
+	// route bytes are silently dropped and the table-build path produces
+	// wrong IRQ-routing data.
+	/*40*/ 0xffcfff7f,
+	/*44*/ 0xff00cbdf,
+	/*48*/ 0xffffffff, // PIRT[A:D]
+	/*4c*/ 0x000000ff,
+	/*50*/ 0xcfff8fff,
+	/*54*/ 0xe0ffff00,
+	/*58*/ 0x020f0d7f,
+	/*5c*/ 0xffe0027f,
+	/*60*/ 0x00000000, /*64*/ 0x00000000, /*68*/ 0x00000000,
+	/*6c*/ 0x00ffbf00,
+	/*70*/ 0xffefefff,
+	/*74*/ 0x1fcf1fdf, // USBIR / IDENRII / SCIIR / SMBIR
+	0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
+};
 
 /**
  * Constructor.
  **/
-CAliM1543C::CAliM1543C(CConfigurator *cfg, CSystem *c, int pcibus, int pcidev)
-    : CPCIDevice(cfg, c, pcibus, pcidev) {
-  if (theAli != 0)
-    FAILURE(Configuration, "More than one Ali");
-  theAli = this;
+CAliM1543C::CAliM1543C(CConfigurator* cfg, CSystem* c, int pcibus, int pcidev) : CPCIDevice(cfg, c, pcibus, pcidev)
+{
+	if (theAli != 0)
+		FAILURE(Configuration, "More than one Ali");
+	theAli = this;
 }
 
 /**
  * Initialize the Ali device.
  **/
-void CAliM1543C::init() {
-  add_function(0, ali_cfg_data, ali_cfg_mask);
+void CAliM1543C::init()
+{
+	add_function(0, ali_cfg_data, ali_cfg_mask);
 
-  int i;
-  char *filename;
+	int     i;
+	char* filename;
 
-  add_legacy_io(1, 0x61, 1);
+	add_legacy_io(1, 0x61, 1);
 
-  state.reg_61 = 0;
+	state.reg_61 = 0;
 
-  add_legacy_io(2, 0x70, 4);
-  cSystem->RegisterMemory(this, 2, U64(0x00000801fc000070), 4);
-  for (i = 0; i < 4; i++)
-    state.toy_access_ports[i] = 0;
-  for (i = 0; i < 256; i++)
-    state.toy_stored_data[i] = 0;
+	add_legacy_io(2, 0x70, 4);
+	cSystem->RegisterMemory(this, 2, U64(0x00000801fc000070), 4);
+	for (i = 0; i < 4; i++)
+		state.toy_access_ports[i] = 0;
+	for (i = 0; i < 256; i++)
+		state.toy_stored_data[i] = 0;
+	state.toy_offset = 0;
 
-  state.toy_stored_data[0x17] = myCfg->get_bool_value("vga_console") ? 1 : 0;
+	arc_year_compat = myCfg->get_myParent()->get_bool_value("arc_year_compat", false);
 
-  if (state.toy_stored_data[0x17] && !theVGA) {
-    printf("! CONFIGURATION WARNING ! vga_console set to true, but no VGA card "
-           "installed.\n");
-    state.toy_stored_data[0x17] = 0;
-  }
+	// Optional absolute time override from sys0:
+	//   time = "YYYY-MM-DD" or "YYYY-MM-DD HH:MM:SS"
+	// Interpreted as UTC to match the runtime ARC/SRM TOY edit path
+	// (see toy_write SET_TIME below). Sets the initial toy_offset; subsequent
+	// guest TOY writes still take precedence and overwrite this offset.
+	char* faketime = myCfg->get_myParent()->get_text_value("time");
+	if (faketime)
+	{
+		struct tm ft = {};
+		int n = sscanf(faketime, "%d-%d-%d %d:%d:%d",
+			&ft.tm_year, &ft.tm_mon, &ft.tm_mday,
+			&ft.tm_hour, &ft.tm_min, &ft.tm_sec);
+		if (n < 3)
+			FAILURE_1(Configuration,
+				"Invalid time format: %s (use YYYY-MM-DD or "
+				"YYYY-MM-DD HH:MM:SS)",
+				faketime);
+		ft.tm_year -= 1900;
+		ft.tm_mon -= 1;
+#ifdef _WIN32
+		time_t set_time = _mkgmtime(&ft);
+#else
+		time_t set_time = timegm(&ft);
+#endif
+		if (set_time == (time_t)-1)
+			FAILURE_1(Configuration, "Invalid time value: %s", faketime);
+		time_t host_now;
+		time(&host_now);
+		state.toy_offset = (long)(set_time - host_now);
+	}
+	else
+	{
+		// AXPbox 'timezone' option: seed the TOY offset so the guest clock
+		// shows host local time by default ("local"), UTC ("utc"), or either
+		// with a POSIX-style offset appended: "+<n>s|m|h|d|M|y"
+		// (e.g. "local+2h", "utc+20y"). Guest TOY writes and the sys0 'time'
+		// override still take precedence over this initial seed.
+		std::string timezone{myCfg->get_text_value("timezone", "local")};
+		std::string timebase;
+		bool offset_present = false;
+		long offset = 0;
 
-  state.toy_pi_last_fire = 0;
+		if (timezone.rfind("local", 0) == 0)
+			timebase = "local";
+		else if (timezone.rfind("utc", 0) == 0)
+			timebase = "utc";
+		else
+			FAILURE_1(Configuration, "Invalid timezone %s", timezone.c_str());
 
-  ResetPCI();
+		int remaining_chars = (int)(timezone.length() - timebase.length());
+		if (remaining_chars > 0 && timezone.at(timebase.length()) == '+')
+		{
+			offset_present = true;
+			sscanf(timezone.c_str() + timebase.length() + 1, "%ld", &offset);
+			remaining_chars -= (int)std::to_string(offset).length() + 1;
+			if (remaining_chars != 1)
+				FAILURE_1(Configuration, "Invalid timezone %s", timezone.c_str());
+		}
+		else if (remaining_chars > 0)
+			FAILURE_1(Configuration, "Invalid timezone %s", timezone.c_str());
 
-  // PIT Setup
-  add_legacy_io(6, 0x40, 4);
-  for (i = 0; i < 3; i++)
-    state.pit_status[i] = 0x40; // invalid/null counter
-  for (i = 0; i < 9; i++)
-    state.pit_counter[i] = 0;
+		time_t host_now;
+		time(&host_now);
+		time_t shifted = host_now;
 
-  add_legacy_io(7, 0x20, 2);
-  add_legacy_io(8, 0xa0, 2);
-  add_legacy_io(30, 0x4d0, 2);
+		if (offset_present)
+		{
+			switch (timezone.at(timezone.length() - 1))
+			{
+			case 's': shifted += offset; break;
+			case 'm': shifted += offset * 60; break;
+			case 'h': shifted += offset * 3600; break;
+			case 'd': shifted += offset * 86400; break;
+			case 'M':
+			case 'y': break;
+			default:
+				FAILURE_1(Configuration, "Invalid timezone offset type %c",
+					timezone.at(timezone.length() - 1));
+			}
+		}
 
-  // odd one, byte read in PCI IACK (interrupt acknowledge) cycle. Interrupt
-  // vector.
-  cSystem->RegisterMemory(this, 20, U64(0x00000801f8000000), 1);
+		struct tm target = {};
+		if (timebase == "local")
+		{
+#ifdef _WIN32
+			localtime_s(&target, &shifted);
+#else
+			localtime_r(&shifted, &target);
+#endif
+		}
+		else
+		{
+#ifdef _WIN32
+			gmtime_s(&target, &shifted);
+#else
+			gmtime_r(&shifted, &target);
+#endif
+		}
 
-  for (i = 0; i < 2; i++) {
-    state.pic_mode[i] = 0;
-    state.pic_intvec[i] = 0;
-    state.pic_mask[i] = 0;
-    state.pic_asserted[i] = 0;
-  }
+		if (offset_present)
+		{
+			switch (timezone.at(timezone.length() - 1))
+			{
+			case 'M':
+				target.tm_year += (int)(offset / 12);
+				target.tm_mon += (int)(offset % 12);
+				break;
+			case 'y':
+				target.tm_year += (int)offset;
+				break;
+			}
+		}
 
-  // Initialize parallel port
-  add_legacy_io(27, 0x3bc, 4);
-  filename = myCfg->get_text_value("lpt.outfile");
-  if (filename) {
-    lpt = fopen(filename, "ab");
-  } else {
-    lpt = NULL;
-  }
+		// The TOY itself runs in UTC + toy_offset, so express the target
+		// wall-clock as a UTC delta against the host clock.
+#ifdef _WIN32
+		time_t seeded = _mkgmtime(&target);
+#else
+		time_t seeded = timegm(&target);
+#endif
+		if (seeded != (time_t)-1)
+			state.toy_offset = (long)(seeded - host_now);
+	}
 
-  lpt_reset();
+	state.toy_stored_data[0x17] = myCfg->get_bool_value("vga_console") ? 1 : 0;
 
-  myRegLock = new CMutex("ali-reg");
+	if (state.toy_stored_data[0x17] && !theVGA)
+	{
+		printf("! CONFIGURATION WARNING ! vga_console set to true, but no VGA card installed.\n");
+		state.toy_stored_data[0x17] = 0;
+	}
 
-  printf("%s: $Id: AliM1543C.cpp,v 1.66 2008/05/31 15:47:07 iamcamiel Exp $\n",
-         devid_string);
+	ResetPCI();
+
+	// PIT Setup
+	add_legacy_io(6, 0x40, 4);
+	for (i = 0; i < 3; i++)
+		state.pit_status[i] = 0x40; // invalid/null counter
+	for (i = 0; i < 9; i++)
+		state.pit_counter[i] = 0;
+
+	add_legacy_io(7, 0x20, 2);
+	add_legacy_io(8, 0xa0, 2);
+	add_legacy_io(30, 0x4d0, 2);
+	add_legacy_io(9, 0x22, 2); // PIC backdoor control
+	state.pic_control_index = 0;
+
+	// odd one, byte read in PCI IACK (interrupt acknowledge) cycle. Interrupt vector.
+	cSystem->RegisterMemory(this, 20, U64(0x00000801f8000000), 1);
+
+	for (i = 0; i < 2; i++)
+	{
+		state.pic_elcr[i] = 0;
+		state.pic_ltim[i] = 0;
+		pic_init_reset(i);
+	}
+
+	// Initialize parallel port - IO registration is SuperIO driven, so not here, just output handling
+	filename = myCfg->get_text_value("lpt.outfile");
+	if (filename)
+	{
+		lpt = fopen(filename, "ab");
+	}
+	else
+	{
+		lpt = NULL;
+	}
+
+	lpt_reset();
+
+	// SuperIO
+	add_legacy_io(40, 0x370, 2);
+
+	// Populate the SuperIO chip-level / LDN register banks 
+	// power on defaults
+	superio_reset();
+
+	// ISA Plug-and-Play address (0x279) and write-data (0xA79) ports.
+	// The OS-selectable READ_DATA port (id 52) is registered dynamically
+	// when the OS programs it via PnP register 0x00.
+	add_legacy_io(50, 0x279, 1);
+	add_legacy_io(51, 0xa79, 1);
+	state.isapnp_state    = PNP_WAIT_FOR_KEY;
+	state.isapnp_key_pos  = 0;
+	state.isapnp_reg      = 0;
+	state.isapnp_rd_port  = 0;
+	state.isapnp_wake_csn = 0;
+
+
+	myThread = nullptr;
+
+	printf("%s: $Id$\n",
+		devid_string);
 }
 
-void CAliM1543C::start_threads() {
-  if (!myThread) {
-    printf(" ali");
-    StopThread = false;
-    myThread = std::make_unique<std::thread>([this]() { this->run(); });
-  }
+void CAliM1543C::start_threads()
+{
+	if (!myThread)
+	{
+		printf(" ali");
+		StopThread = false;
+		myThread = std::make_unique<std::thread>([this]() { this->run(); });
+	}
 }
 
-void CAliM1543C::stop_threads() {
-  StopThread = true;
-  if (myThread) {
-    printf(" ali");
-    myThread->join();
-    myThread = nullptr;
-  }
+void CAliM1543C::stop_threads()
+{
+	StopThread = true;
+	if (myThread)
+	{
+		printf(" ali");
+		myThread->join();
+		myThread = nullptr;
+	}
 }
 
 /**
  * Destructor.
  **/
-CAliM1543C::~CAliM1543C() {
-  stop_threads();
+CAliM1543C::~CAliM1543C()
+{
+	stop_threads();
 
-  if (lpt)
-    fclose(lpt);
+	if (lpt)
+		fclose(lpt);
 }
 
 /**
- * Calculates VM time based on the configuration specified in the configuration
- * file.
- * @return The time.
- */
-struct tm CAliM1543C::get_time() {
-  struct tm time_out;
-  time_t time_raw;
-
-  // Timezone setting from configuration file
-  std::string timezone{myCfg->get_text_value("timezone", "local")};
-
-  // Time base (local or utc)
-  std::string timebase;
-
-  // Time offset
-  bool offset_present = false;
-  long offset;
-
-  // Check for absolute time override: "YYYY-MM-DD" or "YYYY-MM-DD HH:MM:SS"
-  // Read from system-level config (sys0 block)
-  char *faketime = myCfg->get_myParent()->get_text_value("time");
-  if (faketime) {
-    struct tm ft;
-    memset(&ft, 0, sizeof(ft));
-    ft.tm_isdst = -1; // let mktime figure it out
-    int n = sscanf(faketime, "%d-%d-%d %d:%d:%d", &ft.tm_year, &ft.tm_mon,
-                   &ft.tm_mday, &ft.tm_hour, &ft.tm_min, &ft.tm_sec);
-    if (n >= 3) {
-      ft.tm_year -= 1900;
-      ft.tm_mon -= 1;
-      time_raw = mktime(&ft);
-      if (time_raw == (time_t)-1) {
-        FAILURE_1(Configuration, "Invalid time value: %s", faketime);
-      }
-      // Apply timezone conversion and return
-      if (timezone.rfind("utc") == 0) {
-        gmtime_s(&time_out, &time_raw);
-      } else {
-#ifdef _WIN32
-        localtime_s(&time_out, &time_raw);
-#else
-        localtime_s(&time_raw, &time_out);
-#endif
-      }
-      return time_out;
-    } else {
-      FAILURE_1(Configuration,
-                "Invalid time format: %s (use YYYY-MM-DD or "
-                "YYYY-MM-DD HH:MM:SS)",
-                faketime);
-    }
-  }
-
-  // Get raw time
-  time(&time_raw);
-
-  // Set time base
-  if (timezone.rfind("local") == 0) {
-    timebase = "local";
-  } else if (timezone.rfind("utc") == 0) {
-    timebase = "utc";
-  } else {
-    FAILURE_1(Configuration, "Invalid timezone %s", timezone.c_str());
-  }
-
-  // Characters remaining after time base
-  int remaining_chars = timezone.length() - timebase.length();
-
-  if (remaining_chars > 0 &&
-      timezone.at(timezone.length() - remaining_chars) == '+') {
-    // An offset is included in the timezone
-    offset_present = true;
-    sscanf(timezone.c_str() + timezone.length() - remaining_chars + 1, "%ld",
-           &offset);
-    remaining_chars -= std::to_string(offset).length() + 1;
-
-    if (remaining_chars != 1) {
-      // Offset type always has one character
-      FAILURE_1(Configuration, "Invalid timezone %s", timezone.c_str());
-    }
-  } else if (remaining_chars > 0) {
-    FAILURE_1(Configuration, "Invalid timezone %s", timezone.c_str());
-  }
-
-  if (offset_present) {
-    // Apply POSIX time offset (seconds, minutes, hours, days)
-    switch (timezone.at(timezone.length() - 1)) {
-    case 's':
-      time_raw += offset;
-      break;
-    case 'm':
-      time_raw += offset * 60;
-      break;
-    case 'h':
-      time_raw += offset * 3600;
-      break;
-    case 'd':
-      time_raw += offset * 86400;
-      break;
-    case 'M':
-    case 'y':
-      break;
-    default:
-      FAILURE_1(Configuration, "Invalid timezone offset type %c",
-                timezone.at(timezone.length() - 1));
-    }
-  }
-
-  // Convert POSIX time to date
-  if (timebase == "local") {
-#ifdef _WIN32
-    localtime_s(&time_out, &time_raw);
-#else
-    localtime_s(&time_raw, &time_out);
-#endif
-  } else if (timebase == "utc") {
-    gmtime_s(&time_out, &time_raw);
-  } else {
-    // This shouldn't happen
-    FAILURE_1(Configuration, "Invalid timezone %s", timezone.c_str());
-  }
-
-  if (offset_present) {
-    // Apply date offset (months, years)
-    switch (timezone.at(timezone.length() - 1)) {
-    case 'M':
-      time_out.tm_year += offset / 12;
-      time_out.tm_mon += offset % 12;
-      break;
-    case 'y':
-      time_out.tm_year += offset;
-      break;
-    }
-
-    // Fix day of week
-    mktime(&time_out);
-  }
-
-  return time_out;
-}
-
-/**
- * Read (byte,word,longword) from one of the legacy ranges. Only byte-accesses
- *are supported.
+ * Read (byte,word,longword) from one of the legacy ranges. Only byte-accesses are supported.
  *
  * Ranges are:
  *  - 1. I/O port 61h
  *  - 2. I/O ports 70h-73h (time-of-year clock)
  *  - 6. I/O ports 40h-43h (programmable interrupt timer)
  *  - 7. I/O ports 20h-21h (primary programmable interrupt controller)
- *  - 8. I/O ports a0h-a1h (secondary (cascaded) programmable interrupt
- *controller)
+ *  - 9. I/O ports 22h-23h (PIC8259 control register index/data backdoor)
+ *  - 8. I/O ports a0h-a1h (secondary (cascaded) programmable interrupt controller)
  *  - 20. PCI IACK address (interrupt vector)
+ *  - 40. I/O ports 370h-371h (SuperIO)
  *  - 27. I/O ports 3bch-3bfh (parallel port)
- *  - 30. I/O ports 4d0h-4d1h (edge/level register of programmable interrupt
- *controller)
+ *  - 30. I/O ports 4d0h-4d1h (edge/level register of programmable interrupt controller)
  *  .
  **/
-u32 CAliM1543C::ReadMem_Legacy(int index, u32 address, int dsize) {
-  if (dsize != 8 &&
-      index != 20) // when interrupt vector is read, dsize doesn't matter.
-  {
-    FAILURE_4(
-        InvalidArgument,
-        "%s: DSize %d reading from legacy memory range # %d at address %02x\n",
-        devid_string, dsize, index, address);
-  }
+u32 CAliM1543C::ReadMem_Legacy(int index, u32 address, int dsize)
+{
+	if (dsize != 8 && index != 20) // when interrupt vector is read, dsize doesn't matter.
+	{
+		FAILURE_4(InvalidArgument,
+			"%s: DSize %d reading from legacy memory range # %d at address %02x\n",
+			devid_string, dsize, index, address);
+	}
 
-  int channel = 0;
-  switch (index) {
-  case 1:
-    return reg_61_read();
-  case 2:
-    return toy_read(address);
-  case 6:
-    return pit_read(address);
-  case 8:
-    channel = 1;
-  case 7:
-    return pic_read(channel, address);
-  case 20:
-    return pic_read_vector();
-  case 30:
-    return pic_read_edge_level(address);
-  case 27:
-    return lpt_read(address);
-  }
+	int channel = 0;
+	switch (index)
+	{
+	case 1:   
+		return reg_61_read();
 
-  return 0;
+	case 2:   
+		return toy_read(address);
+
+	case 6:   
+		return pit_read(address);
+
+	case 7:   
+		return pic_read(0, address);
+
+	case 8:   
+		return pic_read(1, address);
+
+	case 9:   
+		return pic_control_read(address);
+
+	case 20:  
+		return pic_read_vector();
+
+	case 30:
+		return pic_read_edge_level(address);
+
+	case 40:
+		return superio_read(address);
+
+	case 27:
+		return lpt_read(address);
+
+	case 50:  // 0x279 ADDRESS — write-only on real cards
+	case 51:  // 0xA79 WRITE_DATA — write-only on real cards
+		return 0xff;
+
+	case 52:  // OS-programmed READ_DATA port — no cards => 0xff
+		return isapnp_data_read(address);
+	}
+
+	return 0;
 }
 
 /**
- * Write (byte,word,longword) to one of the legacy ranges. Only byte-accesses
- *are supported.
+ * Write (byte,word,longword) to one of the legacy ranges. Only byte-accesses are supported.
  *
  * Ranges are:
  *  - 1. I/O port 61h
  *  - 2. I/O ports 70h-73h (time-of-year clock)
  *  - 6. I/O ports 40h-43h (programmable interrupt timer)
  *  - 7. I/O ports 20h-21h (primary programmable interrupt controller)
- *  - 8. I/O ports a0h-a1h (secondary (cascaded) programmable interrupt
- *controller)
+ *  - 9. I/O ports 22h-23h (PIC8259 control register index/data backdoor)
+ *  - 8. I/O ports a0h-a1h (secondary (cascaded) programmable interrupt controller)
  *  - 12. I/O ports 00h-0fh (primary DMA controller)
  *  - 13. I/O ports c0h-dfh (secondary DMA controller)
  *  - 20. PCI IACK address (interrupt vector)
+ *  - 40. I/O ports 370h-371h (SuperIO)
  *  - 27. I/O ports 3bch-3bfh (parallel port)
- *  - 30. I/O ports 4d0h-4d1h (edge/level register of programmable interrupt
- *controller)
+ *  - 30. I/O ports 4d0h-4d1h (edge/level register of programmable interrupt controller)
  *  - 33. I/O ports 80h-8fh (DMA controller memory base low page register)
  *  - 34. I/O ports 480h-48fh (DMA controller memory base high page register)
  *  .
  **/
-void CAliM1543C::WriteMem_Legacy(int index, u32 address, int dsize, u32 data) {
-  if (dsize != 8) {
-    FAILURE_4(
-        InvalidArgument,
-        "%s: DSize %d writing to legacy memory range # %d at address %02x\n",
-        devid_string, dsize, index, address);
-  }
+void CAliM1543C::WriteMem_Legacy(int index, u32 address, int dsize, u32 data)
+{
+	if (dsize != 8 && index != 40) // SuperIO 
+	{
+		FAILURE_4(InvalidArgument,
+			"%s: DSize %d writing to legacy memory range # %d at address %02x\n",
+			devid_string, dsize, index, address);
+	}
 
-  int channel = 0;
-  switch (index) {
-  case 1:
-    reg_61_write((u8)data);
-    return;
-  case 2:
-    toy_write(address, (u8)data);
-    return;
-  case 6:
-    pit_write(address, (u8)data);
-    return;
-  case 8:
-    channel = 1;
-  case 7:
-    pic_write(channel, address, (u8)data);
-    return;
-  case 30:
-    pic_write_edge_level(address, (u8)data);
-    return;
-  case 27:
-    lpt_write(address, (u8)data);
-    return;
-  }
+	int channel = 0;
+	switch (index)
+	{
+	case 1:   
+		reg_61_write((u8)data); 
+		return;
+
+	case 2:   
+		toy_write(address, (u8)data); 
+		return;
+
+	case 6:   
+		pit_write(address, (u8)data); 
+		return;
+
+	case 7:
+		pic_write(0, address, (u8)data);
+		return;
+
+	case 8:   
+		pic_write(1, address, (u8)data);
+		return;
+
+	case 9:
+		pic_control_write(address, (u8)data);
+		return;
+
+	case 30:
+		pic_write_edge_level(address, (u8)data);
+		return;
+
+	case 40:
+		for (int shift = 0, byte_offset = 0; shift < dsize; shift += 8, byte_offset++)
+			superio_write(address + byte_offset, (u8)(data >> shift));
+		return;
+
+	case 27:
+		lpt_write(address, (u8)data);
+		return;
+
+	case 50:  // 0x279 ADDRESS
+		isapnp_addr_write((u8)data);
+		return;
+
+	case 51:  // 0xA79 WRITE_DATA
+		isapnp_data_write((u8)data);
+		return;
+
+	case 52:  // OS-programmed READ_DATA port — read-only on real cards
+		return;
+	}
 }
 
 /**
@@ -541,209 +542,694 @@ void CAliM1543C::WriteMem_Legacy(int index, u32 address, int dsize, u32 data) {
  * Every 1500 reads the bit gets flipped so maybe the timing will
  * seem reasonable to the OS.
  */
-u8 CAliM1543C::reg_61_read() {
+u8 CAliM1543C::reg_61_read()
+{
 #if 0
-  static long read_count = 0;
-  if(!(state.reg_61 & 0x20))
-  {
-    if(read_count % 1500 == 0)
-      state.reg_61 |= 0x20;
-  }
-  else
-  {
-    state.reg_61 &= ~0x20;
-  }
+	static long read_count = 0;
+	if (!(state.reg_61 & 0x20))
+	{
+		if (read_count % 1500 == 0)
+			state.reg_61 |= 0x20;
+	}
+	else
+	{
+		state.reg_61 &= ~0x20;
+	}
 
-  read_count++;
+	read_count++;
 #else
-  state.reg_61 &= ~0x20;
-  state.reg_61 |= (state.pit_status[2] & 0x80) >> 2;
+	state.reg_61 &= ~0x20;
+	state.reg_61 |= (state.pit_status[2] & 0x80) >> 2;
 #endif
-  return state.reg_61;
+	return state.reg_61;
 }
 
 /**
  * Write port 61h (speaker/ miscellaneous).
  **/
-void CAliM1543C::reg_61_write(u8 data) {
-  state.reg_61 = (state.reg_61 & 0xf0) | (((u8)data) & 0x0f);
+void CAliM1543C::reg_61_write(u8 data)
+{
+	state.reg_61 = (state.reg_61 & 0xf0) | (((u8)data) & 0x0f);
+}
+
+void CAliM1543C::superio_reset()
+{
+	memset(state.superio_chip_regs, 0, sizeof(state.superio_chip_regs));
+	memset(state.superio_ldn_regs, 0, sizeof(state.superio_ldn_regs));
+
+	state.superio_config_mode = false;
+	state.superio_unlock_state = 0;
+	state.superio_index = 0;
+	state.superio_ldn = 0;
+
+	state.superio_chip_regs[0x20] = 0x43;
+	state.superio_chip_regs[0x21] = 0x15;
+	state.superio_chip_regs[0x22] = 0x00;
+	state.superio_chip_regs[0x23] = 0x00;
+	state.superio_chip_regs[0x26] = 0x80; // 0x80 = M1543_DEV_STATUS_KBC
+	state.superio_chip_regs[0x2d] = 0x20;
+	state.superio_chip_regs[0x2e] = 0x20;
+
+	state.superio_ldn_regs[0][0x30] = (state.toy_stored_data[0x10] != 0) ? 0x01 : 0x00;
+	state.superio_ldn_regs[0][0x60] = 0x03;
+	state.superio_ldn_regs[0][0x61] = 0xf0;
+	state.superio_ldn_regs[0][0x70] = 0x06;
+	state.superio_ldn_regs[0][0x74] = 0x02;
+	state.superio_ldn_regs[0][0xf0] = 0x08;
+	state.superio_ldn_regs[0][0xf1] = 0x00;
+	state.superio_ldn_regs[0][0xf2] = 0xff;
+	state.superio_ldn_regs[0][0xf4] = 0x00;
+
+	// LDN 3 — Parallel port.  Reset values mirror QEMU's M1543 emulation
+	// (hw/isa/m1543.c) which is the known-good reference for booting
+	// Windows NT 5.x on this chipset; the high bit in CFG0/CFG1 selects
+	// the parallel-port mode bits the OS expects to round-trip.
+	state.superio_ldn_regs[3][0x30] = 0x00;
+	state.superio_ldn_regs[3][0x60] = 0x03;
+	state.superio_ldn_regs[3][0x61] = 0x78;
+	state.superio_ldn_regs[3][0x70] = 0x05;
+	state.superio_ldn_regs[3][0x74] = 0x04;
+	state.superio_ldn_regs[3][0xf0] = 0x8c;
+	state.superio_ldn_regs[3][0xf1] = 0x85;
+
+	// LDN 4 — UART1 (COM1).
+	state.superio_ldn_regs[4][0x30] = 0x00;
+	state.superio_ldn_regs[4][0x60] = 0x03;
+	state.superio_ldn_regs[4][0x61] = 0xf8;
+	state.superio_ldn_regs[4][0x70] = 0x04;
+	state.superio_ldn_regs[4][0xf0] = 0x00;
+	state.superio_ldn_regs[4][0xf1] = 0x00;
+	state.superio_ldn_regs[4][0xf2] = 0x0c;
+
+	// LDN 5 — UART2 (COM2).
+	state.superio_ldn_regs[5][0x30] = 0x00;
+	state.superio_ldn_regs[5][0x60] = 0x02;
+	state.superio_ldn_regs[5][0x61] = 0xf8;
+	state.superio_ldn_regs[5][0x70] = 0x03;
+	state.superio_ldn_regs[5][0xf0] = 0x00;
+	state.superio_ldn_regs[5][0xf1] = 0x00;
+	state.superio_ldn_regs[5][0xf2] = 0x0c;
+
+	// LDN 7 — Keyboard controller.  CFG0 bit 6 (0x40) is the KBC speed/
+	// translate enable bit.
+	state.superio_ldn_regs[7][0x30] = 0x01; // active
+	state.superio_ldn_regs[7][0x60] = 0x00; // base high (informational)
+	state.superio_ldn_regs[7][0x61] = 0x60; // base low — KBC at 0x60/0x64
+	state.superio_ldn_regs[7][0x70] = 0x01; // keyboard IRQ1
+	state.superio_ldn_regs[7][0x72] = 0x0c; // AUX IRQ12
+	state.superio_ldn_regs[7][0xf0] = 0x40; // KBC vendor config
+
+	// LDN 8 — AUX (mouse).  M1543C exposes mouse via the LDN 7 KBC
+	// (the IRQ12 wire is on KBD's reg 0x72), but NT may also probe LDN 8
+	// as a separate "logical" mouse device — keep it advertised so the
+	// PnP enumerator doesn't mark the port driver as "no mouse".
+	state.superio_ldn_regs[8][0x30] =
+		myCfg->get_bool_value("mouse.enabled", true) ? 0x01 : 0x00;
+	state.superio_ldn_regs[8][0x70] = 0x0c;
+	state.superio_ldn_regs[8][0xf0] = 0x00;
+
+	// LDN 0xC — Hotkey controller. Whistler's
+	// PnP enumerator reads these to determine whether a hotkey logical
+	// device exists.  Reporting consistent values keeps the enumeration
+	// from looping on this LDN.
+	state.superio_ldn_regs[0xc][0xf0] = 0x35;
+	state.superio_ldn_regs[0xc][0xf1] = 0x14;
+	state.superio_ldn_regs[0xc][0xf2] = 0x11;
+	state.superio_ldn_regs[0xc][0xf3] = 0x71;
+	state.superio_ldn_regs[0xc][0xf4] = 0x42;
+}
+
+u8 CAliM1543C::superio_current_reg() const
+{
+	if (state.superio_index == 0x07)
+		return state.superio_ldn;
+
+	if (state.superio_index < 0x30)
+		return state.superio_chip_regs[state.superio_index];
+
+	return state.superio_ldn_regs[state.superio_ldn & 0x0f][state.superio_index];
+}
+
+u8 CAliM1543C::superio_read(u32 address)
+{
+	if (!state.superio_config_mode)
+		return 0xff;
+
+	if (address == 0)
+		return state.superio_index;
+
+	const u8 value = superio_current_reg();
+#ifdef DEBUG_SUPERIO
+	static int superio_read_log_count = 0;
+	printf("*** SUPERIO READ[%d]: port=%03x index=%02x ldn=%02x value=%02x\n",
+		superio_read_log_count++, address + 0x370, state.superio_index, state.superio_ldn, value);
+#endif
+	return value;
+}
+
+void CAliM1543C::superio_write(u32 address, u8 data)
+{
+#ifdef DEBUG_SUPERIO
+	static int superio_write_log_count = 0;
+	printf("*** SUPERIO WRITE[%d]: port=%03x data=%02x cfg=%d index=%02x ldn=%02x \n",
+		superio_write_log_count++, address + 0x370, data, state.superio_config_mode ? 1 : 0,
+		state.superio_index, state.superio_ldn);
+#endif
+
+	if (address == 0)
+	{
+		if (!state.superio_config_mode)
+		{
+			if ((state.superio_unlock_state == 0 && data == 0x51) ||
+				(state.superio_unlock_state == 1 && data == 0x23))
+			{
+				state.superio_unlock_state++;
+				if (state.superio_unlock_state == 2)
+				{
+					state.superio_config_mode = true;
+					state.superio_unlock_state = 0;
+#ifdef DEBUG_SUPERIO
+					printf("*** SUPERIO: entered configuration mode on port 370h\n");
+#endif
+				}
+				return;
+			}
+			state.superio_unlock_state = (data == 0x51) ? 1 : 0;
+			return;
+		}
+
+		if (data == 0xbb)
+		{
+			state.superio_config_mode = false;
+			state.superio_unlock_state = 0;
+#ifdef DEBUG_SUPERIO
+			printf("*** SUPERIO: exited configuration mode on port 370h\n");
+#endif
+			return;
+		}
+
+		state.superio_index = data;
+		return;
+	}
+
+	if (!state.superio_config_mode)
+		return;
+
+	if (state.superio_index == 0x02)
+	{
+		if (data & 0x01)
+			superio_reset();
+		return;
+	}
+
+	if (state.superio_index == 0x07)
+	{
+		state.superio_ldn = data & 0x0f;
+		return;
+	}
+
+	if (state.superio_index == 0x20 || state.superio_index == 0x21 || state.superio_index == 0x22)
+		return;
+
+	if (state.superio_index < 0x30)
+	{
+		state.superio_chip_regs[state.superio_index] = data;
+		return;
+	}
+
+	state.superio_ldn_regs[state.superio_ldn & 0x0f][state.superio_index] = data;
+
+	if (state.superio_index == 0x30 ||
+		state.superio_index == 0x60 ||
+		state.superio_index == 0x61)
+	{
+		superio_apply_ldn(state.superio_ldn & 0x0f);
+	}
+}
+
+void CAliM1543C::superio_apply_ldn(int ldn)
+{
+	const u8 activate = state.superio_ldn_regs[ldn][0x30] & 0x01;
+	const u16 base = (u16)((state.superio_ldn_regs[ldn][0x60] << 8) |
+		state.superio_ldn_regs[ldn][0x61]);
+	const u8 irq1 = state.superio_ldn_regs[ldn][0x70];
+	const u8 irq2 = state.superio_ldn_regs[ldn][0x72];
+
+	switch (ldn) {
+	case 0:  // FDC.  CFloppyController binds 0x3f0-0x3f7 statically;
+		// honoring an OS-driven relocation here would require a hook into
+		// that class.  For now just acknowledge the activation so PnP
+		// enumeration sees a coherent picture.
+#ifdef DEBUG_SUPERIO
+		printf("%s: FDC %s (base=%#06x irq=%u)\n", devid_string,
+			activate ? "activated" : "deactivated", base, irq1);
+#endif
+		break;
+
+	case 3:  // LPT — only LDN with dynamic binding implemented.
+		if (activate && base != 0) {
+			add_legacy_io(27, base & 0xfffc, 4);
+#ifdef DEBUG_SUPERIO
+			printf("%s: LPT activated at %#06x\n", devid_string, base & 0xfffc);
+#endif
+		}
+#ifdef DEBUG_SUPERIO
+		else {
+			printf("%s: LPT deactivated (activate=%u base=%#06x)\n",
+				devid_string, activate, base);
+		}
+#endif
+		break;
+
+	case 4:  // UART1 (COM1).  CSerial binds its ports per-instance from
+		// the configurator.
+	case 5:  // UART2 (COM2).
+#ifdef DEBUG_SUPERIO
+		printf("%s: COM%d %s (base=%#06x irq=%u)\n", devid_string, ldn - 3,
+			activate ? "activated" : "deactivated", base, irq1);
+#endif
+		break;
+
+	case 7:  // Keyboard controller.  CKeyboard binds 0x60/0x64 statically;
+		// the LDN advertises the same so the OS sees a self-consistent
+		// SuperIO view.
+#ifdef DEBUG_SUPERIO
+		printf("%s: KBC %s (base=%#06x kbd_irq=%u aux_irq=%u)\n",
+			devid_string, activate ? "activated" : "deactivated",
+			base, irq1, irq2);
+#endif
+		(void)irq2;
+		break;
+
+	case 8:  // AUX (mouse) — IRQ wire lives on the KBC; nothing to bind.
+#ifdef DEBUG_SUPERIO
+		printf("%s: AUX %s (irq=%u)\n", devid_string,
+			activate ? "activated" : "deactivated", irq1);
+#endif
+		break;
+
+	default:
+#ifdef DEBUG_SUPERIO
+		printf("%s: LDN %#x apply (activate=%u base=%#06x)\n",
+			devid_string, ldn, activate, base);
+#endif
+		break;
+	}
+}
+
+/**
+ * \brief ISA Plug-and-Play protocol handlers.
+ *
+ * The OS drives ISA PnP card discovery via three I/O ports:
+ *   - 0x279 (ADDRESS, write-only): selects the next register to access
+ *     and is also the channel for the 32-byte LFSR initiation key that
+ *     transitions cards from Wait-For-Key into Sleep state.
+ *   - 0xA79 (WRITE_DATA, write-only): writes the value of the register
+ *     previously selected via 0x279.
+ *   - READ_DATA (read-only): an OS-selectable address in 0x203-0x3FF,
+ *     programmed by writing PnP register 0x00.  Used for serial
+ *     isolation reads and per-card resource descriptor reads.
+ *
+ * The es40 platform exposes no ISA PnP cards.  The handlers below run
+ * the protocol state machine just enough to swallow the OS's enumeration
+ * cleanly and report "no cards found": isolation reads return 0xff so
+ * the OS sees a failed alternating 0x55/0xAA pattern and gives up after
+ * the standard timeout, instead of generating a flood of "unknown IO
+ * port" warnings every boot.
+ *
+ * Reference: Plug and Play ISA Specification, version 1.0a (1994),
+ * Microsoft / Intel, section 4 (auto-configuration ports).
+ **/
+
+const u8 CAliM1543C::isapnp_init_key[32] = {
+	0x6A, 0xB5, 0xDA, 0xED, 0xF6, 0xFB, 0x7D, 0xBE,
+	0xDF, 0x6F, 0x37, 0x1B, 0x0D, 0x86, 0xC3, 0x61,
+	0xB0, 0x58, 0x2C, 0x16, 0x8B, 0x45, 0xA2, 0xD1,
+	0xE8, 0x74, 0x3A, 0x9D, 0xCE, 0xE7, 0x73, 0x39
+};
+
+void CAliM1543C::isapnp_addr_write(u8 data)
+{
+#ifdef DEBUG_ISAPNP
+	printf("%%PNP-I-ADDR: write 0x%02x to 0x279 (state=%d, key_pos=%d)\n",
+		data, state.isapnp_state, state.isapnp_key_pos);
+#endif
+
+	if (state.isapnp_state == PNP_WAIT_FOR_KEY)
+	{
+		// Per spec 4.3.2: the LFSR is reset by writing 0x00 to ADDRESS
+		// twice in succession, after which the 32-byte initiation key
+		// must arrive byte-by-byte without interruption.  Any byte that
+		// fails to match the expected position resets our match counter.
+		if (data == 0x00 && state.isapnp_key_pos < 2)
+		{
+			state.isapnp_key_pos = 0;
+			return;
+		}
+
+		if (data == isapnp_init_key[state.isapnp_key_pos])
+		{
+			state.isapnp_key_pos++;
+			if (state.isapnp_key_pos >= 32)
+			{
+#ifdef DEBUG_ISAPNP
+				printf("%%PNP-I-KEY: initiation key accepted, entering SLEEP\n");
+#endif
+				state.isapnp_state   = PNP_SLEEP;
+				state.isapnp_key_pos = 0;
+			}
+		}
+		else
+		{
+			state.isapnp_key_pos = 0;
+		}
+		return;
+	}
+
+	// Past the key — every ADDRESS write selects the register that the
+	// next 0xA79 / READ_DATA access will operate on.
+	state.isapnp_reg = data;
+}
+
+void CAliM1543C::isapnp_data_write(u8 data)
+{
+#ifdef DEBUG_ISAPNP
+	printf("%%PNP-I-DATA: write 0x%02x to reg 0x%02x (state=%d)\n",
+		data, state.isapnp_reg, state.isapnp_state);
+#endif
+
+	if (state.isapnp_state == PNP_WAIT_FOR_KEY)
+		return;
+
+	switch (state.isapnp_reg)
+	{
+	case 0x00:  // Set RD_DATA Port — actual port = (data << 2) | 0x0003
+	{
+		u16 new_port = ((u16)data << 2) | 0x0003;
+		state.isapnp_rd_port = new_port;
+		// Re-register our READ_DATA hook at the OS-chosen port.  The
+		// system memory map updates id 52 in place, so successive
+		// programmings just relocate the same registration.
+		add_legacy_io(52, new_port, 1);
+#ifdef DEBUG_ISAPNP
+		printf("%%PNP-I-RDPORT: READ_DATA port set to 0x%03x\n", new_port);
+#endif
+		break;
+	}
+
+	case 0x02:  // Config Control
+		// bit 0: Reset (drives RESET_DRV — all cards back to Wait-For-Key)
+		// bit 1: Wait For Key (return to Wait-For-Key)
+		// bit 2: Reset CSN (clear all CSNs to zero)
+		if (data & 0x03)
+		{
+			state.isapnp_state   = PNP_WAIT_FOR_KEY;
+			state.isapnp_key_pos = 0;
+		}
+		break;
+
+	case 0x03:  // Wake[CSN]
+		state.isapnp_wake_csn = data;
+		// CSN==0 with a card in Sleep starts isolation; non-zero wakes
+		// the card with that CSN into Config.  We have no cards either
+		// way, but tracking the state lets future reads of register 0x05
+		// (Status) return something coherent if asked.
+		if (state.isapnp_state == PNP_SLEEP)
+			state.isapnp_state = (data == 0) ? PNP_ISOLATION : PNP_CONFIG;
+		break;
+
+	case 0x06:  // Set CSN — assign CSN to the card that won isolation.
+		// No card won, no-op.
+		break;
+
+	default:
+		// Logical-device select (0x07), card-level resource registers
+		// (0x20-0x2F) and per-LDN resource registers (0x30-0xFF) are
+		// per-card.  No cards, nothing to record.
+		break;
+	}
+}
+
+u8 CAliM1543C::isapnp_data_read(u32 /*address*/)
+{
+	// With no PnP cards driving the bus, isolation reads see floating
+	// pull-ups (0xff).  The OS interprets a {0xff, 0xff} pair as a "0"
+	// bit; after 72 such reads it computes a checksum that won't match,
+	// concludes no card responded, and ends the isolation sequence.
+	return 0xff;
 }
 
 /**
  * Read time-of-year clock ports (70h-73h).
  **/
-u8 CAliM1543C::toy_read(u32 address) {
-  // printf("%%ALI-I-READTOY: read port %02x: 0x%02x\n", (u32)(0x70 + address),
-  // state.toy_access_ports[address]);
-  return (u8)state.toy_access_ports[address];
+u8 CAliM1543C::toy_read(u32 address)
+{
+
+	//printf("%%ALI-I-READTOY: read port %02x: 0x%02x\n", (u32)(0x70 + address), state.toy_access_ports[address]);
+	return(u8)state.toy_access_ports[address];
 }
 
 /**
- * Write time-of-year clock ports (70h-73h). On a write to port 0, recalculate
- * clock values.
+ * Write time-of-year clock ports (70h-73h). On a write to port 0, recalculate clock values.
  **/
-void CAliM1543C::toy_write(u32 address, u8 data) {
-  struct tm stime;
-  static long read_count = 0;
-  static long hold_count = 0;
+void CAliM1543C::toy_write(u32 address, u8 data)
+{
+	time_t      ltime;
+	struct tm   stime;
+	static long read_count = 0;
+	static long hold_count = 0;
 
-  // printf("%%ALI-I-WRITETOY: write port %02x: 0x%02x\n", (u32)(0x70 +
-  // address), data);
-  state.toy_access_ports[address] = (u8)data;
+	//printf("%%ALI-I-WRITETOY: write port %02x: 0x%02x\n", (u32)(0x70 + address), data);
+	state.toy_access_ports[address] = (u8)data;
 
-  switch (address) {
-  case 0:
-    if ((data & 0x7f) < 14) {
-      // Assign VRT (valid RAM and time) bit
-      state.toy_stored_data[RTC_REG_D] = RTC_VRT;
-      // Update time
-      stime = get_time();
+	switch (address)
+	{
+	case 0:
+		if ((data & 0x7f) < 14 && !(state.toy_stored_data[0x0b] & 0x80))
+		{
+			state.toy_stored_data[0x0d] = 0x80;   // data is geldig!
 
-      if (state.toy_stored_data[RTC_REG_B] & RTC_DM) {
-        // binary
-        state.toy_stored_data[0] = (u8)(stime.tm_sec);
-        state.toy_stored_data[2] = (u8)(stime.tm_min);
-        if (state.toy_stored_data[RTC_REG_B] & RTC_2412) // 24-hour
-          state.toy_stored_data[4] = (u8)(stime.tm_hour);
-        else
-          // 12-hour
-          state.toy_stored_data[4] =
-              (u8)(((stime.tm_hour / 12) ? 0x80 : 0) | (stime.tm_hour % 12));
-        state.toy_stored_data[6] = (u8)(stime.tm_wday + 1);
-        state.toy_stored_data[7] = (u8)(stime.tm_mday);
-        state.toy_stored_data[8] = (u8)(stime.tm_mon + 1);
-        state.toy_stored_data[9] = (u8)(stime.tm_year % 100);
-      } else {
-        // BCD
-        state.toy_stored_data[0] =
-            (u8)(((stime.tm_sec / 10) << 4) | (stime.tm_sec % 10));
-        state.toy_stored_data[2] =
-            (u8)(((stime.tm_min / 10) << 4) | (stime.tm_min % 10));
-        if (state.toy_stored_data[0x0b] & 2) // 24-hour
-          state.toy_stored_data[4] =
-              (u8)(((stime.tm_hour / 10) << 4) | (stime.tm_hour % 10));
-        else { // 12-hour
-          state.toy_stored_data[4] = (u8)(((stime.tm_hour / 12) ? 0x80 : 0) |
-                                          (((stime.tm_hour % 12) / 10) << 4) |
-                                          ((stime.tm_hour % 12) % 10));
-        }
+			// update clock.......
+			time(&ltime);
+			ltime += state.toy_offset;
+			gmtime_s(&stime, &ltime);
+			if (state.toy_stored_data[0x0b] & 4)
+			{
 
-        state.toy_stored_data[6] = (u8)(stime.tm_wday + 1);
-        state.toy_stored_data[7] =
-            (u8)(((stime.tm_mday / 10) << 4) | (stime.tm_mday % 10));
-        state.toy_stored_data[8] =
-            (u8)((((stime.tm_mon + 1) / 10) << 4) | ((stime.tm_mon + 1) % 10));
-        state.toy_stored_data[9] = (u8)((((stime.tm_year % 100) / 10) << 4) |
-                                        ((stime.tm_year % 100) % 10));
-      }
+				// binary
+				state.toy_stored_data[0] = (u8)(stime.tm_sec);
+				state.toy_stored_data[2] = (u8)(stime.tm_min);
+				if (state.toy_stored_data[0x0b] & 2) // 24-hour
+					state.toy_stored_data[4] = (u8)(stime.tm_hour);
+				else
+					// 12-hour
+					state.toy_stored_data[4] = (u8)(((stime.tm_hour / 12) ? 0x80 : 0) | (stime.tm_hour % 12));
+				state.toy_stored_data[6] = (u8)(stime.tm_wday + 1);
+				state.toy_stored_data[7] = (u8)(stime.tm_mday);
+				state.toy_stored_data[8] = (u8)(stime.tm_mon + 1);
+				state.toy_stored_data[9] = (u8)(arc_year_compat ? (stime.tm_year - 80) : (stime.tm_year % 100));
+			}
+			else
+			{
 
-      // SRM initializes the value of A register to 0x26. This means:
-      //  xtal speed is set to MC_BASE_32_KHz 32.768KHz (standard)
-      //  periodic interrupt rate divisor of 32 = interrupt every 976.562 ms
-      //  (1024Hz clock)
-      if (state.toy_stored_data[RTC_REG_A] & RTC_UIP) {
-        // Once the UIP line goes high, we have to stay high for 2228us.
-        hold_count--;
-        if (hold_count == 0 || (state.toy_stored_data[RTC_REG_B] & RTC_SET)) {
-          // Set UIP low and trigger the related interrupt.
-          state.toy_stored_data[RTC_REG_A] &= ~RTC_UIP;
-          state.toy_stored_data[RTC_REG_C] |= RTC_UF;
-          toy_update_irqf();
-          read_count = 0;
-        }
-      } else {
-        // UIP isn't high, so if we're looping and waiting for it to go, it
-        // will take 1,000,000/(IPus*3) reads for a 3 instruction loop.
-        // If it happens to be a one time read, it'll only throw our
-        // calculations off a tiny bit, and they'll be re-synced on the next
-        // read-loop.
-        read_count++;
-        if (read_count > 1000000 / (IPus * 3)) // 3541 @ 847IPus
-        {
-          state.toy_stored_data[RTC_REG_A] |= RTC_UIP;
-          hold_count =
-              (2228 / (IPus * 3)) + 1; // .876 @ 847IPus, so we add one.
-        }
-      }
-    }
+				// BCD
+				state.toy_stored_data[0] = (u8)(((stime.tm_sec / 10) << 4) | (stime.tm_sec % 10));
+				state.toy_stored_data[2] = (u8)(((stime.tm_min / 10) << 4) | (stime.tm_min % 10));
+				if (state.toy_stored_data[0x0b] & 2) // 24-hour
+					state.toy_stored_data[4] = (u8)(((stime.tm_hour / 10) << 4) | (stime.tm_hour % 10));
+				else
+				{ // 12-hour
+					state.toy_stored_data[4] = (u8)
+						(
+							((stime.tm_hour / 12) ? 0x80 : 0) |
+							(((stime.tm_hour % 12) / 10) << 4) | ((stime.tm_hour % 12) % 10)
+							);
+				}
 
-    toy_handle_periodic_interrupt(data);
-    toy_update_irqf();
+				state.toy_stored_data[6] = (u8)(stime.tm_wday + 1);
+				state.toy_stored_data[7] = (u8)(((stime.tm_mday / 10) << 4) | (stime.tm_mday % 10));
+				state.toy_stored_data[8] = (u8)((((stime.tm_mon + 1) / 10) << 4) | ((stime.tm_mon + 1) % 10));
+				{
+					int yy_dec = arc_year_compat ? (stime.tm_year - 80) : (stime.tm_year % 100);
+					state.toy_stored_data[9] = (u8)(((yy_dec / 10) << 4) | (yy_dec % 10));
+				}
+			}
 
-    // Assign specified data to port so it can be read by the program
-    state.toy_access_ports[1] = state.toy_stored_data[data & 0x7f];
+			// Debian Linux wants something out of 0x0a.  It gets initialized
+			// with 0x26, by the SRM
+			// Ah, here's something from the linux kernel:
+			//# /********************************************************
+			//# * register details
+			//# ********************************************************/
+			//# #define RTC_FREQ_SELECT RTC_REG_A
+			//#
+			//# /* update-in-progress - set to "1" 244 microsecs before RTC goes off the bus,
+			//# * reset after update (may take 1.984ms @ 32768Hz RefClock) is complete,
+			//# * totalling to a max high interval of 2.228 ms.
+			//# */
+			//# # define RTC_UIP 0x80
+			//# # define RTC_DIV_CTL 0x70
+			//# /* divider control: refclock values 4.194 / 1.049 MHz / 32.768 kHz */
+			//# # define RTC_REF_CLCK_4MHZ 0x00
+			//# # define RTC_REF_CLCK_1MHZ 0x10
+			//# # define RTC_REF_CLCK_32KHZ 0x20
+			//# /* 2 values for divider stage reset, others for "testing purposes only" */
+			//# # define RTC_DIV_RESET1 0x60
+			//# # define RTC_DIV_RESET2 0x70
+			//# /* Periodic intr. / Square wave rate select. 0=none, 1=32.8kHz,... 15=2Hz */
+			//# # define RTC_RATE_SELECT 0x0F
+			//#
+			// The SRM-init value of 0x26 means:
+			//  xtal speed 32.768KHz  (standard)
+			//  periodic interrupt rate divisor of 32 = interrupt every 976.562 ms (1024Hz clock)
+			 
+			 
+			
+			// MC146818 UIP (Update-In-Progress) bit at register A bit 7.
+			// Real hardware pulses UIP high for ~244 µs every 1 second of
+			// wall-clock when the internal RTC is about to advance, then
+			// holds it low for the remainder of the second.  
+			{
+				using clk = std::chrono::steady_clock;
+				static auto uip_epoch = clk::now();
+				const auto now = clk::now();
+				const u64 elapsed_us = std::chrono::duration_cast<std::chrono::microseconds>(
+					now - uip_epoch).count();
+				const u64 sub_sec_us = elapsed_us % 1000000ull;
+				// UIP is high during the last 244 µs of each second.
+				if (sub_sec_us >= (1000000ull - 244ull))
+					state.toy_stored_data[0x0a] |= 0x80;
+				else
+					state.toy_stored_data[0x0a] &= ~0x80;
+			}
+			(void)read_count; (void)hold_count;
 
-    // Register C is cleared after a read, and we don't care if it's a write
-    if (data == RTC_REG_C)
-      state.toy_stored_data[data & 0x7f] = 0;
+			//# /****************************************************/
+			//# #define RTC_CONTROL RTC_REG_B
+			//# # define RTC_SET 0x80 /* disable updates for clock setting */
+			//# # define RTC_PIE 0x40 /* periodic interrupt enable */
+			//# # define RTC_AIE 0x20 /* alarm interrupt enable */
+			//# # define RTC_UIE 0x10 /* update-finished interrupt enable */
+			//# # define RTC_SQWE 0x08 /* enable square-wave output */
+			//# # define RTC_DM_BINARY 0x04 /* all time/date values are BCD if clear */
+			//# # define RTC_24H 0x02 /* 24 hour mode - else hours bit 7 means pm */
+			//# # define RTC_DST_EN 0x01 /* auto switch DST - works f. USA only */
+			//#
+			// this is set (by the srm?) to 0x0e = SQWE | DM_BINARY | 24H
+			// linux sets the PIE bit later.
+			//# /***********************************************************/
+			//# #define RTC_INTR_FLAGS RTC_REG_C
+			//# /* caution - cleared by read */
+			//# # define RTC_IRQF 0x80 /* any of the following 3 is active */
+			//# # define RTC_PF 0x40
+			//# # define RTC_AF 0x20
+			//# # define RTC_UF 0x10
+			//#
+		}
 
-    break;
-  case 1:
-    if (state.toy_access_ports[0] == RTC_REG_B &&
-        data & 0x040) // If we're writing to register B, we make register C look
-                      // like it fired.
-                      // TODO: Do actual interrupt implementation instead of
-                      //       a workaround.
-      state.toy_stored_data[RTC_REG_C] = 0xf0;
-    state.toy_stored_data[state.toy_access_ports[0] & 0x7f] = (u8)data;
-    break;
+		{
+			/*
+			  See sys/dev/ic/mc146818reg.h and sys/arch/alpha/alpha/mcclock.c in NetBSD
+			*/
+			static clock_t last_fire = 0;
+			clock_t now = clock();
+			double  timedelta = (now - last_fire) / (double)CLOCKS_PER_SEC;
+			int     rate_pow = state.toy_stored_data[0x0a] & 0x0f;
+			double  period = (1 << rate_pow) / 65536.0;
+#define MC_BASE_32_KHz  0x20
+#define RTC_PF 0x40
 
-  case 2:
-    state.toy_access_ports[3] = state.toy_stored_data[0x80 + (data & 0x7f)];
-    break;
+			if (state.toy_stored_data[0x0a] & MC_BASE_32_KHz)
+			{
+				if (rate_pow == 0x1)
+				{
+					period = 1 / 256.0;
+				}
+				else if (rate_pow == 0x2)
+				{
+					period = 1 / 128.0;
+				}
+			}
 
-  case 3:
-    state.toy_stored_data[0x80 + (state.toy_access_ports[2] & 0x7f)] = (u8)data;
-    break;
-  }
-}
+			if (rate_pow && (timedelta >= period))
+			{
+				state.toy_stored_data[0x0c] |= RTC_PF;
+				last_fire = now;
+			}
+		}
 
-/**
- * Handle RTC periodic interrupt.
- **/
-void CAliM1543C::toy_handle_periodic_interrupt(u8 data) {
-  /*
-   See sys/dev/ic/mc146818reg.h and sys/arch/alpha/alpha/mcclock.c in NetBSD and
-   the RTC datasheet: https://www.nxp.com/docs/en/data-sheet/MC146818.pdf.
-  */
-  clock_t now = clock();
-  double timedelta = (now - state.toy_pi_last_fire) / (double)CLOCKS_PER_SEC;
+		state.toy_access_ports[1] = state.toy_stored_data[data & 0x7f];
 
-  // For the meaning of the period calculation see the table on page 14 of the
-  // aforementioned datasheet
-  int rate_pow = state.toy_stored_data[RTC_REG_A] & 0x0f;
-  double period = (1 << rate_pow) / 65536.0;
+		// register C is cleared after a read, and we don't care if its a write
+		if (data == 0x0c)
+			state.toy_stored_data[data & 0x7f] = 0;
+		break;
 
-  if (state.toy_stored_data[RTC_REG_A] & MC_BASE_32_KHz) {
-    if (rate_pow == 0x1) {
-      period = 1 / 256.0;
-    } else if (rate_pow == 0x2) {
-      period = 1 / 128.0;
-    }
-  }
+	case 1:
+		if (state.toy_access_ports[0] == 0x0b && data & 0x040) // If we're writing to register B, we make register C look like it fired.
+			state.toy_stored_data[0x0c] = 0xf0;
+		// On REG_B SET 1->0 transition, snapshot the just-written time/date
+		// registers and compute an offset from host time so the value sticks
+		// after SET goes low.  Without this, the regen path overwrites the
+		// user's writes on the next port-70h poke.
+		if (state.toy_access_ports[0] == 0x0b
+			&& (state.toy_stored_data[0x0b] & 0x80)
+			&& !(data & 0x80))
+		{
+			bool binary = (data & 0x04) != 0;
+			bool h24    = (data & 0x02) != 0;
 
-  if (rate_pow && (timedelta >= period)) {
-    // Elapsed time since last check is equal or greater than the specified
-    // period - fire the interrupt by setting the PF flag in register C
-    // (see page 16 in the datasheet).
-    state.toy_stored_data[RTC_REG_C] |= RTC_PF;
-    state.toy_pi_last_fire = now;
-  }
-}
+			u8 ss  = state.toy_stored_data[0];
+			u8 mm  = state.toy_stored_data[2];
+			u8 hh  = state.toy_stored_data[4];
+			u8 dd  = state.toy_stored_data[7];
+			u8 mo  = state.toy_stored_data[8];
+			u8 yy  = state.toy_stored_data[9];
 
-/**
- * Update RTC interrupt request flag
- **/
-void CAliM1543C::toy_update_irqf() {
-  if ((state.toy_stored_data[RTC_REG_B] & RTC_PIE &&
-       state.toy_stored_data[RTC_REG_C] & RTC_PF) ||
-      (state.toy_stored_data[RTC_REG_B] & RTC_UIE &&
-       state.toy_stored_data[RTC_REG_C] & RTC_UF) ||
-      (state.toy_stored_data[RTC_REG_B] & RTC_AIE &&
-       state.toy_stored_data[RTC_REG_C] & RTC_AF))
-    state.toy_stored_data[RTC_REG_C] |= RTC_IRQF;
-  else
-    state.toy_stored_data[RTC_REG_C] &= ~RTC_IRQF;
+			bool pm = false;
+			if (!h24) { pm = (hh & 0x80) != 0; hh &= 0x7f; }
+
+			auto unbcd = [](u8 v) -> int { return ((v >> 4) & 0x0f) * 10 + (v & 0x0f); };
+
+			struct tm st = {};
+			st.tm_sec  = binary ? ss : unbcd(ss);
+			st.tm_min  = binary ? mm : unbcd(mm);
+			st.tm_hour = binary ? hh : unbcd(hh);
+			st.tm_mday = binary ? dd : unbcd(dd);
+			st.tm_mon  = (binary ? mo : unbcd(mo)) - 1;
+			if (arc_year_compat)
+			{
+				st.tm_year = (binary ? yy : unbcd(yy)) + 80;   // 1980-base
+			}
+			else
+			{
+				st.tm_year = binary ? yy : unbcd(yy);
+				if (st.tm_year < 70) st.tm_year += 100;   // 20XX pivot
+			}
+
+			if (!h24 &&  pm && st.tm_hour < 12) st.tm_hour += 12;
+			if (!h24 && !pm && st.tm_hour == 12) st.tm_hour = 0;
+#ifdef _WIN32
+			time_t set_time = _mkgmtime(&st);
+#else
+			time_t set_time = timegm(&st);
+#endif
+			time_t host_now;
+			time(&host_now);
+			if (set_time != (time_t)-1)
+				state.toy_offset = (long)(set_time - host_now);
+		}
+		state.toy_stored_data[state.toy_access_ports[0] & 0x7f] = (u8)data;
+		break;
+
+	case 2:
+		state.toy_access_ports[3] = state.toy_stored_data[0x80 + (data & 0x7f)];
+		break;
+
+	case 3:
+		state.toy_stored_data[0x80 + (state.toy_access_ports[2] & 0x7f)] = (u8)data;
+		break;
+	}
 }
 
 /**
@@ -774,64 +1260,78 @@ void CAliM1543C::toy_update_irqf() {
  * PIT Write:  2, 31
  * PIT Write:  2, 13  = 1331
  **/
-u8 CAliM1543C::pit_read(u32 address) {
+u8 CAliM1543C::pit_read(u32 address)
+{
 
-  // printf("PIT Read: %02" PRIx64 " \n",address);
-  u8 data;
-  data = 0;
-  return data;
+	//printf("PIT Read: %02" PRIx64 " \n",address);
+	u8  data;
+	data = 0;
+	return data;
 }
 
 /**
  * Write to the programmable interrupt timer ports (40h-43h)
  **/
-void CAliM1543C::pit_write(u32 address, u8 data) {
+void CAliM1543C::pit_write(u32 address, u8 data)
+{
 
-  // printf("PIT Write: %02" PRIx64 ", %02x \n",address,data);
-  if (address == 3) { // control
-    if (data != 0) {
-      state.pit_status[address] = data; // last command seen.
-      if ((data & 0xc0) >> 6 != 3) {
-        state.pit_status[(data & 0xc0) >> 6] = data & 0x3f;
-        state.pit_mode[(data & 0xc0) >> 6] = (data & 0x30) >> 4;
-      } else {                            // readback command 8254 only
-        state.pit_status[address] = 0xc0; // bogus :)
-      }
-    }
-  } else { // a counter
-    switch (state.pit_mode[address]) {
-    case 0:
-      break;
+	//printf("PIT Write: %02" PRIx64 ", %02x \n",address,data);
+	if (address == 3)
+	{ // control
+		if (data != 0)
+		{
+			state.pit_status[address] = data; // last command seen.
+			if ((data & 0xc0) >> 6 != 3)
+			{
+				state.pit_status[(data & 0xc0) >> 6] = data & 0x3f;
+				state.pit_mode[(data & 0xc0) >> 6] = (data & 0x30) >> 4;
+			}
+			else
+			{ // readback command 8254 only
+				state.pit_status[address] = 0xc0; // bogus :)
+			}
+		}
+	}
+	else
+	{ // a counter
+		switch (state.pit_mode[address])
+		{
+		case 0:
+			break;
 
-    case 1:
-    case 3:
-      state.pit_counter[address] =
-          (state.pit_counter[address] & 0xff) | data << 8;
-      state.pit_counter[address + PIT_OFFSET_MAX] = state.pit_counter[address];
-      if (state.pit_mode[address] == 3) {
-        state.pit_mode[address] = 2;
-      } else
-        state.pit_status[address] &= ~0xc0; // no longer high, counter valid.
-      break;
+		case 1:
+		case 3:
+			state.pit_counter[address] = (state.pit_counter[address] & 0xff) |
+				data <<
+				8;
+			state.pit_counter[address + PIT_OFFSET_MAX] = state.pit_counter[address];
+			if (state.pit_mode[address] == 3)
+			{
+				state.pit_mode[address] = 2;
+			}
+			else
+				state.pit_status[address] &= ~0xc0; // no longer high, counter valid.
+			break;
 
-    case 2:
-      state.pit_counter[address] = (state.pit_counter[address] & 0xff00) | data;
+		case 2:
+			state.pit_counter[address] = (state.pit_counter[address] & 0xff00) | data;
 
-      // two bytes were written with 0x00, so its really 0x10000
-      if ((state.pit_status[address] & 0x30) >> 4 == 3 &&
-          state.pit_counter[address] == 0) {
-        state.pit_counter[address] = 65536;
-      }
+			// two bytes were written with 0x00, so its really 0x10000
+			if ((state.pit_status[address] & 0x30) >> 4 == 3
+				&& state.pit_counter[address] == 0)
+			{
+				state.pit_counter[address] = 65536;
+			}
 
-      state.pit_counter[address + PIT_OFFSET_MAX] = state.pit_counter[address];
-      state.pit_status[address] &= ~0xc0; // no longer high, counter valid.
-      break;
-    }
-  }
+			state.pit_counter[address + PIT_OFFSET_MAX] = state.pit_counter[address];
+			state.pit_status[address] &= ~0xc0;   // no longer high, counter valid.
+			break;
+		}
+	}
 }
 
-#define PIT_FACTOR 5000
-#define PIT_DEC(p) p = (p < PIT_FACTOR ? 0 : p - PIT_FACTOR);
+#define PIT_FACTOR  5000
+#define PIT_DEC(p)  p = (p < PIT_FACTOR ? 0 : p - PIT_FACTOR);
 
 /**
  * Handle the PIT interrupt.
@@ -841,63 +1341,78 @@ void CAliM1543C::pit_write(u32 address, u8 data) {
  *  - counter 2 is the speaker and/or generic timer
  *  .
  **/
-void CAliM1543C::pit_clock() {
-  int i;
-  for (i = 0; i < 3; i++) {
-    // decrement the counter.
-    if (state.pit_status[i] & 0x40)
-      continue;
-    PIT_DEC(state.pit_counter[i]);
-    switch ((state.pit_status[i] & 0x0e) >> 1) {
-    case 0: // interrupt at terminal
-      if (!state.pit_counter[i]) {
-        state.pit_status[i] |= 0xc0; // out pin high, no count set.
-      }
-      break;
+void CAliM1543C::pit_clock()
+{
+	int i;
+	for (i = 0; i < 3; i++)
+	{
 
-    case 3: // square wave generator
-      if (!state.pit_counter[i]) {
-        if (state.pit_status[i] & 0x80) {
-          state.pit_status[i] &= ~0x80; // lower output;
-        } else {
-          state.pit_status[i] |= 0x80; // raise output
-          if (i == 0) {
-            pic_interrupt(0, 0); // counter 0 is tied to irq 0.
-            // printf("Generating timer interrupt.\n");
-          }
-        }
+		// decrement the counter.
+		if (state.pit_status[i] & 0x40)
+			continue;
+		PIT_DEC(state.pit_counter[i]);
+		switch ((state.pit_status[i] & 0x0e) >> 1)
+		{
+		case 0: // interrupt at terminal
+			if (!state.pit_counter[i])
+			{
+				state.pit_status[i] |= 0xc0;  // out pin high, no count set.
+			}
+			break;
 
-        state.pit_counter[i] = state.pit_counter[i + PIT_OFFSET_MAX];
-      }
+		case 3: // square wave generator
+			if (!state.pit_counter[i])
+			{
+				if (state.pit_status[i] & 0x80)
+				{
+					state.pit_status[i] &= ~0x80; // lower output;
+				}
+				else
+				{
+					state.pit_status[i] |= 0x80;  // raise output
+					if (i == 0)
+					{
+						pic_interrupt(0, 0);        // counter 0 is tied to irq 0.
+						//printf("Generating timer interrupt.\n");
+					}
+				}
 
-      // decrement again, since we want a half-wide square wave.
-      PIT_DEC(state.pit_counter[i]);
-      break;
+				state.pit_counter[i] = state.pit_counter[i + PIT_OFFSET_MAX];
+			}
 
-    default:
-      break; // we don't care to handle it.
-    }
-  }
+			// decrement again, since we want a half-wide square wave.
+			PIT_DEC(state.pit_counter[i]);
+			break;
+
+		default:
+			break;  // we don't care to handle it.
+		}
+	}
 }
 
 /**
  * Thread entry point.
  **/
-void CAliM1543C::run() {
-  try {
-    for (;;) {
-      std::this_thread::sleep_for(std::chrono::milliseconds(1));
-      if (StopThread)
-        return;
-      do_pit_clock();
-    }
-  }
+void CAliM1543C::run()
+{
+	try
+	{
+		for (;;)
+		{
+			std::this_thread::sleep_for(std::chrono::milliseconds(1));
+			if (StopThread)
+				return;
+			do_pit_clock();
+		}
+	}
 
-  catch (CException &e) {
-    printf("Exception in Ali thread: %s.\n", e.displayText().c_str());
-    myThreadDead.store(true);
-    // Let the thread die...
-  }
+	catch (CException& e)
+	{
+		printf("Exception in Ali thread: %s.\n", e.displayText().c_str());
+		myThreadDead.store(true);
+
+		// Let the thread die...
+	}
 }
 
 #define PIT_RATIO 1
@@ -905,319 +1420,680 @@ void CAliM1543C::run() {
 /**
  * Handle all events that need to be handled on a clock-driven basis.
  *
- * This is a slow-clocked device, which means this DoClock isn't called as often
- *as the CPU's DoClock. Do the following:
+ * This is a slow-clocked device, which means this DoClock isn't called as often as the CPU's DoClock.
+ * Do the following:
  *  - Handle PIT clock.
  *  .
  **/
-void CAliM1543C::do_pit_clock() {
-  static int pit_counter = 0;
-  if (pit_counter++ >= PIT_RATIO) {
-    pit_counter = 0;
-    pit_clock();
-  }
+void CAliM1543C::do_pit_clock()
+{
+	static int  pit_counter = 0;
+	if (pit_counter++ >= PIT_RATIO)
+	{
+		pit_counter = 0;
+		pit_clock();
+	}
 }
 
-#define PIC_STD 0
-#define PIC_INIT_0 1
-#define PIC_INIT_1 2
-#define PIC_INIT_2 3
+u64 CAliM1543C::get_interval_period_ns() const
+{
+	const u8 reg_a = state.toy_stored_data[0x0a];
+	const int rate_pow = reg_a & 0x0f;
+	if (rate_pow == 0)
+		return 0;
+
+	if (reg_a & 0x20)
+	{
+		if (rate_pow == 0x1) return 1000000000ull / 256;
+		if (rate_pow == 0x2) return 1000000000ull / 128;
+	}
+	return ((1ull << rate_pow) * 1000000000ull) / 65536ull;
+}
+
+// 8259 PIC
+
+void CAliM1543C::pic_control_write(u32 address, u8 data)
+{
+	if (address == 0) {            // port 0x22 — index latch (write-only)
+		state.pic_control_index = data;
+		return;
+	}
+
+	// port 0x23 — data; dispatch by latched index
+	switch (state.pic_control_index) {
+	case 0x03:  pic_write_edge_level(0, data); return;  // ELCR_1
+	case 0x04:  pic_write_edge_level(1, data); return;  // ELCR_2
+	case 0x01: case 0x02: case 0x05:
+		// PIC CFG_1/CFG_2/RTC_CFG — not modelled, ignore
+		return;
+	default:
+		printf("%s: unknown PIC control index %02x = %02x\n",
+			devid_string, state.pic_control_index, data);
+		return;
+	}
+}
+
+u8 CAliM1543C::pic_control_read(u32 address)
+{
+	if (address == 0) {
+		// 0x22 is write-only per the header; return last index as harmless readback
+		return state.pic_control_index;
+	}
+
+	switch (state.pic_control_index) {
+	case 0x03:  return pic_read_edge_level(0);
+	case 0x04:  return pic_read_edge_level(1);
+	case 0x01: case 0x02: case 0x05:
+		return 0;
+	default:
+		return 0xff;
+	}
+}
+
+/**
+ * Reset the PIC to its post-ICW1 state.  ELCR/LTIM are intentionally not reset
+ * Caller must hold picLock.
+ **/
+void CAliM1543C::pic_init_reset(int index)
+{
+	state.pic_last_irr[index] = 0;
+	state.pic_irr[index] &= state.pic_elcr[index];
+	state.pic_imr[index] = 0;
+	state.pic_isr[index] = 0;
+	state.pic_priority_add[index] = 0;
+	state.pic_irq_base[index] = 0;
+	state.pic_read_reg_select[index] = 0;
+	state.pic_poll[index] = 0;
+	state.pic_special_mask[index] = 0;
+	state.pic_init_state[index] = 0;
+	state.pic_auto_eoi[index] = 0;
+	state.pic_rotate_on_aeoi[index] = 0;
+	state.pic_special_fnm[index] = 0;
+	state.pic_init4[index] = 0;
+	state.pic_single_mode[index] = 0;
+	pic_update_output(index);
+}
+
+/* Highest-priority bit in mask, considering rotation.  Returns 8 if mask==0. */
+static int pic_priority_of(u8 mask, u8 priority_add)
+{
+	if (mask == 0)
+		return 8;
+	int priority = 0;
+	while ((mask & (1 << ((priority + priority_add) & 7))) == 0)
+		priority++;
+	return priority;
+}
+
+/**
+ * Determine which IRQ (if any) the controller wants to deliver right now.
+ * Returns -1 if nothing pending above the in-service priority threshold.
+ * Caller must hold picLock.
+ **/
+int CAliM1543C::pic_get_irq(int index)
+{
+	int mask = state.pic_irr[index] & ~state.pic_imr[index];
+	int priority = pic_priority_of((u8)mask, state.pic_priority_add[index]);
+	if (priority == 8)
+		return -1;
+
+	// Compute current in-service priority.  In SFNM on the master, slave-
+	// originated IRQs (cascade IRQ2) do not block other slave IRQs.
+	int isr_mask = state.pic_isr[index];
+	if (state.pic_special_mask[index])
+		isr_mask &= ~state.pic_imr[index];
+	if (state.pic_special_fnm[index] && index == 0)
+		isr_mask &= ~(1 << 2);
+
+	int cur_priority = pic_priority_of((u8)isr_mask, state.pic_priority_add[index]);
+	if (priority < cur_priority)
+		return (priority + state.pic_priority_add[index]) & 7;
+	return -1;
+}
+
+/**
+ * Recompute and drive the controller's output line.  For the master, this is
+ * the wired-OR of all 8259 outputs that goes to Tsunami DRIR55 and from there
+ * to the CPU's external IRQ1.  For the slave, this propagates into the
+ * master's IRQ2 (cascade) and recurses to the master.  Caller must hold
+ * picLock.
+ **/
+void CAliM1543C::pic_update_output(int index)
+{
+	bool line_high = (pic_get_irq(index) >= 0);
+
+	if (index == 1)
+	{
+		// Slave output drives master IRQ2.  Cascade is conventionally edge-
+		// triggered; honor ELCR/LTIM in case the OS programs it as level.
+		const u8 cascade_mask = (1 << 2);
+		const bool is_level =
+			(state.pic_elcr[0] & cascade_mask) || state.pic_ltim[0];
+
+		if (line_high)
+		{
+			if (is_level)
+			{
+				state.pic_irr[0] |= cascade_mask;
+			}
+			else
+			{
+				if ((state.pic_last_irr[0] & cascade_mask) == 0)
+					state.pic_irr[0] |= cascade_mask;
+			}
+			state.pic_last_irr[0] |= cascade_mask;
+		}
+		else
+		{
+			if (is_level)
+				state.pic_irr[0] &= ~cascade_mask;
+			state.pic_last_irr[0] &= ~cascade_mask;
+		}
+		pic_update_output(0);
+	}
+	else
+	{
+		cSystem->interrupt(55, line_high);
+	}
+}
+
+/**
+ * Acknowledge an IRQ during the INTA cycle.  Sets ISR (unless AEOI), clears
+ * IRR for edge-triggered lines, and re-evaluates the output. 
+ * Caller must hold picLock.
+ **/
+void CAliM1543C::pic_intack(int index, int irq)
+{
+	if (state.pic_auto_eoi[index])
+	{
+		if (state.pic_rotate_on_aeoi[index])
+			state.pic_priority_add[index] = (irq + 1) & 7;
+	}
+	else
+	{
+		state.pic_isr[index] |= (1 << irq);
+	}
+
+	// Level-sensitive lines keep their IRR bit set as long as the source
+	// holds the line high; only edge-sensitive bits clear at INTA.
+	const bool is_level =
+		(state.pic_elcr[index] & (1 << irq)) || state.pic_ltim[index];
+	if (!is_level)
+		state.pic_irr[index] &= ~(1 << irq);
+
+	pic_update_output(index);
+}
 
 /**
  * Read a byte from one of the programmable interrupt controller's registers.
  **/
-u8 CAliM1543C::pic_read(int index, u32 address) {
-  u8 data;
+u8 CAliM1543C::pic_read(int index, u32 address)
+{
+	std::lock_guard<std::mutex> guard(picLock);
+	u8 data;
 
-  data = 0;
-
-  if (address == 1)
-    data = state.pic_mask[index];
+	if (state.pic_poll[index])
+	{
+		int irq = pic_get_irq(index);
+		if (irq >= 0)
+		{
+			pic_intack(index, irq);
+			data = (u8)(irq | 0x80);
+		}
+		else
+		{
+			data = 0;
+		}
+		state.pic_poll[index] = 0;
+	}
+	else
+	{
+		if (address == 0)
+		{
+			data = state.pic_read_reg_select[index]
+				? state.pic_isr[index]
+				: state.pic_irr[index];
+		}
+		else
+		{
+			data = state.pic_imr[index];
+		}
+	}
 
 #ifdef DEBUG_PIC
-  if (pic_messages)
-    printf("%%PIC-I-READ: read %02x from port %" PRId64 " on PIC %d\n", data,
-           address, index);
+	if (pic_messages)
+		printf("%%PIC-I-READ: read %02x from port %" PRId64 " on PIC %d\n", data,
+			address, index);
 #endif
-  return data;
+	return data;
 }
 
 /**
- * Read a byte from the edge/level register of one of the programmable interrupt
- *controllers.
+ * Read a byte from the edge/level register of one of the programmable interrupt controllers.
  **/
-u8 CAliM1543C::pic_read_edge_level(int index) {
-  return state.pic_edge_level[index];
+u8 CAliM1543C::pic_read_edge_level(int index)
+{
+	std::lock_guard<std::mutex> guard(picLock);
+	return state.pic_elcr[index];
 }
 
 /**
- * Read the interrupt vector during a PCI IACK cycle.
+ * Read the interrupt vector during a PCI IACK cycle.  This is the hook the
+ * Tsunami chipset uses on INTACK; it must mirror what the master 8259 would
+ * place on the data bus, including the cascade hand-off to the slave for
+ * IRQs 8-15. 
  **/
-u8 CAliM1543C::pic_read_vector() {
-  if (state.pic_asserted[0] & 1)
-    return state.pic_intvec[0];
-  if (state.pic_asserted[0] & 2)
-    return state.pic_intvec[0] + 1;
-  if (state.pic_asserted[0] & 4) {
-    if (state.pic_asserted[1] & 1)
-      return state.pic_intvec[1];
-    if (state.pic_asserted[1] & 2)
-      return state.pic_intvec[1] + 1;
-    if (state.pic_asserted[1] & 4)
-      return state.pic_intvec[1] + 2;
-    if (state.pic_asserted[1] & 8)
-      return state.pic_intvec[1] + 3;
-    if (state.pic_asserted[1] & 16)
-      return state.pic_intvec[1] + 4;
-    if (state.pic_asserted[1] & 32)
-      return state.pic_intvec[1] + 5;
-    if (state.pic_asserted[1] & 64)
-      return state.pic_intvec[1] + 6;
-    if (state.pic_asserted[1] & 128)
-      return state.pic_intvec[1] + 7;
-  }
+u8 CAliM1543C::pic_read_vector()
+{
+	std::lock_guard<std::mutex> guard(picLock);
 
-  if (state.pic_asserted[0] & 8)
-    return state.pic_intvec[0] + 3;
-  if (state.pic_asserted[0] & 16)
-    return state.pic_intvec[0] + 4;
-  if (state.pic_asserted[0] & 32)
-    return state.pic_intvec[0] + 5;
-  if (state.pic_asserted[0] & 64)
-    return state.pic_intvec[0] + 6;
-  if (state.pic_asserted[0] & 128)
-    return state.pic_intvec[0] + 7;
-  return 0;
+	int irq = pic_get_irq(0);
+	int intno;
+
+	if (irq >= 0)
+	{
+		if (irq == 2)
+		{
+			// Cascade: fetch vector from slave.
+			int irq2 = pic_get_irq(1);
+			if (irq2 >= 0)
+			{
+				pic_intack(1, irq2);
+			}
+			else
+			{
+				irq2 = 7;   // spurious slave IRQ
+			}
+			intno = state.pic_irq_base[1] + irq2;
+			pic_intack(0, irq);
+		}
+		else
+		{
+			intno = state.pic_irq_base[0] + irq;
+			pic_intack(0, irq);
+		}
+	}
+	else
+	{
+		// Spurious master IRQ.
+		intno = state.pic_irq_base[0] + 7;
+	}
+
+	return (u8)intno;
 }
 
 /**
  * Write a byte to one of the programmable interrupt controller's registers.
+ * Implements the ICW1/ICW2/ICW3/ICW4 init sequence and the OCW1/OCW2/OCW3
+ * operational commands. 
  **/
-void CAliM1543C::pic_write(int index, u32 address, u8 data) {
-  int level;
-  int op;
+void CAliM1543C::pic_write(int index, u32 address, u8 data)
+{
+	std::lock_guard<std::mutex> guard(picLock);
+
 #ifdef DEBUG_PIC
-  if (pic_messages)
-    printf("%%PIC-I-WRITE: write %02x to port %" PRId64 " on PIC %d\n", data,
-           address, index);
+	if (pic_messages)
+		printf("%%PIC-I-WRITE: write %02x to port %" PRId64 " on PIC %d\n", data,
+			address, index);
 #endif
-  switch (address) {
-  case 0:
-    if (data & 0x10)
-      state.pic_mode[index] = PIC_INIT_0;
-    else
-      state.pic_mode[index] = PIC_STD;
-    if (data & 0x08) {
 
-      // OCW3
-    } else {
+	if (address == 0)
+	{
+		if (data & 0x10)
+		{
+			// ICW1: start init sequence.
+			pic_init_reset(index);
+			state.pic_init_state[index] = 1;
+			state.pic_init4[index]      = (data & 0x01) ? 1 : 0;
+			state.pic_single_mode[index] = (data & 0x02) ? 1 : 0;
+			state.pic_ltim[index]       = (data & 0x08) ? 1 : 0;
+		}
+		else if (data & 0x08)
+		{
+			// OCW3
+			if (data & 0x04)
+				state.pic_poll[index] = 1;
+			if (data & 0x02)
+				state.pic_read_reg_select[index] = data & 0x01;
+			if (data & 0x40)
+				state.pic_special_mask[index] = (data >> 5) & 0x01;
+		}
+		else
+		{
+			// OCW2
+			const int cmd   = (data >> 5) & 7;
+			const int level = data & 7;
+			int eoi_irq;
+			int priority;
 
-      // OCW2
-      op = (data >> 5) & 7;
-      level = data & 7;
-      switch (op) {
-      case 1:
+			switch (cmd)
+			{
+			case 0: // rotate in auto-EOI mode (clear)
+			case 4: // rotate in auto-EOI mode (set)
+				state.pic_rotate_on_aeoi[index] = (u8)(cmd >> 2);
+				break;
 
-        // non-specific EOI
-        state.pic_asserted[index] = 0;
-
-        //
-        if (index == 1)
-          state.pic_asserted[0] &= ~(1 << 2);
-
-        //
-        if (!state.pic_asserted[0])
-          cSystem->interrupt(55, false);
+			case 1: // non-specific EOI
+			case 5: // rotate on non-specific EOI
+				priority = pic_priority_of(state.pic_isr[index],
+					state.pic_priority_add[index]);
+				if (priority != 8)
+				{
+					eoi_irq = (priority + state.pic_priority_add[index]) & 7;
+					state.pic_isr[index] &= ~(1 << eoi_irq);
+					if (cmd == 5)
+						state.pic_priority_add[index] = (u8)((eoi_irq + 1) & 7);
+					pic_update_output(index);
+				}
 #ifdef DEBUG_PIC
-        pic_messages = false;
+				pic_messages = false;
 #endif
-        break;
+				break;
 
-      case 3:
-
-        // specific EOI
-        state.pic_asserted[index] &= ~(1 << level);
-
-        //
-        if ((index == 1) && (!state.pic_asserted[1]))
-          state.pic_asserted[0] &= ~(1 << 2);
-
-        //
-        if (!state.pic_asserted[0])
-          cSystem->interrupt(55, false);
+			case 3: // specific EOI
+				state.pic_isr[index] &= ~(1 << level);
+				pic_update_output(index);
 #ifdef DEBUG_PIC
-        pic_messages = false;
+				pic_messages = false;
 #endif
-        break;
-      }
-    }
+				break;
 
-    return;
+			case 6: // set priority command
+				state.pic_priority_add[index] = (u8)((level + 1) & 7);
+				pic_update_output(index);
+				break;
 
-  case 1:
-    switch (state.pic_mode[index]) {
-    case PIC_INIT_0:
-      state.pic_intvec[index] = (u8)data & 0xf8;
-      state.pic_mode[index] = PIC_INIT_1;
-      return;
+			case 7: // rotate on specific EOI
+				state.pic_isr[index] &= ~(1 << level);
+				state.pic_priority_add[index] = (u8)((level + 1) & 7);
+				pic_update_output(index);
+#ifdef DEBUG_PIC
+				pic_messages = false;
+#endif
+				break;
 
-    case PIC_INIT_1:
-      state.pic_mode[index] = PIC_INIT_2;
-      return;
+			default:
+				// no operation
+				break;
+			}
+		}
+		return;
+	}
 
-    case PIC_INIT_2:
-      state.pic_mode[index] = PIC_STD;
-      return;
+	// address == 1: ICW2/3/4 during init, IMR (OCW1) otherwise.
+	switch (state.pic_init_state[index])
+	{
+	case 0:
+		// OCW1: write IMR.  Masking only gates delivery; IRR and ISR are
+		// unaffected — re-evaluating the output picks up any newly-unmasked
+		// pending IRR bit.
+		state.pic_imr[index] = data;
+		pic_update_output(index);
+		break;
 
-    case PIC_STD:
-      state.pic_mask[index] = data;
-      state.pic_asserted[index] &= ~data;
-      return;
-    }
-  }
+	case 1:
+		// ICW2: vector base.
+		state.pic_irq_base[index] = data & 0xf8;
+		state.pic_init_state[index] = state.pic_single_mode[index]
+			? (state.pic_init4[index] ? 3 : 0)
+			: 2;
+		break;
+
+	case 2:
+		// ICW3: cascade configuration (we hard-wire master IRQ2 ↔ slave).
+		state.pic_init_state[index] = state.pic_init4[index] ? 3 : 0;
+		break;
+
+	case 3:
+		// ICW4
+		state.pic_special_fnm[index] = (data >> 4) & 0x01;
+		state.pic_auto_eoi[index]    = (data >> 1) & 0x01;
+		state.pic_init_state[index]  = 0;
+		break;
+	}
 }
 
 /**
- * Write a byte to the edge/level register of one of the programmable interrupt
- *controllers.
+ * Write a byte to the edge/level register of one of the programmable interrupt controllers.
  **/
-void CAliM1543C::pic_write_edge_level(int index, u8 data) {
-  state.pic_edge_level[index] = data;
+void CAliM1543C::pic_write_edge_level(int index, u8 data)
+{
+	std::lock_guard<std::mutex> guard(picLock);
+	state.pic_elcr[index] = data;
+	// Changing trigger mode can affect the wanted-IRQ calculation if any
+	// previously-edge-latched bit is now considered level.
+	pic_update_output(index);
 }
 
-#define DEBUG_EXPR (index != 0 || (intno != 0 && intno > 4))
+#define DEBUG_EXPR  (index != 0 || (intno != 0 && intno > 4))
+
+/**
+ * Assert an interrupt — inner implementation, no lock.
+ * Caller MUST hold picLock.
+ *
+ * Each call latches a fresh edge in IRR regardless of prior line state.  This
+ * preserves the historical es40 API where pic_interrupt() is treated as a
+ * single-shot "this device fired" event by KBD/PIT/serial/IDE.  Level-mode
+ * pins (ELCR or LTIM) additionally have IRR follow the line until pic_deassert.
+ **/
+void CAliM1543C::pic_interrupt_inner(int index, int intno)
+{
+#ifdef DEBUG_PIC
+	if (DEBUG_EXPR)
+	{
+		printf("%%PIC-I-INCOMING: Interrupt %d incomming on PIC %d", intno, index);
+		pic_messages = true;
+	}
+#endif
+
+	const u8 mask = (u8)(1 << intno);
+
+	// Latch a fresh edge: drop last_irr first, then raise.
+	state.pic_last_irr[index] &= ~mask;
+	state.pic_irr[index]      |= mask;
+	state.pic_last_irr[index] |= mask;
+
+#ifdef DEBUG_PIC
+	if (DEBUG_EXPR)
+	{
+		if (state.pic_imr[index] & mask)
+			printf(" (masked, latched)\n");
+		else
+			printf("\n");
+	}
+#endif
+
+	pic_update_output(index);
+}
+
+/**
+ * De-assert an interrupt — inner implementation, no lock.
+ * Caller MUST hold picLock.
+ *
+ * For level-mode pins, this clears IRR (the line dropped low).  For edge-
+ * mode pins, only last_irr drops; any IRR bit already latched stays pending
+ * until INTA, which matches real-hardware edge semantics.
+ **/
+void CAliM1543C::pic_deassert_inner(int index, int intno)
+{
+	const u8 mask = (u8)(1 << intno);
+	const bool is_level =
+		(state.pic_elcr[index] & mask) || state.pic_ltim[index];
+
+	if (is_level)
+		state.pic_irr[index] &= ~mask;
+	state.pic_last_irr[index] &= ~mask;
+
+	pic_update_output(index);
+}
 
 /**
  * Assert an interrupt on one of the programmable interrupt controllers.
  **/
-void CAliM1543C::pic_interrupt(int index, int intno) {
-#ifdef DEBUG_PIC
-  if (DEBUG_EXPR) {
-    printf("%%PIC-I-INCOMING: Interrupt %d incomming on PIC %d", intno, index);
-    pic_messages = true;
-  }
-#endif
-
-  // do we have this interrupt enabled?
-  if (state.pic_mask[index] & (1 << intno)) {
-#ifdef DEBUG_PIC
-    if (DEBUG_EXPR)
-      printf(" (masked)\n");
-    pic_messages = false;
-#endif
-    return;
-  }
-
-  if (state.pic_asserted[index] & (1 << intno)) {
-#ifdef DEBUG_PIC
-    if (DEBUG_EXPR)
-      printf(" (already asserted)\n");
-#endif
-    return;
-  }
-
-#ifdef DEBUG_PIC
-  if (DEBUG_EXPR)
-    printf("\n");
-#endif
-  state.pic_asserted[index] |= (1 << intno);
-
-  if (index == 1)
-    pic_interrupt(0, 2); // cascade
-  if (index == 0)
-    cSystem->interrupt(55, true);
+void CAliM1543C::pic_interrupt(int index, int intno)
+{
+	std::lock_guard<std::mutex> guard(picLock);
+	pic_interrupt_inner(index, intno);
 }
 
 /**
  * De-assert an interrupt on one of the programmable interrupt controllers.
  **/
-void CAliM1543C::pic_deassert(int index, int intno) {
-  if (!(state.pic_asserted[index] & (1 << intno)))
-    return;
-
-  //  printf("De-asserting %d,%d\n",index,intno);
-  state.pic_asserted[index] &= ~(1 << intno);
-  if (index == 1 && state.pic_asserted[1] == 0)
-    pic_deassert(0, 2); // cascade
-  if (index == 0 && state.pic_asserted[0] == 0)
-    cSystem->interrupt(55, false);
+void CAliM1543C::pic_deassert(int index, int intno)
+{
+	std::lock_guard<std::mutex> guard(picLock);
+	pic_deassert_inner(index, intno);
 }
 
-static u32 ali_magic1 = 0xA111543C;
-static u32 ali_magic2 = 0xC345111A;
+/**
+ * Drive a device IRQ input line to a level (active/inactive) — the model for
+ * sources whose "interrupt" is a level the device holds until the guest clears
+ * the cause.
+ *
+ * Because the source is a level, IRR FOLLOWS the line: a rising edge latches
+ * IRR (debounced via last_irr so a held line yields one interrupt), and a
+ * falling line RETRACTS IRR.  This intentionally differs from a stock 8259 
+ * which keeps an edge latched until INTA: a real 8259 has a wire whose source 
+ * holds it, but here the "wire" IS the output-buffer level and once the guest 
+ * empties the buffer there is nothing left to deliver.
+ * 
+ * caller must hold picLock 
+ **/
+void CAliM1543C::pic_set_line_inner(int index, int intno, bool active)
+{
+	const u8 mask = (u8)(1 << intno);
+
+	if ((state.pic_elcr[index] & mask) || state.pic_ltim[index])
+	{
+		// Level triggered: IRR follows the input line.
+		if (active)
+		{
+			state.pic_irr[index]      |= mask;
+			state.pic_last_irr[index] |= mask;
+		}
+		else
+		{
+			state.pic_irr[index]      &= ~mask;
+			state.pic_last_irr[index] &= ~mask;
+		}
+	}
+	else
+	{
+		// Edge triggered: latch IRR only on the rising edge.  IRR is cleared at
+		// INTA, not here, so re-driving a held line produces no duplicate edge.
+		if (active)
+		{
+			if ((state.pic_last_irr[index] & mask) == 0)
+				state.pic_irr[index] |= mask;
+			state.pic_last_irr[index] |= mask;
+		}
+		else
+		{
+			// Line low — the output buffer emptied (normal read, drained read,
+			// or poll), so there is nothing left to deliver: retract the latched
+			// edge.  A stock 8259 keeps it until INTA, but here the line IS the
+			// buffer level.  
+			state.pic_irr[index]      &= ~mask;
+			state.pic_last_irr[index] &= ~mask;
+		}
+	}
+
+	pic_update_output(index);
+}
+
+/**
+ * Drive a device IRQ input line — locked wrapper, see pic_set_line_inner.
+ **/
+void CAliM1543C::pic_set_line(int index, int intno, bool active)
+{
+	std::lock_guard<std::mutex> guard(picLock);
+	pic_set_line_inner(index, intno, active);
+}
+
+static u32  ali_magic1 = 0xA111543C;
+static u32  ali_magic2 = 0xC345111A;
 
 /**
  * Save state to a Virtual Machine State file.
  **/
-int CAliM1543C::SaveState(FILE *f) {
-  long ss = sizeof(state);
-  int res;
+int CAliM1543C::SaveState(FILE* f)
+{
+	long  ss = sizeof(state);
+	int   res;
 
-  if ((res = CPCIDevice::SaveState(f)))
-    return res;
+	if ((res = CPCIDevice::SaveState(f)))
+		return res;
 
-  fwrite(&ali_magic1, sizeof(u32), 1, f);
-  fwrite(&ss, sizeof(long), 1, f);
-  fwrite(&state, sizeof(state), 1, f);
-  fwrite(&ali_magic2, sizeof(u32), 1, f);
-  printf("%s: %d bytes saved.\n", devid_string, (int)ss);
-  return 0;
+	fwrite(&ali_magic1, sizeof(u32), 1, f);
+	fwrite(&ss, sizeof(long), 1, f);
+	fwrite(&state, sizeof(state), 1, f);
+	fwrite(&ali_magic2, sizeof(u32), 1, f);
+	printf("%s: %d bytes saved.\n", devid_string, (int)ss);
+	return 0;
 }
 
 /**
  * Restore state from a Virtual Machine State file.
  **/
-int CAliM1543C::RestoreState(FILE *f) {
-  long ss;
-  u32 m1;
-  u32 m2;
-  int res;
-  size_t r;
+int CAliM1543C::RestoreState(FILE* f)
+{
+	long    ss;
+	u32     m1;
+	u32     m2;
+	int     res;
+	size_t  r;
 
-  if ((res = CPCIDevice::RestoreState(f)))
-    return res;
+	if ((res = CPCIDevice::RestoreState(f)))
+		return res;
 
-  r = fread(&m1, sizeof(u32), 1, f);
-  if (r != 1) {
-    printf("%s: unexpected end of file!\n", devid_string);
-    return -1;
-  }
+	r = fread(&m1, sizeof(u32), 1, f);
+	if (r != 1)
+	{
+		printf("%s: unexpected end of file!\n", devid_string);
+		return -1;
+	}
 
-  if (m1 != ali_magic1) {
-    printf("%s: MAGIC 1 does not match!\n", devid_string);
-    return -1;
-  }
+	if (m1 != ali_magic1)
+	{
+		printf("%s: MAGIC 1 does not match!\n", devid_string);
+		return -1;
+	}
 
-  r = fread(&ss, sizeof(long), 1, f);
-  if (r != 1) {
-    printf("%s: unexpected end of file!\n", devid_string);
-    return -1;
-  }
+	fread(&ss, sizeof(long), 1, f);
+	if (r != 1)
+	{
+		printf("%s: unexpected end of file!\n", devid_string);
+		return -1;
+	}
 
-  if (ss != sizeof(state)) {
-    printf("%s: STRUCT SIZE does not match!\n", devid_string);
-    return -1;
-  }
+	if (ss != sizeof(state))
+	{
+		printf("%s: STRUCT SIZE does not match!\n", devid_string);
+		return -1;
+	}
 
-  r = fread(&state, sizeof(state), 1, f);
-  if (r != 1) {
-    printf("%s: unexpected end of file!\n", devid_string);
-    return -1;
-  }
+	fread(&state, sizeof(state), 1, f);
+	if (r != 1)
+	{
+		printf("%s: unexpected end of file!\n", devid_string);
+		return -1;
+	}
 
-  r = fread(&m2, sizeof(u32), 1, f);
-  if (r != 1) {
-    printf("%s: unexpected end of file!\n", devid_string);
-    return -1;
-  }
+	r = fread(&m2, sizeof(u32), 1, f);
+	if (r != 1)
+	{
+		printf("%s: unexpected end of file!\n", devid_string);
+		return -1;
+	}
 
-  if (m2 != ali_magic2) {
-    printf("%s: MAGIC 1 does not match!\n", devid_string);
-    return -1;
-  }
+	if (m2 != ali_magic2)
+	{
+		printf("%s: MAGIC 1 does not match!\n", devid_string);
+		return -1;
+	}
 
-  printf("%s: %d bytes restored.\n", devid_string, (int)ss);
-  return 0;
+	printf("%s: %d bytes restored.\n", devid_string, (int)ss);
+	return 0;
 }
 
 /**
@@ -1251,92 +2127,209 @@ int CAliM1543C::RestoreState(FILE *f) {
  *   +--------------- Unused
  * \endcode
  **/
-void CAliM1543C::lpt_reset() {
-  state.lpt_data = ~0;
-  state.lpt_status = 0xd8;  // busy, ack, online, error
-  state.lpt_control = 0x0c; // select, init
-  state.lpt_init = false;
+void CAliM1543C::lpt_reset()
+{
+	state.lpt_data = '\xff';
+	state.lpt_status = 0xd8;  // busy, ack, online, error
+	state.lpt_control = 0x0c; // select, init
+	state.lpt_init = false;
 }
 
 /**
  * Read a byte from one of the parallel port controller's registers.
  **/
-u8 CAliM1543C::lpt_read(u32 address) {
-  u8 data = 0;
-  switch (address) {
-  case 0:
-    data = state.lpt_data;
-    break;
+u8 CAliM1543C::lpt_read(u32 address)
+{
+	if (!(state.superio_ldn_regs[3][0x30] & 0x01)) return 0xff;
+	u8  data = 0;
+	switch (address)
+	{
+	case 0:
+		data = state.lpt_data;
+		break;
 
-  case 1:
-    data = state.lpt_status;
-    if ((state.lpt_status & 0x80) == 0 && (state.lpt_control & 0x01) == 0) {
-      if (state.lpt_status & 0x40) { // test ack
-        state.lpt_status &= ~0x40;   // turn off ack
-      } else {
-        state.lpt_status |= 0x40; // set ack.
-        state.lpt_status |= 0x80; // set (not) busy.
-      }
-    }
-    break;
+	case 1:
+		data = state.lpt_status;
+		if ((state.lpt_status & 0x80) == 0 && (state.lpt_control & 0x01) == 0)
+		{
+			if (state.lpt_status & 0x40)
+			{ // test ack
+				state.lpt_status &= ~0x40;  // turn off ack
+			}
+			else
+			{
+				state.lpt_status |= 0x40;   // set ack.
+				state.lpt_status |= 0x80;   // set (not) busy.
+			}
+		}
+		break;
 
-  case 2:
-    data = state.lpt_control;
-  }
+	case 2:
+		data = state.lpt_control;
+	}
 
 #ifdef DEBUG_LPT
-  printf("%%LPT-I-READ: port %d = %x\n", address, data);
+	printf("%%LPT-I-READ: port %d = %x\n", address, data);
 #endif
-  return data;
+	return data;
 }
 
 /**
  * Write a byte to one of the parallel port controller's registers.
  **/
-void CAliM1543C::lpt_write(u32 address, u8 data) {
+void CAliM1543C::lpt_write(u32 address, u8 data)
+{
+	if (!(state.superio_ldn_regs[3][0x30] & 0x01)) return;
 #ifdef DEBUG_LPT
-  printf("%%LPT-I-WRITE: port %d = %x\n", address, data);
+	printf("%%LPT-I-WRITE: port %d = %x\n", address, data);
 #endif
-  switch (address) {
-  case 0:
-    state.lpt_data = data;
-    break;
+	switch (address)
+	{
+	case 0:
+		state.lpt_data = data;
+		break;
 
-  case 1:
-    break;
+	case 1:
+		break;
 
-  case 2:
-    if ((data & 0x04) == 0) {
-      state.lpt_init = true;
-      state.lpt_status = 0xd8;
-    } else {
-      if (data & 0x08) {             // select bit
-        if (data & 0x01) {           // strobe?
-          state.lpt_status &= ~0x80; // we're busy
+	case 2:
+		if ((data & 0x04) == 0)
+		{
+			state.lpt_init = true;
+			state.lpt_status = 0xd8;
+		}
+		else
+		{
+			if (data & 0x08)
+			{   // select bit
+				if (data & 0x01)
+				{ // strobe?
+					state.lpt_status &= ~0x80;  // we're busy
 
-          // do the write!
-          if (lpt && state.lpt_init)
-            fputc(state.lpt_data, lpt);
-          if (state.lpt_control & 0x10) {
-            pic_interrupt(0, 7);
-          }
-        } else {
+					// do the write!
+					if (lpt && state.lpt_init)
+						fputc(state.lpt_data, lpt);
+					if (state.lpt_control & 0x10)
+					{
+						pic_interrupt(0, 7);
+					}
+				}
+				else
+				{
 
-          // ?
-        }
-      }
-    }
+					// ?
+				}
+			}
+		}
 
-    state.lpt_control = data;
-  }
+		state.lpt_control = data;
+	}
+}
+
+void CAliM1543C::set_floppy_presence(bool driveA, bool driveB)
+{
+    u8 cmos = 0;
+    if (driveA) cmos |= 0x40; // Drive A: 1.44MB 3.5"
+    if (driveB) cmos |= 0x04; // Drive B: 1.44MB 3.5"
+    state.toy_stored_data[0x10] = cmos;
+    state.superio_ldn_regs[0][0x30] = cmos ? 0x01 : 0x00;
 }
 
 /**
  * Check if threads are still running.
  **/
-void CAliM1543C::check_state() {
-  if (myThreadDead.load())
-    FAILURE(Thread, "ALi thread has died");
+void CAliM1543C::check_state()
+{
+	if (myThreadDead.load())
+		FAILURE(Thread, "ALi thread has died");
+
+	// HACK HACK HACK HACK ALERT
+	// ENABLES BSD SYSTEMS TO BOOT WITHOUT panic: pci_display_console: no device at 255/255/0
+	// SRM builds the HWPRB / CTB Fully! BUT! Does not properly set the CTB turboslot
+	// Theory: TGA/TGA2 would set properly, but SRM does not 'know' about others to set. 
+	// Investigate possibly how to make SRM happy. This appears to be an issue on real hardware
+	// as well
+	static bool ctb_fixed = false;
+
+	if (!ctb_fixed && theVGA)
+	{
+		const u64 HWRPB_BASE = U64(0x2000);
+		const u64 HWRPB_MAGIC = U64(0x0000004250525748); // "HWRPB\0\0\0" LE
+		const u64 CTB_OFF_OFF = U64(0xB8);  // offset of rpb_ctb_off in HWRPB
+		const u64 CTB_TYPE_OFF = U64(0x00);   // offset of ctb_type in CTB
+		const u64 CTB_TS_OFF = U64(0xF0);   // offset of ctb_turboslot in CTB
+		const u64 CTB_GRAPHICS = U64(4);       // ctb_type for graphics console
+
+		// Step 1: Check if HWRPB is built (magic signature present)
+		u64 magic = cSystem->ReadMem(HWRPB_BASE + U64(0x08), 64, this);
+		// Temporary: dump HWRPB fields to find ctb_off
+		if (magic != HWRPB_MAGIC)
+			return;  // SRM hasn't built the HWRPB yet
+
+		// Step 2: Read CTB offset from HWRPB
+		u64 ctb_off = cSystem->ReadMem(HWRPB_BASE + CTB_OFF_OFF, 64, this);
+		if (ctb_off == 0 || ctb_off > U64(0x100000))
+			return;  // CTB offset not valid (yet)
+
+		// After step 2, before step 3, add a one-shot CTB dump:
+		u64 ctb_phys = HWRPB_BASE + ctb_off;
+
+#ifdef DEBUG_HWRPB_TURBOSLOT
+		static bool ctb_dumped = false;
+		if (!ctb_dumped) {
+			printf("%s: CTB dump at phys 0x%" PRIx64 " (ctb_off=0x%" PRIx64 "):\n",
+				devid_string, ctb_phys, ctb_off);
+			for (int i = 0; i < 0x100; i += 8) {
+				u64 val = cSystem->ReadMem(ctb_phys + i, 64, this);
+				printf("  CTB+0x%03X (0x%05" PRIx64 "): 0x%016" PRIx64 "\n",
+					i, ctb_phys + i, val);
+			}
+			ctb_dumped = true;
+		}
+#endif
+
+		// Step 3: Verify this is a graphics console CTB
+		u64 ctb_type = cSystem->ReadMem(ctb_phys + CTB_TYPE_OFF, 64, this);
+		if (ctb_type == 0)
+			return;  // CTB not populated yet — try again later
+		if (ctb_type != CTB_GRAPHICS)
+		{
+			// Confirmed serial/printer console — turboslot doesn't matter
+			ctb_fixed = true;
+			return;
+		}
+
+		// Step 4: Read current turboslot value
+		u64 turboslot = cSystem->ReadMem(ctb_phys + CTB_TS_OFF, 64, this);
+
+		// Step 5: Check if it needs fixing
+		// SRM leaves this as all-FF for non-TGA adapters
+		// Also fix if it's zero (uninitialized)
+		bool needs_fix = ((turboslot & U64(0xFFFF)) == U64(0xFFFF));
+
+		if (needs_fix)
+		{
+			int vga_bus = theVGA->pci_bus() & 0xFF;
+			int vga_dev = theVGA->pci_dev() & 0xFF;
+			u64 ts = (U64(0x0003) << 16) | (((u64)vga_bus) << 8) | ((u64)vga_dev);
+			cSystem->WriteMem(ctb_phys + CTB_TS_OFF, 64, ts, this);
+			static bool printed = false;
+#ifdef DEBUG_HWRPB_TURBOSLOT
+			if (!printed) {
+				printf("%s: fixed CTB turboslot at phys 0x%" PRIx64
+					" from 0x%" PRIx64 " to 0x%08" PRIx64
+					" (PCI bus=%d dev=%d)\n",
+					devid_string, ctb_phys + CTB_TS_OFF,
+					turboslot, ts, vga_bus, vga_dev);
+			}
+#endif
+		}
+		else if (turboslot == ((U64(0x0003) << 16) | (((u64)(theVGA->pci_bus() & 0xFF)) << 8) | ((u64)(theVGA->pci_dev() & 0xFF))))
+		{
+			// Our value is there and SRM didn't overwrite it — we're done
+			ctb_fixed = true;
+		}
+	}
 }
 
-CAliM1543C *theAli = 0;
+CAliM1543C* theAli = 0;

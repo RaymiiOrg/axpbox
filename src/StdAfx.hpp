@@ -193,6 +193,7 @@ inline char printable(char c) {
 
 #include <atomic>
 #include <memory>
+#include <mutex>
 #include <thread>
 #include <typeinfo>
 
