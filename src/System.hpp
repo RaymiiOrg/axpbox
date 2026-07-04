@@ -29,6 +29,8 @@
 
 #include "SystemComponent.hpp"
 #include "TraceEngine.hpp"
+#include "i2c_spd.hpp"
+#include <atomic>
 
 #if !defined(INCLUDED_SYSTEM_H)
 #define INCLUDED_SYSTEM_H
@@ -101,6 +103,13 @@ struct SConfig {
  *bus.
  *   .
  **/
+/// Host-side open-drain drivers for the Tsunami MPD I2C pins.
+struct MPDState {
+  // Host open-drain drivers (1 = released high, 0 = pulling low)
+  bool cks_out = true; // SCL
+  bool ds_out = true;  // SDA
+};
+
 class CSystem {
 public:
   void DumpMemory(unsigned int filenum);
@@ -121,6 +130,21 @@ public:
   void init();
   void start_threads();
   void stop_threads();
+
+  // Firmware-triggered system reset support (LFU writes to the TIG SRCR
+  // registers after a flash update). The CPU thread polls
+  // IsSystemResetRequested() and parks until the main thread processes it.
+  void RequestSystemReset();
+  bool IsSystemResetRequested() const;
+
+  // True while we are performing an in-process reset (stop/reset/start).
+  // Devices (S3/SDL) use this to PAUSE instead of destroying the window.
+  void SetResetInProgress(bool v) {
+    m_reset_in_progress.store(v, std::memory_order_release);
+  }
+  bool IsResetInProgress() const {
+    return m_reset_in_progress.load(std::memory_order_acquire);
+  }
 
   int RegisterMemory(CSystemComponent *component, int index, u64 base,
                      u64 length);
@@ -162,6 +186,19 @@ private:
   void dchip_csr_write(u32 address, u8 data);
   u8 tig_read(u32 address);
   void tig_write(u32 address, u8 data);
+
+  // --- MPD / SPD wiring ---
+  MPDState m_mpd;
+  I2CBus m_mpd_bus;
+
+  // Build SPD images that match configured memory.
+  void init_spd_from_config_mb(uint32_t total_mb);
+  static std::vector<uint8_t> build_sdram_spd(uint32_t dimm_mb,
+                                              bool registered_ecc = true);
+  static std::vector<uint32_t> split_mb_into_dimms(uint32_t total_mb);
+
+  std::atomic<bool> m_reset_requested{false};
+  std::atomic<bool> m_reset_in_progress{false};
 
   int iNumCPUs;
   CFastMutex *cpu_lock_mutex;
