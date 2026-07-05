@@ -157,6 +157,24 @@ inline bool isblank(char c) {
 }
 #endif
 
+
+/* --- PRINTF_BYTE_TO_BINARY macros (ES40-Emu, used by device debug) --- */
+#define PRINTF_BINARY_PATTERN_INT8 "%c%c%c%c%c%c%c%c"
+#define PRINTF_BYTE_TO_BINARY_INT8(i)                                          \
+  (((i)&0x80ll) ? '1' : '0'), (((i)&0x40ll) ? '1' : '0'),                      \
+      (((i)&0x20ll) ? '1' : '0'), (((i)&0x10ll) ? '1' : '0'),                  \
+      (((i)&0x08ll) ? '1' : '0'), (((i)&0x04ll) ? '1' : '0'),                  \
+      (((i)&0x02ll) ? '1' : '0'), (((i)&0x01ll) ? '1' : '0')
+
+#define PRINTF_BINARY_PATTERN_INT16                                            \
+  PRINTF_BINARY_PATTERN_INT8 PRINTF_BINARY_PATTERN_INT8
+#define PRINTF_BYTE_TO_BINARY_INT16(i)                                         \
+  PRINTF_BYTE_TO_BINARY_INT8((i) >> 8), PRINTF_BYTE_TO_BINARY_INT8(i)
+#define PRINTF_BINARY_PATTERN_INT32                                            \
+  PRINTF_BINARY_PATTERN_INT16 PRINTF_BINARY_PATTERN_INT16
+#define PRINTF_BYTE_TO_BINARY_INT32(i)                                         \
+  PRINTF_BYTE_TO_BINARY_INT16((i) >> 16), PRINTF_BYTE_TO_BINARY_INT16(i)
+
 inline char printable(char c) {
   if (isprint((unsigned char)c))
     return c;
@@ -197,6 +215,7 @@ inline char printable(char c) {
 
 #include <atomic>
 #include <memory>
+#include <cerrno>
 #include <mutex>
 #include <thread>
 #include <typeinfo>
