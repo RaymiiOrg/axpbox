@@ -3,6 +3,9 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 project(AXPBox VERSION 1.1.3)
 
+# x86-64 JIT (requires the asmjit sources in third_party/asmjit; see README)
+option(ES40_DISABLE_ASMJIT "Disable the x86-64 JIT (asmjit)" ON)
+
 # Source files
 file(GLOB srcs src/*.cpp src/base/*.cpp src/gui/*.cpp)
 file(GLOB include_sources src/base/*WIN32.cpp src/base/*POSIX.cpp)
@@ -10,6 +13,21 @@ list(REMOVE_ITEM srcs ${include_sources})
 
 add_executable(axpbox ${srcs} src/Main.cpp)
 target_include_directories(axpbox PRIVATE src src/base src/gui ${CMAKE_BINARY_DIR}/src)
+
+if (NOT ES40_DISABLE_ASMJIT)
+    if (NOT EXISTS ${CMAKE_SOURCE_DIR}/third_party/asmjit/CMakeLists.txt)
+        message(FATAL_ERROR "asmjit missing: clone it into third_party/asmjit\n"
+            "  git clone https://github.com/asmjit/asmjit third_party/asmjit\n"
+            "  git -C third_party/asmjit checkout 0bd5787b54b575ed94bf32ac452153b34385c514")
+    endif()
+    set(ASMJIT_NO_INSTALL ON)
+    add_subdirectory(third_party/asmjit)
+    target_sources(axpbox PRIVATE src/jit/jitengine.cpp)
+    target_compile_definitions(axpbox PRIVATE ES40_JIT)
+    target_include_directories(axpbox PRIVATE ${CMAKE_SOURCE_DIR}/third_party/asmjit/src)
+    target_link_libraries(axpbox asmjit)
+    message(STATUS "asmjit JIT enabled")
+endif()
 
 # Path to additional CMake modules
 set(CMAKE_MODULE_PATH ${CMAKE_SOURCE_DIR}/cmake)

@@ -286,6 +286,10 @@ private:
 
   inline void break_seq_icache() {
     seq_remaining = 0;
+    // Also drop the icache-disabled fetch cursor: compiled JIT blocks write
+    // state.pc natively, so pc_phys/rem_ins_in_page are stale after a
+    // native pass and the next interpreted fetch must retranslate.
+    state.rem_ins_in_page = 0;
   }
   
   // Data page translation cache: direct-mapped by virtual page (kDpcEntries slots/dir) so a

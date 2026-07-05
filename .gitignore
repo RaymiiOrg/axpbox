@@ -6,3 +6,4 @@ build**/
 CMakeSettings.json
 run/
 img/
+third_party/asmjit/
