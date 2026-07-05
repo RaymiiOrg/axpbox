@@ -89,7 +89,10 @@ void CAlphaCPU::run()
 		// leaving start_time at init time makes check_state() derive a wildly
 		// wrong cc_per_instruction (huge elapsed wall-time vs ~0 instructions).
 		start_time = std::chrono::steady_clock::now();
-		next_timer_fire = start_time;
+		// First interval tick one second in: an immediate tick can land inside
+		// the SRM console's earliest init, where a delivered interrupt makes
+		// it dump registers and restart (nondeterministic boot transient).
+		next_timer_fire = start_time + std::chrono::seconds(1);
 		cc_large = 0;
 		state.instruction_count = 0;
 		prev_icount = 0;

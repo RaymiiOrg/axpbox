@@ -223,6 +223,7 @@ if (GIT_FOUND)
     set(PACKAGE_GITSHA "\"${GIT_SHA}\"")
 endif()
 
+set(VERSION "\"${PROJECT_VERSION}\"")
 set(PACKAGE ${PROJECT_NAME})
 set(PACKAGE_BUGREPORT "tglozar@gmail.com")
 set(PACKAGE_NAME string(TOLOWER ${PROJECT_NAME}))

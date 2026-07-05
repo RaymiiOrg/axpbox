@@ -1,3 +1,5 @@
+#include "StdAfx.hpp"
+
 #ifdef HAVE_SDL
 #include "StdAfx.hpp"
 #include "System.hpp"

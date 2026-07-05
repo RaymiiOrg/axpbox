@@ -22,6 +22,8 @@
  * THE SOFTWARE.
  */
 // Straight port to es40 by Cacodemon345.
+#include "StdAfx.hpp"
+
 #ifdef HAVE_SDL
 #include "ES1370.hpp"
 
