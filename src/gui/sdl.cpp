@@ -473,6 +473,64 @@ void bx_sdl_gui_c::handle_events(void) {
     }
   }
 
+  // Debug aid: AXPBOX_KEYSCRIPT="35:enter,50:f2,52:down,..." injects named
+  // keys at the given second offsets (headless firmware/menu navigation).
+  static const char *keyscript = getenv("AXPBOX_KEYSCRIPT");
+  if (keyscript && theKeyboard) {
+    struct KScriptEvent {
+      Uint64 t_ms;
+      u32 key;
+    };
+    static std::vector<KScriptEvent> ks_events;
+    static size_t ks_next = 0;
+    static bool ks_parsed = false;
+    if (!ks_parsed) {
+      ks_parsed = true;
+      static const struct {
+        const char *name;
+        u32 key;
+      } ks_map[] = {
+          {"enter", BX_KEY_ENTER}, {"esc", BX_KEY_ESC},
+          {"tab", BX_KEY_TAB},     {"space", BX_KEY_SPACE},
+          {"up", BX_KEY_UP},       {"down", BX_KEY_DOWN},
+          {"left", BX_KEY_LEFT},   {"right", BX_KEY_RIGHT},
+          {"del", BX_KEY_DELETE},  {"f1", BX_KEY_F1},
+          {"f2", BX_KEY_F2},       {"f3", BX_KEY_F3},
+          {"f6", BX_KEY_F6},       {"f8", BX_KEY_F8},
+          {"f10", BX_KEY_F10},     {"y", BX_KEY_Y},
+          {"n", BX_KEY_N},         {"c", BX_KEY_C},
+          {"pgdn", BX_KEY_PAGE_DOWN}, {"pgup", BX_KEY_PAGE_UP},
+      };
+      char buf[1024];
+      strncpy(buf, keyscript, sizeof(buf) - 1);
+      buf[sizeof(buf) - 1] = 0;
+      for (char *tok = strtok(buf, ","); tok; tok = strtok(nullptr, ",")) {
+        char *colon = strchr(tok, ':');
+        if (!colon)
+          continue;
+        *colon = 0;
+        Uint64 at = (Uint64)(atof(tok) * 1000.0);
+        for (const auto &m : ks_map) {
+          if (!strcmp(colon + 1, m.name)) {
+            ks_events.push_back({at, m.key});
+            break;
+          }
+        }
+      }
+      printf("%%SDL-I-KEYSCRIPT: %zu scripted key events armed.\n",
+             ks_events.size());
+    }
+    Uint64 ks_now = SDL_GetTicks();
+    while (ks_next < ks_events.size() && ks_events[ks_next].t_ms <= ks_now) {
+      u32 k = ks_events[ks_next].key;
+      printf("%%SDL-I-KEYSCRIPT: injecting key %u at t=%llums\n", k,
+             (unsigned long long)ks_now);
+      theKeyboard->gen_scancode(k);
+      theKeyboard->gen_scancode(k | BX_KEY_RELEASED);
+      ks_next++;
+    }
+  }
+
   u32 key_event;
 
   while (SDL_PollEvent(&sdl_event)) {

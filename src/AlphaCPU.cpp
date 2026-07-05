@@ -1868,6 +1868,14 @@ void CAlphaCPU::check_state() {
   if (myThreadDead.load())
     FAILURE(Thread, "CPU thread has died");
 
+  // Debug aid: AXPBOX_PC_SAMPLE=1 prints the guest PC on every check_state
+  // poll (~100 ms) -- identifies guest-side hangs/loops on headless runs.
+  static const char *pc_sample = getenv("AXPBOX_PC_SAMPLE");
+  if (pc_sample && *pc_sample == '1')
+    fprintf(stderr, "PCSAMPLE cpu%d pc=%016llx icount=%llu\n",
+            (int)state.iProcNum, (unsigned long long)state.pc,
+            (unsigned long long)state.instruction_count);
+
 #if !defined(CONSTANT_TIME_FACTOR)
   if (state.instruction_count > 0) {
     // correct CPU timing loop...
