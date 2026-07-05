@@ -738,8 +738,10 @@ void CConfigurator::initialize() {
     break;
 
   case c_cirrus:
-    myDevice =
-        new CCirrus(this, (CSystem *)pParent->get_device(), pcibus, pcidev);
+    // Cirrus is not ported to the MAME-derived VGA core (disabled in
+    // ES40-Emu upstream as well). Use the S3 Trio64 instead.
+    FAILURE(Configuration,
+            "cirrus is currently unavailable; use an s3 vga section instead");
     break;
 
   case c_radeon:

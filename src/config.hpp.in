@@ -278,6 +278,7 @@
 /* Optional features */
 #cmakedefine HAVE_PCAP
 #cmakedefine HAVE_SDL
+#cmakedefine HAVE_SDL3
 #cmakedefine HAVE_X11
 
 /* Version number of package */

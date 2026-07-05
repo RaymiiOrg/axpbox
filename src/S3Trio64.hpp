@@ -26,15 +26,26 @@
  * serve the general public.
  */
 
+ /**
+  * \file
+  * Contains the definitions for emulated S3 Trio 64 Video Card device.
+ **/
 #if !defined(INCLUDED_S3Trio64_H_)
 #define INCLUDED_S3Trio64_H_
 
 #include "VGA.hpp"
 #include "gui/vga.hpp"
+#include <atomic>
+#include "coretmpl.hpp"
+#include "attotime.hpp"
+#include "mame_shims.hpp"
+#include "address_map.hpp"
+#include "ibm8514a.hpp"
 
-/* video card has 4M of ram */
-#define VIDEO_RAM_SIZE 22
-#define CRTC_MAX 0x57
+  /* video card has 4M of ram */
+#define VIDEO_RAM_SIZE  22
+#define CRTC_MAX        0x70
+
 
 /**
  * \brief S3 Trio 64 Video Card
@@ -44,201 +55,427 @@
  *   (http://home.worldonline.dk/~finth/)
  *  .
  **/
-class CS3Trio64 : public CVGA {
+class CS3Trio64 : public CVGA, public mame_machine_provider
+{
 public:
-  virtual int SaveState(FILE *f);
-  virtual int RestoreState(FILE *f);
-  virtual void check_state();
-  virtual void WriteMem_Legacy(int index, u32 address, int dsize, u32 data);
-  virtual u32 ReadMem_Legacy(int index, u32 address, int dsize);
+  virtual int   SaveState(FILE* f) override;
+  virtual int   RestoreState(FILE* f) override;
+  virtual void  check_state() override;
+  virtual void  WriteMem_Legacy(int index, u32 address, int dsize, u32 data) override;
+  virtual u32   ReadMem_Legacy(int index, u32 address, int dsize) override;
 
-  virtual void WriteMem_Bar(int func, int bar, u32 address, int dsize,
-                            u32 data);
-  virtual u32 ReadMem_Bar(int func, int bar, u32 address, int dsize);
+  virtual void  WriteMem_Bar(int func, int bar, u32 address, int dsize,
+    u32 data) override;
+  virtual u32   ReadMem_Bar(int func, int bar, u32 address, int dsize) override;
 
-  CS3Trio64(CConfigurator *cfg, class CSystem *c, int pcibus, int pcidev);
-  virtual ~CS3Trio64();
+  virtual u64 ReadMem(int index, u64 address, int dsize) override;
+  virtual void WriteMem(int index, u64 address, int dsize, u64 data) override;
 
-  void update(void);
-  void run(void);
+  // Observe PCI config-space accesses (BARs and COMMAND)
+  u32  config_read_custom(int func, u32 address, int dsize, u32 cur) override;
+  void config_write_custom(int func, u32 address, int dsize, u32 old_data, u32 new_data, u32 raw) override;
 
-  virtual u8 get_actl_palette_idx(u8 index);
-  virtual void redraw_area(unsigned x0, unsigned y0, unsigned width,
-                           unsigned height);
+  // MAME header stuff
 
-  virtual void init();
-  virtual void start_threads();
-  virtual void stop_threads();
+  // construction/destruction
+  //s3vision864_vga_device(const machine_config& mconfig, const char* tag, device_t* owner, uint32_t clock);
+
+  //virtual uint8_t mem_r(offs_t offset) override;
+  //virtual void mem_w(offs_t offset, uint8_t data) override;
+
+  uint32_t screen_update(bitmap_rgb32& bitmap, const rectangle& cliprect) override;
+
+  ibm8514a_device* get_8514() { return &m_8514; }
+
+  // end MAME header stuff
+
+  CS3Trio64(CConfigurator* cfg, class CSystem* c, int pcibus, int pcidev);
+  virtual       ~CS3Trio64();
+
+  void          update(void);
+  void          run(void);
+
+  virtual u8    get_actl_palette_idx(u8 index) override;
+  virtual void  redraw_area(unsigned x0, unsigned y0, unsigned width,
+    unsigned height) override;
+
+  virtual void  init() override;
+  virtual void  start_threads() override;
+  virtual void  stop_threads() override;
+protected:
+  virtual u16      line_compare_mask() override;
+
+  // MAME S3 state
+  struct {
+    uint8_t memory_config;
+    uint8_t ext_misc_ctrl_2;
+    uint8_t crt_reg_lock;
+    uint8_t reg_lock1;
+    uint8_t reg_lock2;
+    uint8_t enable_8514;
+    uint8_t enable_s3d;
+    uint8_t cr3a;
+    uint8_t cr42;
+    uint8_t cr43;
+    uint8_t cr51;
+    uint8_t cr53;
+    uint8_t id_high;
+    uint8_t id_low;
+    uint8_t revision;
+    uint8_t id_cr30;
+    uint32_t strapping;
+    uint8_t sr10;
+    uint8_t sr11;
+    uint8_t sr12;
+    uint8_t sr13;
+    uint8_t sr15;
+    uint8_t sr17;
+    uint8_t clk_pll_r;
+    uint8_t clk_pll_m;
+    uint8_t clk_pll_n;
+
+    // data for memory-mapped I/O 
+    uint16_t mmio_9ae8;
+    uint16_t mmio_bee8;
+    uint16_t mmio_96e8;
+
+    // hardware graphics cursor 
+    uint8_t cursor_mode;
+    uint16_t cursor_x;
+    uint16_t cursor_y;
+    uint16_t cursor_start_addr;
+    uint8_t cursor_pattern_x;
+    uint8_t cursor_pattern_y;
+    uint8_t cursor_fg[4];
+    uint8_t cursor_bg[4];
+    uint8_t cursor_fg_ptr;
+    uint8_t cursor_bg_ptr;
+    uint8_t extended_dac_ctrl;
+
+    // Trio64-specific CRTC registers (ES40 extensions( beyond MAME) )
+    uint8_t cr32;     // Backward Compatibility 1 (BKWD_1)
+    uint8_t cr33;     // Backward Compatibility 2 (BKWD_2)
+    uint8_t cr34;     // Backward Compatibility 3 (BKWD_3)
+    uint8_t cr3b;     // Data Transfer Position (DT_EX-POS)
+    uint8_t cr3c;     // Interlace Retrace Start
+    uint8_t cr40;     // System Configuration (enable 8514)
+    uint8_t cr41;     // BIOS Flag Register
+    uint8_t cr50;     // Extended System Control 1
+    uint8_t cr52;     // Extended BIOS Flag 1
+    uint8_t cr54;     // Extended Memory Control 2
+    uint8_t cr56;     // External Sync Control 1
+    uint8_t cr57;     // External Sync Control 2
+    uint8_t cr58;     // Linear Address Window Control
+    uint8_t cr59;     // Linear Address Window Position High
+    uint8_t cr5a;     // Linear Address Window Position Low
+    uint8_t cr5b;     // undocumented
+    uint8_t cr5d;     // Extended Horizontal Overflow
+    uint8_t cr5f;     // undocumented
+    uint8_t cr60;     // Extended Memory Control 3
+    uint8_t cr61;     // Extended Memory Control 4
+    uint8_t cr62;     // undocumented
+    uint8_t cr63;     // External Sync Control 3
+    uint8_t cr64;     // undocumented
+    uint8_t cr65;     // Extended Miscellaneous Control
+    uint8_t cr66;     // Extended Miscellaneous Control 1
+    uint8_t cr6b;     // Extended BIOS Flag 3
+    uint8_t cr6c;     // Extended BIOS Flag 4
+    uint8_t cr6d;     // undocumented
+
+    // Trio64-specific MMIO staging (ES40 extensions)
+    uint16_t mmio_42e8;
+    uint16_t mmio_4ae8;
+    uint16_t mmio_92e8;
+    uint16_t mmio_9ee8;
+
+    // Trio64-specific sequencer extensions
+    uint8_t sr18;
+    uint8_t sr1a;
+    uint8_t sr1b;
+  } s3;
+  virtual uint16_t offset() override;
+
+  virtual uint32_t latch_start_addr() override; // below is MAME's base VGA implementation, but S3 Trio in MAME overrides it with the version we have
+  virtual bool get_interlace_mode() override { return BIT(s3.cr42, 5); }
+
+  virtual void palette_update() override;
+  virtual void s3_define_video_mode(void);
+
+  nop_callback m_vsync_cb;
+
+  address_map m_crtc_map{ 256 };
+  address_map m_seq_map{ 256 };
+  address_map m_gc_map{ 256 };
+  address_map m_atc_map{ 64 };
+
+  address_map& space(int spacenum) override
+  {
+    switch (spacenum) {
+    case CRTC_REG: return m_crtc_map;
+    case GC_REG:   return m_gc_map;
+    case SEQ_REG:  return m_seq_map;
+    case ATC_REG:  return m_atc_map;
+    default:
+      FAILURE_1(NotImplemented, "Unknown register space %d", spacenum);
+      //return m_crtc_map; // unreachable
+    }
+  }
+
+  void crtc_map(address_map& map);
+  void sequencer_map(address_map& map);
+  void gc_map(address_map& map);
+  void attribute_map(address_map& map);
+
+  void recompute_params() override;
+
+  void init_maps() {
+    crtc_map(m_crtc_map);
+    sequencer_map(m_seq_map);
+    gc_map(m_gc_map);
+    attribute_map(m_atc_map);
+  }
+
+  // Video mode detection (MAME: svga_device::pc_vga_choosevideomode)
+  uint8_t get_video_depth();
+
+  // SVGA-aware banked memory access (MAME: s3vision864_vga_device::mem_r/w)
+  uint8_t  mem_r(uint32_t offset) override;
+  void     mem_w(uint32_t offset, uint8_t data) override;
+
+  // Linear framebuffer access (MAME: vga_device::mem_linear_r/w)
+  void     mem_linear_w(uint32_t offset, uint8_t data) override;
+
+  // Hardware cursor overlay (MAME: screen_update cursor portion)
+  void s3_draw_hardware_cursor(uint32_t* pixels, int pitch_px,
+    int clip_width, int clip_height,
+    uint8_t cur_mode);
+
+  inline void vram_write_dirty(uint32_t addr, uint8_t v) {
+    vga.memory[addr % vga.svga_intf.vram_size] = v;
+    state.vga_mem_updated = 1;
+  }
+
+  inline bool vga_enabled() const {
+    return seq_reset1() && seq_reset2();
+  }
+
+  inline bool dtp_enabled() const { return (s3.cr34 & 0x10) != 0; }
+
+  inline bool ilrt_enabled() const { return (s3.cr42 & 0x20) != 0; }
+
+  inline uint32_t vram_display_mask() const {
+    return (uint32_t)(vga.svga_intf.vram_size - 1);
+  }
+
 
 private:
-  u32 mem_read(u32 address, int dsize);
-  void mem_write(u32 address, int dsize, u32 data);
+  // MAME CODE HERE
+  ibm8514a_device m_8514;
+  void refresh_pitch_offset();
+  // END MAME CODE - rest is es40 specific or pending removal
 
-  u32 io_read(u32 address, int dsize);
-  void io_write(u32 address, int dsize, u32 data);
+  // VGA Subsystem Enable register (port 3C3) — no MAME equivalent;
+  // MAME uses mode_setup_w on ISA $46E8 instead.
+  bool m_vga_subsys_enable = true;
 
-  void io_write_b(u32 address, u8 data);
+  // Trio setup regs (46E8h/0102h). Defaults chosen to not "brick" the emulated card.
+  u8 m_video_subsys_enable_46e8 = 0x08; // AD_DEC=1, EN_SUP=0
+  u8 m_setup_option_select_0102 = 0x00; // bit0=1 "respond" - reset default is 0x00
 
-  void write_b_3c0(u8 data);
-  void write_b_3c2(u8 data);
-  void write_b_3c4(u8 data);
-  void write_b_3c5(u8 data);
-  void write_b_3c6(u8 data);
-  void write_b_3c7(u8 data);
-  void write_b_3c8(u8 data);
-  void write_b_3c9(u8 data);
-  void write_b_3ce(u8 data);
-  void write_b_3cf(u8 data);
-  void write_b_3d4(u8 data);
-  void write_b_3d5(u8 data);
+  u32   mem_read(u32 address, int dsize);
+  void  mem_write(u32 address, int dsize, u32 data);
 
-  u8 read_b_3c0();
-  u8 read_b_3c1();
-  u8 read_b_3c2();
-  u8 read_b_3c3();
-  u8 read_b_3c4();
-  u8 read_b_3c5();
-  u8 read_b_3c9();
-  u8 read_b_3ca();
-  u8 read_b_3cc();
-  u8 read_b_3cf();
-  u8 read_b_3d4();
-  u8 read_b_3d5();
-  u8 read_b_3da();
+  // Keep SDL window alive across firmware reset:
+  //  - PauseThread is set by stop_threads() when system reset is in progress
+  //  - PauseAck is raised by the S3 thread once it is safely paused
+  std::atomic<bool> PauseThread{ false };
+  std::atomic<bool> PauseAck{ false };
 
-  u32 legacy_read(u32 address, int dsize);
-  void legacy_write(u32 address, int dsize, u32 data);
+  // screen refresh stuff
+  std::chrono::steady_clock::time_point m_last_refresh_time;
+  // Dirty-gate state: skip the per-refresh rasterize + GPU upload when nothing visible changed.
+  uint64_t m_last_cursor_sig = 0;     // HW-cursor (mode/pos/data-addr) folded in -- not tracked by vga_mem_updated
+  int      m_frames_since_render = 0;  // forced-refresh counter so cursor/text blink still animate when static
 
-  u32 rom_read(u32 address, int dsize);
+  // accel I/O (S3 Trio uses 0x42E8/0x4AE8)
+  void          AccelIOWrite(u32 port, u8 data);
+  u8            AccelIORead(u32 port);
+  bool    IsAccelPort(u32 port) const;
+  int     BytesPerPixel() const;
+  u32     PitchBytes() const;   // from CRTC 13h + hi bits
 
-  void determine_screen_dimensions(unsigned *piHeight, unsigned *piWidth);
+  // Register helpers
+  void recompute_scanline_layout();
+  inline uint8_t current_char_width_px() const;
+  void recompute_params_clock(int divisor, int xtal);
 
-  char bios_message[200];
-  int bios_message_size;
+  void  update_linear_mapping();
+  void  on_crtc_linear_regs_changed();
 
-  void vga_mem_write(u32 addr, u8 value);
-  u8 vga_mem_read(u32 addr);
+
+  u32   io_read(u32 address, int dsize);
+  void  io_write(u32 address, int dsize, u32 data);
+
+  void  io_write_b(u32 address, u8 data);
+
+  void  write_b_3c2(u8 data);
+
+  u8    read_b_3c2();
+  u8    read_b_3c3();
+  u8    read_b_3ca();
+
+  u32   legacy_read(u32 address, int dsize);
+  void  legacy_write(u32 address, int dsize, u32 data);
+
+  u32   rom_read(u32 address, int dsize);
+
+  void  determine_screen_dimensions(unsigned* piHeight, unsigned* piWidth);
+
+  char  bios_message[200];
+  int   bios_message_size;
+
+  inline uint32_t s3_vram_mask() const;
+
+  void lfb_recalc_and_cache();  // recompute enable/base/size from COMMAND+BAR0 (and CR regs if you wish)
+  void trace_lfb_if_changed(const char* reason);
+
+  inline bool seq_chain_four()   const { return (vga.sequencer.data[4] & 0x08) != 0; }
+  inline bool seq_odd_even()     const { return (vga.sequencer.data[4] & 0x04) != 0; }
+  inline bool seq_extended_mem() const { return (vga.sequencer.data[4] & 0x02) != 0; }
+  inline bool seq_reset1()       const { return (vga.sequencer.data[0] & 0x01) != 0; }
+  inline bool seq_reset2()       const { return (vga.sequencer.data[0] & 0x02) != 0; }
+  inline bool seq_dotperchar()   const { return (vga.sequencer.data[1] & 0x01) != 0; }
+  inline bool x_dotclockdiv2()   const { return (vga.sequencer.data[1] & 0x08) != 0; }
+
+  // cached state for LFB
+  u32  lfb_base_ = 0;
+  u32  lfb_size_ = 0;
+  bool lfb_enabled_ = false;
+
+
+  // LFB bookkeeping
+  enum { DEV_LFB_IDX = 6 };      // free in this device (legacy used 4/5/7 etc.)
+  u32   lfb_base = 0;            // guest-visible base (32-bit)
+  u32   lfb_size = 0;            // 64K/1M/2M/4M
+  u64   lfb_phys = 0;            // full physical mapping base we registered
+  bool  lfb_active = false;      // effective enable (PCI + CR58)
+
+  bool  pci_mem_enable = false;  // PCI Command.MSE cached
+  u32   pci_bar0 = 0;            // cached BAR0 (optional; we treat CR58..5A as truth)
+
+  void  lfb_recalc_and_map();    // (un)map according to CR58..5A & PCI
+  inline u32 lfb_offset_from(u64 phys_addr) const {
+    const u64 off = phys_addr - lfb_phys;
+    return (u32)(off % vga.svga_intf.vram_size); // VRAM wraps modulo real size
+  }
+
+  bool lfb_trace_needs_first_access_note = false;
+  bool lfb_trace_initialized = false;
+  bool lfb_trace_enabled_prev = false;
+  uint32_t lfb_trace_base_prev = 0;
+  uint32_t lfb_trace_size_prev = 0;
 
   std::unique_ptr<std::thread> myThread;
   std::atomic_bool myThreadDead{false};
-  bool StopThread;
+  bool  StopThread;
 
-  /// The state structure contains all elements that need to be saved to the
-  /// statefile.
-  struct SS3_state {
-    bool vga_enabled;
-    bool vga_mem_updated;
-    u16 charmap_address;
-    bool x_dotclockdiv2;
-    bool y_doublescan;
-    unsigned line_offset;
-    unsigned line_compare;
-    unsigned vertical_display_end;
-    u8 text_snapshot[32 * 1024]; // current text snapshot
-    bool vga_tile_updated[BX_NUM_X_TILES][BX_NUM_Y_TILES];
-    u8 *memory;
-    u32 memsize;
-    u8 last_bpp;
-    u8 tile[X_TILESIZE * Y_TILESIZE *
-            4]; /**< Currently allocates the tile as large as needed. */
-    unsigned x_tilesize;
-    unsigned y_tilesize;
+  /// The state structure contains all elements that need to be saved to the statefile.
+  struct SS3_state
+  {
+    // SDL/GUI dirty tracking 
+    bool      vga_mem_updated;
+    unsigned  x_tilesize;
+    unsigned  y_tilesize;
+    u8        last_bpp;
 
-    struct SS3_attr {
-      bool flip_flop;   /* 0 = address, 1 = data-write */
-      unsigned address; /* register number */
-      bool video_enabled;
-      u8 palette_reg[16];
-      u8 overscan_color;
-      u8 color_plane_enable;
-      u8 horiz_pel_panning;
-      u8 color_select;
-      struct SS3_mode {
-        bool graphics_alpha;
-        bool display_type;
-        bool enable_line_graphics;
-        bool blink_intensity;
-        bool pixel_panning_compat;
-        bool pixel_clock_select;
-        bool internal_palette_size;
-      } mode_ctrl;
-    } attribute_ctrl;
-
-    struct SS3_misc {
-      bool color_emulation; // 1=color emulation, base address = 3Dx
-
-      // 0=mono emulation,  base address = 3Bx
-      bool enable_ram;       // enable CPU access to video memory if set
-      u8 clock_select;       // 0=25Mhz 1=28Mhz
-      bool select_high_bank; // when in odd/even modes, select
-
-      // high 64k bank if set
-      bool horiz_sync_pol; // bit6: negative if set
-      bool vert_sync_pol;  // bit7: negative if set
-
-      //   bit7,bit6 represent number of lines on display:
-      //   0 = reserved
-      //   1 = 400 lines
-      //   2 = 350 lines
-      //   3 - 480 lines
-    } misc_output;
-
-    struct SS3_seq {
-      u8 index;
-      u8 map_mask;
-      bool map_mask_bit[4];
-      bool reset1;
-      bool reset2;
-      u8 reg1;
-      u8 char_map_select;
-      bool extended_mem;
-      bool odd_even;
-      bool chain_four;
-    } sequencer;
-
-    struct SS3_pel {
-      u8 write_data_register;
-      u8 write_data_cycle; /* 0, 1, 2 */
-      u8 read_data_register;
-      u8 read_data_cycle; /* 0, 1, 2 */
-      u8 dac_state;
-      struct SS3_pel_data {
-        u8 red;
-        u8 green;
-        u8 blue;
-      } data[256];
-      u8 mask;
-    } pel;
-
-    struct SS3_gfx {
-      u8 index;
-      u8 set_reset;
-      u8 enable_set_reset;
-      u8 color_compare;
-      u8 data_rotate;
-      u8 raster_op;
-      u8 read_map_select;
-      u8 write_mode;
-      bool read_mode;
-      bool odd_even;
-      bool chain_odd_even;
-      u8 shift_reg;
-      bool graphics_alpha;
-      u8 memory_mapping; /* 0 = use A0000-BFFFF
-                          * 1 = use A0000-AFFFF EGA/VGA graphics modes
-                          * 2 = use B0000-B7FFF Monochrome modes
-                          * 3 = use B8000-BFFFF CGA modes
-                          */
-      u8 color_dont_care;
-      u8 bitmask;
-      u8 latch[4];
-    } graphics_ctrl;
-
-    struct SS3_crtc {
-      u8 address;
-      u8 reg[0x20];
-      bool write_protect;
-    } CRTC;
+    u8* memory; // the actual vram... probably should have notated this earlier
+    u32       memsize;
   } state;
+
+  // TODO: migrate all  usage and then remove state.sequencer entirely.
+
+  inline void set_seq_pll_lock(u8 v) { vga.sequencer.data[0x08] = v; }
+
+  // SR09 Extended -> vga.sequencer.data[0x09]
+  inline u8  seq_sr9() const { return vga.sequencer.data[0x09]; }
+
+  // SR0A External Bus Control -> vga.sequencer.data[0x0A]
+  inline u8  seq_srA() const { return vga.sequencer.data[0x0A]; }
+
+  // SR0B Misc Extended -< vga.sequencer.data[0x0B]
+  inline u8  seq_srB() const { return vga.sequencer.data[0x0B]; }
+
+  // SR0D Extended ->vga.sequencer.data[0x0D]
+  inline u8  seq_srD() const { return vga.sequencer.data[0x0D]; }
+
+  // SR10/SR11 MCLK PLL -> s3.sr10, s3.sr11
+  inline u8  seq_mclkn() const { return s3.sr10 & 0x1f; }
+  inline u8  seq_mclkr() const { return s3.sr10 >> 5; }
+  inline u8  seq_mclkm() const { return s3.sr11; }
+
+  // ATC index 0x00..0x0F: Palette registers
+  inline u8  atc_palette(u8 idx) const { return vga.attribute.data[idx & 0x0f]; }
+
+  // ATC index 0x10: Mode Control (decomposed bit accessors)
+  inline bool atc_graphics_alpha()       const { return BIT(vga.attribute.data[0x10], 0); }
+  inline bool atc_display_type()         const { return BIT(vga.attribute.data[0x10], 1); }
+  inline bool atc_enable_line_graphics() const { return BIT(vga.attribute.data[0x10], 2); }
+  inline bool atc_blink_intensity()      const { return BIT(vga.attribute.data[0x10], 3); }
+  inline bool atc_pixel_panning_compat() const { return BIT(vga.attribute.data[0x10], 5); }
+  inline bool atc_pixel_clock_select()   const { return BIT(vga.attribute.data[0x10], 6); }
+  inline bool atc_internal_palette_size() const { return BIT(vga.attribute.data[0x10], 7); }
+
+  // ATC index 0x11: Overscan Color
+  inline u8  atc_overscan_color()   const { return vga.attribute.data[0x11]; }
+
+  // ATC index 0x12: Color Plane Enable
+  inline u8  atc_color_plane_enable() const { return vga.attribute.data[0x12] & 0x0f; }
+
+  // ATC index 0x13: Horizontal PEL Panning
+  inline u8  atc_horiz_pel_panning() const { return vga.attribute.data[0x13] & 0x0f; }
+
+  // ATC index 0x14: Color Select
+  inline u8  atc_color_select()     const { return vga.attribute.data[0x14] & 0x0f; }
+
+  // Video output enabled (ATC index byte bit 5 = palette address source)
+  // MAME: this is the "prot_bit" / palette RAM address source.
+  // When 0, video output is disabled (CPU can access palette RAM).
+  // When 1, video output is enabled (ATC drives display).
+  inline bool atc_video_enabled()   const { return BIT(vga.attribute.index, 5); }
+
+  // Flip-flop state (0=index phase, nonzero=data phase)
+  inline bool atc_flip_flop()       const { return vga.attribute.state != 0; }
+
+
+  inline uint32_t s3_lfb_base_from_regs();
+
+  // computed video timing, MAME screen().configure() parameters
+  struct {
+    int      pixel_clock_hz = 0;    // computed pixel clock in Hz
+    int      xtal_hz = 0;    // base or PLL-derived crystal frequency
+    int      divisor = 1;    // VCLK divisor from color mode
+    double   dclk_freq_mhz = 0.0;  // PLL output frequency in MHz (for debug)
+    double   vrefresh_hz;          // vertical refresh rate derived from CRTC
+    uint64_t refresh_interval_ms;  // milliseconds between redraws
+  } timing;
+
+  inline uint32_t s3_mmio_base_off(SS3_state& s);
+  void accel_reset();
+  inline bool s3_new_mmio_enabled();
 };
+
+// ----- Debug tracing for Data Transfer Position (CR3B/CR34 bit4) -----
+#ifndef S3_TRACE_DTP
+#define S3_TRACE_DTP 1
+#endif
+#if S3_TRACE_DTP
+#define DTP_TRACE(...) do { printf(__VA_ARGS__); } while (0)
+#else
+#define DTP_TRACE(...) do {} while (0)
+#endif
+
+#ifndef S3_ACCEL_TRACE
+#define S3_ACCEL_TRACE 1
+#endif
+
 #endif // !defined(INCLUDED_S3Trio64_H_)
