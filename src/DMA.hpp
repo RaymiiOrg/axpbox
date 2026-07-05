@@ -26,66 +26,63 @@
  * serve the general public.
  */
 
- /**
-  * \file
-  * Contains the definitions for the emulated DMA controller.
+/**
+ * \file
+ * Contains the definitions for the emulated DMA controller.
  **/
 #if !defined(INCLUDED_DMA_H)
 #define INCLUDED_DMA_H
 
 #include "SystemComponent.hpp"
 
-  /**
-   * \brief Emulated DMA controller.
-   **/
+/**
+ * \brief Emulated DMA controller.
+ **/
 
-
-class CDMA : public CSystemComponent
-{
+class CDMA : public CSystemComponent {
 public:
-  CDMA(CConfigurator* cfg, CSystem* c);
-  virtual       ~CDMA();
+  CDMA(CConfigurator *cfg, CSystem *c);
+  virtual ~CDMA();
 
-  virtual int   DoClock();
-  virtual void  WriteMem(int index, u64 address, int dsize, u64 data);
-  virtual u64   ReadMem(int index, u64 address, int dsize);
-  virtual int   SaveState(FILE* f);
-  virtual int   RestoreState(FILE* f);
+  virtual int DoClock();
+  virtual void WriteMem(int index, u64 address, int dsize, u64 data);
+  virtual u64 ReadMem(int index, u64 address, int dsize);
+  virtual int SaveState(FILE *f);
+  virtual int RestoreState(FILE *f);
 
-  void          set_request(int index, int channel, int data);
-  void           send_data(int channel, void* data, size_t length = 0);
-  void           recv_data(int channel, void* data, size_t length = 0);
-  int           get_count(int channel) { return state.channel[channel].count; };
-  size_t        get_transfer_size(int channel) { return (size_t)state.channel[channel].count + 1; };
+  void set_request(int index, int channel, int data);
+  void send_data(int channel, void *data, size_t length = 0);
+  void recv_data(int channel, void *data, size_t length = 0);
+  int get_count(int channel) { return state.channel[channel].count; };
+  size_t get_transfer_size(int channel) {
+    return (size_t)state.channel[channel].count + 1;
+  };
 
 private:
-  void          do_dma();
+  void do_dma();
 
-  /// The state structure contains all elements that need to be saved to the statefile.
-  struct SDMA_state
-  {
+  /// The state structure contains all elements that need to be saved to the
+  /// statefile.
+  struct SDMA_state {
     /// DMA channel state
-    struct SDMA_chan
-    {
-      bool  a_lobyte; // address lobyte expected
-      bool  c_lobyte; // count lobyte expected
-      u16   current;
-      u16   base;
-      u16   pagebase;
-      u16   count;
-      u8    mode;
+    struct SDMA_chan {
+      bool a_lobyte; // address lobyte expected
+      bool c_lobyte; // count lobyte expected
+      u16 current;
+      u16 base;
+      u16 pagebase;
+      u16 count;
+      u8 mode;
     } channel[8];
 
     /// DMA controller state
-    struct SDMA_ctrl
-    {
-      u8  status;
-      u8  command;
-      u8  request;
-      u8  mask;
+    struct SDMA_ctrl {
+      u8 status;
+      u8 command;
+      u8 request;
+      u8 mask;
     } controller[2];
-  }
-  state;
+  } state;
 };
 
 #define DMA_IO_BASE 0x1000
@@ -98,6 +95,6 @@ private:
 #define DMA0_IO_EXT DMA_IO_BASE + 6
 #define DMA1_IO_EXT DMA_IO_BASE + 7
 
-extern CDMA* theDMA;
+extern CDMA *theDMA;
 
 #endif // !defined(INCLUDED_DMA_H)

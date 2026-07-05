@@ -26,20 +26,19 @@
  * serve the general public.
  */
 
- /**
-  * \file
-  * Contains the definitions for the configuration file interpreter.
+/**
+ * \file
+ * Contains the definitions for the configuration file interpreter.
  **/
 #if !defined(__CONFIGURATOR_H__)
 #define __CONFIGURATOR_H__
 
 #include "StdAfx.hpp"
 
-#define CFG_MAX_CHILDREN  25
-#define CFG_MAX_VALUES    50
+#define CFG_MAX_CHILDREN 25
+#define CFG_MAX_VALUES 50
 
-typedef enum
-{
+typedef enum {
   c_none,
 
   // chipsets
@@ -75,51 +74,49 @@ typedef enum
   c_x11
 } classid;
 
-class CConfigurator
-{
+class CConfigurator {
 public:
-  CConfigurator(class CConfigurator* parent, char* name, char* value,
-    char* text, size_t textlen);
+  CConfigurator(class CConfigurator *parent, char *name, char *value,
+                char *text, size_t textlen);
   ~CConfigurator(void);
 
-  char* strip_string(char* c);
-  void    add_value(char* n, char* v);
+  char *strip_string(char *c);
+  void add_value(char *n, char *v);
 
-  char* get_text_value(const char* n) { return get_text_value(n, (char*)0); };
-  char* get_text_value(const char* n, const char* def);
+  char *get_text_value(const char *n) { return get_text_value(n, (char *)0); };
+  char *get_text_value(const char *n, const char *def);
 
-  bool    get_bool_value(const char* n) { return get_bool_value(n, false); };
-  bool    get_bool_value(const char* n, bool def);
+  bool get_bool_value(const char *n) { return get_bool_value(n, false); };
+  bool get_bool_value(const char *n, bool def);
 
-  u64 get_num_value(const char* n, bool decimal_suffixes)
-  {
+  u64 get_num_value(const char *n, bool decimal_suffixes) {
     return get_num_value(n, decimal_suffixes, 0);
   };
-  u64             get_num_value(const char* n, bool decimal_suffixes, u64 def);
+  u64 get_num_value(const char *n, bool decimal_suffixes, u64 def);
 
-  classid         get_class_id() { return myClassId; };
-  void* get_device() { return myDevice; };
-  int             get_flags() { return myFlags; };
+  classid get_class_id() { return myClassId; };
+  void *get_device() { return myDevice; };
+  int get_flags() { return myFlags; };
 
-  char* get_myName() { return myName; };
-  char* get_myValue() { return myValue; };
-  CConfigurator* get_myParent() { return pParent; };
+  char *get_myName() { return myName; };
+  char *get_myValue() { return myValue; };
+  CConfigurator *get_myParent() { return pParent; };
 
-  void            initialize();
+  void initialize();
+
 private:
-  class CConfigurator* pParent;
-  class CConfigurator* pChildren[CFG_MAX_CHILDREN];
-  int                   iNumChildren;
-  char* myName;
-  char* myValue;
-  void* myDevice;
-  classid               myClassId;
-  int                   myFlags;
-  int                   iNumValues;
-  struct SCfg_Value
-  {
-    char* name;
-    char* value;
+  class CConfigurator *pParent;
+  class CConfigurator *pChildren[CFG_MAX_CHILDREN];
+  int iNumChildren;
+  char *myName;
+  char *myValue;
+  void *myDevice;
+  classid myClassId;
+  int myFlags;
+  int iNumValues;
+  struct SCfg_Value {
+    char *name;
+    char *value;
   } pValues[CFG_MAX_VALUES];
 };
-#endif //!defined(__CONFIGURATOR_H__)
+#endif //! defined(__CONFIGURATOR_H__)

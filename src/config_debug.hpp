@@ -99,7 +99,8 @@
 // Define if you want EXTRA keyboard debugging
 //#define DEBUG_KBD_NOISY
 
-// Define if you want to enable Programmable Interrupt Controller (PIC) debugging
+// Define if you want to enable Programmable Interrupt Controller (PIC)
+// debugging
 //#define DEBUG_PIC
 
 // Define to 1 if you want to enable Printer port debugging
@@ -142,7 +143,8 @@
 
 //#define DEBUG_CCHIP
 
-// Define to trace interprocessor-interrupt (IPI) set/clear in the Cchip MISC handler
+// Define to trace interprocessor-interrupt (IPI) set/clear in the Cchip MISC
+// handler
 //#define DEBUG_IPI
 
 // Define for these VGA debugs
@@ -158,7 +160,8 @@
 // Define if you want to enable SuperIO debugging
 //#define DEBUG_SUPERIO
 
-// Define if you want to enable ISA Plug-and-Play (ports 0x279 / 0xA79) debugging
+// Define if you want to enable ISA Plug-and-Play (ports 0x279 / 0xA79)
+// debugging
 //#define DEBUG_ISAPNP
 
 // Define if you want to enable PMU debugging
@@ -168,24 +171,26 @@
 //#define DEBUG_VGA_RENDER
 
 // Define if you want to enable S3 linear framebuffer tracing
-//#define S3_LFB_TRACE 
+//#define S3_LFB_TRACE
 
-// Comment out to disable bypassing SRM memory checks (doesn't work well down near SRM 7.0 ranges)
-// SRM memory-test skipping is a runtime option in AXPbox: set
-// skip_memtest_hack = true; in the cpu config section.
+// Comment out to disable bypassing SRM memory checks (doesn't work well down
+// near SRM 7.0 ranges) SRM memory-test skipping is a runtime option in AXPbox:
+// set skip_memtest_hack = true; in the cpu config section.
 
-// Define to verify JIT-generated code against a C reference on each compiled block (ES40_JIT builds only).
+// Define to verify JIT-generated code against a C reference on each compiled
+// block (ES40_JIT builds only).
 //#define JIT_VERIFY
 
-// Define to print compiled-native vs interpreted instruction coverage periodically
-// (ES40_JIT builds only). Measure with JIT_VERIFY off.
+// Define to print compiled-native vs interpreted instruction coverage
+// periodically (ES40_JIT builds only). Measure with JIT_VERIFY off.
 //#define JIT_STATS
 
-// Define to profile most frequently used registers in the Alpha CPU emulation. 
+// Define to profile most frequently used registers in the Alpha CPU emulation.
 // ES40_JIT builds only, Requires JIT_STATS.
 //#define JIT_REGPROF
 
 // Define to dump each compiled block's emitted x86-64 disassembly,
-// validate every emitted instruction, and trap silent emit failures via an error handler.
-// VERY NOISY, and validation adds runtime cost (ES40_JIT builds only).
+// validate every emitted instruction, and trap silent emit failures via an
+// error handler. VERY NOISY, and validation adds runtime cost (ES40_JIT builds
+// only).
 //#define JIT_DISASM

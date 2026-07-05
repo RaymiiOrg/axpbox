@@ -12,7 +12,22 @@ OpenVMS 8.4 desktop in AXPbox. [Here is a wiki page showing you how to get this 
 
 Pre-built binaries for generic Linux amd64, Windows 10 amd64 and macOS amd64 are available for each release, and also as artifacts produced for each commit in CI. T2 SDE has an [official package](http://t2sde.org/packages/axpbox) for AXPbox, and openSUSE's Emulators project has an [AXPbox package](https://build.opensuse.org/package/show/Emulators/axpbox), too. The former gets updated the same day when a release happens, while requests are submitted now the latter that undergo approval of Emulators maintainers.
 
-You can also build from source using CMake; you need a C++ 11 compiler, optional dependencies are PCAP for networking and SDL or X11 for graphics support.
+You can also build from source using CMake; you need a C++17 compiler, optional dependencies are PCAP for networking and SDL3 or X11 for graphics support.
+
+### x86-64 JIT
+
+An optional JIT (ported from [ES40-Emu/es40](https://github.com/ES40-Emu/es40), based on asmjit) can be enabled at build time on x86-64 hosts:
+
+```
+git clone https://github.com/asmjit/asmjit third_party/asmjit
+git -C third_party/asmjit checkout 0bd5787b54b575ed94bf32ac452153b34385c514
+cmake -B build -DCMAKE_BUILD_TYPE=Release -DES40_DISABLE_ASMJIT=OFF
+cmake --build build
+```
+
+### S3 Trio64 graphics / ARC / Windows NT
+
+The S3 Trio64 emulation uses the real S3 VGA BIOS; obtain `86c764x1.bin` from the [86Box ROM set](https://github.com/86Box/roms/tree/master/video/s3) and point the s3 config section at it (see the sample es40.cfg). This is required for the ARC/AlphaBIOS console and Windows NT-family guests: flash AlphaBIOS from the Alpha Systems Firmware v7.3 CD, then enter `arc` at the SRM prompt.
 
 ## Usage
 
@@ -36,15 +51,13 @@ Please read the [Installation Guide](https://github.com/lenticularis39/axpbox/wi
 - The code was cleaned to compile without warnings on most compilers
 - Code modernizing, replacing POCO framework parts by native C++11 counterparts not available in 2008 (std::threads, etc)
 - Incorporate various patches from other es40 forks, for example, added MC146818 periodic interrupt to allow netbsd to boot and install, skip_memtest for faster booting.
+- The [ES40-Emu/es40](https://github.com/ES40-Emu/es40) revival work is ported (at its 2026 state): MAME-based S3 Trio64/IBM 8514A graphics, ARC/AlphaBIOS + Windows NT/2000 device support, wall-clock guest timing, interpreter correctness fixes, firmware flash updates with system reset, and the optional asmjit x86-64 JIT.
 - Bug fixes, less segfaults, overall less crashes. 
 - [More](https://github.com/lenticularis39/axpbox/wiki/) documentation and usage information on the various features and operating systems
 
 ## What doesn't work (also see issues)
 
 - Some guest operating systems (see [Guest support](https://github.com/lenticularis39/axpbox/wiki/Guest-support))
-- ARC
-- VGA in OpenVMS
-- SDL keyboard (partly works, but easily breaks)
 - Multiple CPU system emulation
 - Running on big endian platforms
 - Some SCSI and IDE commands

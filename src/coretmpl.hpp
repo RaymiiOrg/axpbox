@@ -39,11 +39,11 @@
 /// \param [in] n Width of the mask to generate in bits.
 /// \return Right-aligned mask of the specified width.
 
-template <typename T, typename U> constexpr T make_bitmask(U n)
-{
-  return T((n < (8 * sizeof(T)) ? (std::make_unsigned_t<T>(1) << n) : std::make_unsigned_t<T>(0)) - 1);
+template <typename T, typename U> constexpr T make_bitmask(U n) {
+  return T((n < (8 * sizeof(T)) ? (std::make_unsigned_t<T>(1) << n)
+                                : std::make_unsigned_t<T>(0)) -
+           1);
 }
-
 
 /// \brief Extract a single bit from an integer
 ///
@@ -55,8 +55,9 @@ template <typename T, typename U> constexpr T make_bitmask(U n)
 ///   significant bit of the input.
 /// \return Zero if the specified bit is unset, or one if it is set.
 /// \sa bitswap
-template <typename T, typename U> constexpr T BIT(T x, U n) noexcept { return (x >> n) & T(1); }
-
+template <typename T, typename U> constexpr T BIT(T x, U n) noexcept {
+  return (x >> n) & T(1);
+}
 
 /// \brief Extract a bit field from an integer
 ///
@@ -68,11 +69,9 @@ template <typename T, typename U> constexpr T BIT(T x, U n) noexcept { return (x
 /// \param [in] w The width of the field to extract in bits.
 /// \return The field [n..(n+w-1)] from the input.
 /// \sa bitswap
-template <typename T, typename U, typename V> constexpr T BIT(T x, U n, V w)
-{
+template <typename T, typename U, typename V> constexpr T BIT(T x, U n, V w) {
   return (x >> n) & make_bitmask<T>(w);
 }
-
 
 /// \brief Extract bits in arbitrary order
 ///
@@ -89,14 +88,13 @@ template <typename T, typename U, typename V> constexpr T BIT(T x, U n, V w)
 /// \param [in] c The remaining bits to extract, where zero is the
 ///   least significant bit of the input.
 /// \return The extracted bits packed into a right-aligned field.
-template <typename T, typename U, typename... V> constexpr T bitswap(T val, U b, V... c) noexcept
-{
+template <typename T, typename U, typename... V>
+constexpr T bitswap(T val, U b, V... c) noexcept {
   if constexpr (sizeof...(c) > 0U)
     return (BIT(val, b) << sizeof...(c)) | bitswap(val, c...);
   else
     return BIT(val, b);
 }
-
 
 /// \brief Extract bits in arbitrary order with explicit count
 ///
@@ -118,10 +116,11 @@ template <typename T, typename U, typename... V> constexpr T bitswap(T val, U b,
 ///   bit of the input.  Specify bits in the order they should appear in
 ///   the output field, from most significant to least significant.
 /// \return The extracted bits packed into a right-aligned field.
-template <unsigned B, typename T, typename... U> constexpr T bitswap(T val, U... b) noexcept
-{
+template <unsigned B, typename T, typename... U>
+constexpr T bitswap(T val, U... b) noexcept {
   static_assert(sizeof...(b) == B, "wrong number of bits");
-  static_assert((sizeof(std::remove_reference_t<T>) * 8) >= B, "return type too small for result");
+  static_assert((sizeof(std::remove_reference_t<T>) * 8) >= B,
+                "return type too small for result");
   return bitswap(val, b...);
 }
 

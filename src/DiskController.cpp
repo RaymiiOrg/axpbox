@@ -26,43 +26,37 @@
  * serve the general public.
  */
 
- /**
-  * \file
-  * Contains definitions for the disk controller base class.
+/**
+ * \file
+ * Contains definitions for the disk controller base class.
  **/
-#include "StdAfx.hpp"
 #include "DiskController.hpp"
 #include "Disk.hpp"
+#include "StdAfx.hpp"
 
-CDiskController::CDiskController(int num_busses, int num_devices)
-{
-	num_bus = num_busses;
-	num_dev = num_devices;
+CDiskController::CDiskController(int num_busses, int num_devices) {
+  num_bus = num_busses;
+  num_dev = num_devices;
 
-	disks = (CDisk**)calloc(num_bus * num_dev, sizeof(CDisk*));
+  disks = (CDisk **)calloc(num_bus * num_dev, sizeof(CDisk *));
 }
 
-CDiskController::~CDiskController(void)
-{
-	free(disks);
+CDiskController::~CDiskController(void) { free(disks); }
+
+void CDiskController::register_disk(class CDisk *dsk, int bus, int dev) {
+  if (bus >= num_bus)
+    FAILURE(Configuration, "Can't register disk: bus number out of range");
+  if (dev >= num_dev)
+    FAILURE(Configuration, "Can't register disk: device number out of range");
+
+  disks[bus * num_bus + dev] = dsk;
 }
 
-void CDiskController::register_disk(class CDisk* dsk, int bus, int dev)
-{
-	if (bus >= num_bus)
-		FAILURE(Configuration, "Can't register disk: bus number out of range");
-	if (dev >= num_dev)
-		FAILURE(Configuration, "Can't register disk: device number out of range");
+class CDisk *CDiskController::get_disk(int bus, int dev) {
+  if (bus >= num_bus)
+    return 0;
+  if (dev >= num_dev)
+    return 0;
 
-	disks[bus * num_bus + dev] = dsk;
-}
-
-class CDisk* CDiskController::get_disk(int bus, int dev)
-{
-	if (bus >= num_bus)
-		return 0;
-	if (dev >= num_dev)
-		return 0;
-
-	return disks[bus * num_bus + dev];
+  return disks[bus * num_bus + dev];
 }

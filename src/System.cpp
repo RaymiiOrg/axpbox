@@ -105,7 +105,6 @@ CSystem::CSystem(CConfigurator *cfg) {
   } else
     CHECK_ALLOCATION(memory = calloc(1 << iNumMemoryBits, 1));
 
-
   printf("%s(%s): $Id: System.cpp,v 1.79 2008/06/12 07:29:44 iamcamiel Exp $\n",
          cfg->get_myName(), cfg->get_myValue());
 }
@@ -146,7 +145,7 @@ void CSystem::RegisterComponent(CSystemComponent *component) {
 }
 
 void CSystem::UnregisterComponent(CSystemComponent *component) {
- iNumComponents--;
+  iNumComponents--;
 }
 
 /**
@@ -1696,80 +1695,80 @@ int CSystem::LoadROM() {
   }
 
   if (!loadedFromFlash) {
-  f = fopen(myCfg->get_text_value("rom.decompressed", "decompressed.rom"),
-            "rb");
-  if (!f) {
-    f = fopen(myCfg->get_text_value("rom.srm", "cl67srmrom.exe"), "rb");
-    if (!f)
-      FAILURE(Runtime, "No original or decompressed SRM ROM image found");
-    printf("%%SYS-I-READROM: Reading original ROM image from %s.\n",
-           myCfg->get_text_value("rom.srm", "cl67srmrom.exe"));
-    for (i = 0; i < 0x240; i++) {
-      if (feof(f))
-        break;
-      (void)!fread(&scratch, 1, 1, f);
-    }
-
-    if (feof(f))
-      FAILURE(Runtime, "File is too short to be a SRM ROM image");
-    buffer = PtrToMem(0x900000);
-    while (!feof(f))
-      (void)!fread(buffer++, 1, 1, f);
-    fclose(f);
-
-    printf("%%SYS-I-DECOMP: Decompressing ROM image.\n0%%");
-    acCPUs[0]->set_pc(0x900001);
-    acCPUs[0]->set_PAL_BASE(0x900000);
-    acCPUs[0]->enable_icache();
-
-    j = 0;
-    while (acCPUs[0]->get_clean_pc() > 0x200000) {
-      for (i = 0; i < 1800000; i++) {
-        SingleStep();
-        if (acCPUs[0]->get_clean_pc() < 0x200000)
+    f = fopen(myCfg->get_text_value("rom.decompressed", "decompressed.rom"),
+              "rb");
+    if (!f) {
+      f = fopen(myCfg->get_text_value("rom.srm", "cl67srmrom.exe"), "rb");
+      if (!f)
+        FAILURE(Runtime, "No original or decompressed SRM ROM image found");
+      printf("%%SYS-I-READROM: Reading original ROM image from %s.\n",
+             myCfg->get_text_value("rom.srm", "cl67srmrom.exe"));
+      for (i = 0; i < 0x240; i++) {
+        if (feof(f))
           break;
+        (void)!fread(&scratch, 1, 1, f);
       }
 
-      j++;
-      if (((j % 5) == 0) && (j < 50))
-        printf("%d%%", j * 2);
-      else
-        printf(".");
-      fflush(stdout);
-    }
+      if (feof(f))
+        FAILURE(Runtime, "File is too short to be a SRM ROM image");
+      buffer = PtrToMem(0x900000);
+      while (!feof(f))
+        (void)!fread(buffer++, 1, 1, f);
+      fclose(f);
 
-    printf("100%%\n");
-    acCPUs[0]->restore_icache();
+      printf("%%SYS-I-DECOMP: Decompressing ROM image.\n0%%");
+      acCPUs[0]->set_pc(0x900001);
+      acCPUs[0]->set_PAL_BASE(0x900000);
+      acCPUs[0]->enable_icache();
 
-    f = fopen(myCfg->get_text_value("rom.decompressed", "decompressed.rom"),
-              "wb");
-    if (!f) {
-      printf("%%SYS-W-NOWRITE: Couldn't write decompressed rom to %s.\n",
-             myCfg->get_text_value("rom.decompressed", "decompressed.rom"));
+      j = 0;
+      while (acCPUs[0]->get_clean_pc() > 0x200000) {
+        for (i = 0; i < 1800000; i++) {
+          SingleStep();
+          if (acCPUs[0]->get_clean_pc() < 0x200000)
+            break;
+        }
+
+        j++;
+        if (((j % 5) == 0) && (j < 50))
+          printf("%d%%", j * 2);
+        else
+          printf(".");
+        fflush(stdout);
+      }
+
+      printf("100%%\n");
+      acCPUs[0]->restore_icache();
+
+      f = fopen(myCfg->get_text_value("rom.decompressed", "decompressed.rom"),
+                "wb");
+      if (!f) {
+        printf("%%SYS-W-NOWRITE: Couldn't write decompressed rom to %s.\n",
+               myCfg->get_text_value("rom.decompressed", "decompressed.rom"));
+      } else {
+        printf("%%SYS-I-ROMWRT: Writing decompressed rom to %s.\n",
+               myCfg->get_text_value("rom.decompressed", "decompressed.rom"));
+        temp = endian_64(acCPUs[0]->get_pc());
+        fwrite(&temp, 1, sizeof(u64), f);
+        temp = endian_64(acCPUs[0]->get_pal_base());
+        fwrite(&temp, 1, sizeof(u64), f);
+        buffer = PtrToMem(0);
+        fwrite(buffer, 1, 0x200000, f);
+        fclose(f);
+      }
     } else {
-      printf("%%SYS-I-ROMWRT: Writing decompressed rom to %s.\n",
+      printf("%%SYS-I-READROM: Reading decompressed ROM image from %s.\n",
              myCfg->get_text_value("rom.decompressed", "decompressed.rom"));
-      temp = endian_64(acCPUs[0]->get_pc());
-      fwrite(&temp, 1, sizeof(u64), f);
-      temp = endian_64(acCPUs[0]->get_pal_base());
-      fwrite(&temp, 1, sizeof(u64), f);
+      (void)!fread(&temp, 1, sizeof(u64), f);
+      for (int i = 0; i < iNumCPUs; i++)
+        acCPUs[i]->set_pc(endian_64(temp));
+      (void)!fread(&temp, 1, sizeof(u64), f);
+      for (int i = 0; i < iNumCPUs; i++)
+        acCPUs[i]->set_PAL_BASE(endian_64(temp));
       buffer = PtrToMem(0);
-      fwrite(buffer, 1, 0x200000, f);
+      (void)!fread(buffer, 1, 0x200000, f);
       fclose(f);
     }
-  } else {
-    printf("%%SYS-I-READROM: Reading decompressed ROM image from %s.\n",
-           myCfg->get_text_value("rom.decompressed", "decompressed.rom"));
-    (void)!fread(&temp, 1, sizeof(u64), f);
-    for (int i = 0; i < iNumCPUs; i++)
-      acCPUs[i]->set_pc(endian_64(temp));
-    (void)!fread(&temp, 1, sizeof(u64), f);
-    for (int i = 0; i < iNumCPUs; i++)
-      acCPUs[i]->set_PAL_BASE(endian_64(temp));
-    buffer = PtrToMem(0);
-    (void)!fread(buffer, 1, 0x200000, f);
-    fclose(f);
-  }
   } // !loadedFromFlash
 
 #if !defined(SRM_NO_SPEEDUPS) || !defined(SRM_NO_IDE)
@@ -2021,8 +2020,8 @@ u64 CSystem::PCI_Phys(int pcibus, u32 address) {
 
   // Step through windows
   for (j = 0; j < 4; j++) {
-    printf("WSBA%d: %016" PRIx64 " WSM: %016" PRIx64 " TBA: %016" PRIx64 "\n", j,
-           state.pchip[pcibus].wsba[j], state.pchip[pcibus].wsm[j],
+    printf("WSBA%d: %016" PRIx64 " WSM: %016" PRIx64 " TBA: %016" PRIx64 "\n",
+           j, state.pchip[pcibus].wsba[j], state.pchip[pcibus].wsm[j],
            state.pchip[pcibus].tba[j]);
   }
 
@@ -2058,8 +2057,8 @@ u64 CSystem::PCI_Phys(int pcibus, u32 address) {
           a = PCI_Phys_direct_mapped(address, state.pchip[pcibus].wsm[j],
                                      state.pchip[pcibus].tba[j]);
 #if defined(DEBUG_PCI)
-        printf("PCI memory address %08x translated to %016" PRIx64 "\n", address,
-               a);
+        printf("PCI memory address %08x translated to %016" PRIx64 "\n",
+               address, a);
 #endif
         return a;
       }
@@ -2645,14 +2644,14 @@ std::vector<uint8_t> CSystem::build_sdram_spd(uint32_t mb,
   }
 
   std::vector<uint8_t> b(256, 0x00);
-  b[0] = 0x80; // bytes used
-  b[1] = 0x08; // SPD rev 1.3 (0x08 is commonly used)
-  b[2] = 0x04; // SDR SDRAM
+  b[0] = 0x80;   // bytes used
+  b[1] = 0x08;   // SPD rev 1.3 (0x08 is commonly used)
+  b[2] = 0x04;   // SDR SDRAM
   b[3] = g.rows; // Row address bits
   b[4] = g.cols; // Column address bits
   // Byte 5: module attributes - bit1 Registered, bit5 ECC
   b[5] = (registered_ecc ? 0x20 : 0x00) | 0x02; // ECC + Registered
-  b[6] = 0x04; // SDRAM device banks (4)
+  b[6] = 0x04;                                  // SDRAM device banks (4)
   // Data width 64, ECC width 8 -> 72-bit module (ES40 expects ECC)
   b[7] = 64;
   b[8] = 0;
@@ -2660,8 +2659,8 @@ std::vector<uint8_t> CSystem::build_sdram_spd(uint32_t mb,
   b[12] = 0;
   b[17] = g.ranks; // module ranks
   // Conservative PC100 timings (CL=2/3). Units are ns.
-  b[9] = 20; // tAA (CL=2) 20 ns
-  b[10] = 2; // tWR (~2ns; not used by SRM)
+  b[9] = 20;  // tAA (CL=2) 20 ns
+  b[10] = 2;  // tWR (~2ns; not used by SRM)
   b[18] = 20; // tRCD 20 ns
   b[19] = 20; // tRP  20 ns
   b[20] = 10; // tCK min at highest supported CL (10 ns => 100 MHz)

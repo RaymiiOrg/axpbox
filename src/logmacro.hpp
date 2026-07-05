@@ -13,8 +13,7 @@
 #define VERBOSE 0
 #endif
 
-inline void logerror(const char* fmt, ...)
-{
+inline void logerror(const char *fmt, ...) {
   va_list ap;
   va_start(ap, fmt);
   std::vprintf(fmt, ap);
@@ -23,7 +22,11 @@ inline void logerror(const char* fmt, ...)
 
 #ifndef LOG_OUTPUT_FUNC
 #ifdef LOG_OUTPUT_STREAM
-#define LOG_OUTPUT_FUNC [] (auto &&... args) { util::stream_format((LOG_OUTPUT_STREAM), std::forward<decltype(args)>(args)...); }
+#define LOG_OUTPUT_FUNC                                                        \
+  [](auto &&...args) {                                                         \
+    util::stream_format((LOG_OUTPUT_STREAM),                                   \
+                        std::forward<decltype(args)>(args)...);                \
+  }
 #else
 #define LOG_OUTPUT_FUNC logerror
 #endif
@@ -33,6 +36,10 @@ inline void logerror(const char* fmt, ...)
 #define LOG_GENERAL (1U << 0)
 #endif
 
-#define LOGMASKED(mask, ...) do { if constexpr (VERBOSE & (mask)) (LOG_OUTPUT_FUNC)(__VA_ARGS__); } while (false)
+#define LOGMASKED(mask, ...)                                                   \
+  do {                                                                         \
+    if constexpr (VERBOSE & (mask))                                            \
+      (LOG_OUTPUT_FUNC)(__VA_ARGS__);                                          \
+  } while (false)
 
 #define LOG(...) LOGMASKED(LOG_GENERAL, __VA_ARGS__)

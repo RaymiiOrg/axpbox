@@ -26,12 +26,14 @@
  * serve the general public.
  */
 
- /**
-  * \file
-  * Contains code macros for the processor VAX compatibility instructions.
+/**
+ * \file
+ * Contains code macros for the processor VAX compatibility instructions.
  **/
-#define DO_RC state.r[REG_1] = state.bIntrFlag ? 1 : 0; \
+#define DO_RC                                                                  \
+  state.r[REG_1] = state.bIntrFlag ? 1 : 0;                                    \
   state.bIntrFlag = false;
 
-#define DO_RS state.r[REG_1] = state.bIntrFlag ? 1 : 0; \
+#define DO_RS                                                                  \
+  state.r[REG_1] = state.bIntrFlag ? 1 : 0;                                    \
   state.bIntrFlag = true;

@@ -5,24 +5,17 @@
 #include "System.hpp"
 #include "SystemComponent.hpp"
 
-#include <windows.h>
 #include <mmsystem.h>
-class CMPU401 : public CSystemComponent
-{
-  virtual int   RestoreState(FILE* f) override
-  {
-    return 0;
-  }
-  virtual int   SaveState(FILE* f) override
-  {
-    return 0;
-  }
+#include <windows.h>
+class CMPU401 : public CSystemComponent {
+  virtual int RestoreState(FILE *f) override { return 0; }
+  virtual int SaveState(FILE *f) override { return 0; }
 
 private:
   HMIDIOUT hmo;
   MIDIHDR hdr;
 
-  const int midi_lengths[8] = { 3, 3, 3, 3, 2, 2, 3, 1 };
+  const int midi_lengths[8] = {3, 3, 3, 3, 2, 2, 3, 1};
   unsigned char midi_buffer[32] = {};
   unsigned char midi_ptr = 0;
   unsigned char midi_status_byte = 0x80;
@@ -31,21 +24,17 @@ private:
   std::vector<uint8_t> sysex_data;
 
 public:
-  CMPU401(CConfigurator* cfg, CSystem* c) : CSystemComponent(cfg, c)
-  {
+  CMPU401(CConfigurator *cfg, CSystem *c) : CSystemComponent(cfg, c) {
     MIDIOUTCAPSA caps;
-    if (midiOutOpen(&hmo, cfg->get_num_value("midi_out", true, 0), 0, 0, CALLBACK_NULL) != MMSYSERR_NOERROR)
-    {
+    if (midiOutOpen(&hmo, cfg->get_num_value("midi_out", true, 0), 0, 0,
+                    CALLBACK_NULL) != MMSYSERR_NOERROR) {
       FAILURE(Configuration, "MPU-401: Failed to open MIDI output device.");
     }
     UINT id = 0;
-    if (midiOutGetID(hmo, &id) == MMSYSERR_NOERROR)
-    {
+    if (midiOutGetID(hmo, &id) == MMSYSERR_NOERROR) {
       midiOutGetDevCapsA(id, &caps, sizeof(caps));
       printf("MPU-401: Opened MIDI device \"%s\".\n", caps.szPname);
-    }
-    else
-    {
+    } else {
       printf("MPU-401: Opened MIDI device.\n");
     }
     ZeroMemory(&hdr, sizeof(hdr));
@@ -53,12 +42,9 @@ public:
     c->RegisterMemory(this, 1, U64(0x00000801fc000331), 1);
   }
 
-  virtual ~CMPU401()
-  {
-    midiOutClose(hmo);
-  }
-  virtual u64   ReadMem(int index, u64 address, int dsize) override;
-  virtual void  WriteMem(int index, u64 address, int dsize, u64 data) override;
+  virtual ~CMPU401() { midiOutClose(hmo); }
+  virtual u64 ReadMem(int index, u64 address, int dsize) override;
+  virtual void WriteMem(int index, u64 address, int dsize, u64 data) override;
 };
 
 #endif

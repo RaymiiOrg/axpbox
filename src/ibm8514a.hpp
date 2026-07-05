@@ -10,24 +10,29 @@
 //#include "video/pc_vga.hpp"
 #include "mame_shims.hpp" // ES40 adaptation
 
-//class svga_device;
+// class svga_device;
 class CVGA;
 using svga_device = CVGA;
 
-class ibm8514a_device : public device_t
-{
+class ibm8514a_device : public device_t {
 public:
-  static constexpr feature_type imperfect_features() { return feature::GRAPHICS; }
+  static constexpr feature_type imperfect_features() {
+    return feature::GRAPHICS;
+  }
 
-  ibm8514a_device(const machine_config& mconfig, const char* tag, device_t* owner, uint32_t clock);
+  ibm8514a_device(const machine_config &mconfig, const char *tag,
+                  device_t *owner, uint32_t clock);
 
-  // es40 
+  // es40
   ibm8514a_device();
 
-  template <typename T> void set_vga(T &&tag) { m_vga.set_tag(std::forward<T>(tag)); }
-  void set_vga_owner() { /* m_vga.set_tag(DEVICE_SELF); ES40 COMMENT OUT */ }
+  template <typename T> void set_vga(T &&tag) {
+    m_vga.set_tag(std::forward<T>(tag));
+  }
+  void set_vga_owner() { /* m_vga.set_tag(DEVICE_SELF); ES40 COMMENT OUT */
+  }
 
-  void set_vga_ptr(svga_device* vga) { m_vga.set(vga); } // ES40
+  void set_vga_ptr(svga_device *vga) { m_vga.set(vga); } // ES40
 
   void enabled();
 
@@ -97,10 +102,10 @@ public:
 
   void ibm8514_pixel_xfer_complete(); // es40
 
-  struct
-  {
-    uint16_t htotal;  // Horizontal total (9 bits)
-    uint16_t vtotal;  // Vertical total adjust (3 bits), Vertical total base (9 bit)
+  struct {
+    uint16_t htotal; // Horizontal total (9 bits)
+    uint16_t
+        vtotal; // Vertical total adjust (3 bits), Vertical total base (9 bit)
     uint16_t vdisp;
     uint16_t vsync;
     uint16_t subctrl;
@@ -145,18 +150,18 @@ public:
     uint16_t multifunc[16];
 
     uint32_t color_cmp;
-    bool     color_cmp_enabled;
-    bool     color_cmp_src_ne;
+    bool color_cmp_enabled;
+    bool color_cmp_src_ne;
 
-    uint8_t  frgd_sel;
-    uint8_t  bkgd_sel;
-    uint8_t  frgd_mix_mode;
-    uint8_t  bkgd_mix_mode;
+    uint8_t frgd_sel;
+    uint8_t bkgd_sel;
+    uint8_t frgd_mix_mode;
+    uint8_t bkgd_mix_mode;
 
-    bool     force_busy;
-    bool     force_busy2;
+    bool force_busy;
+    bool force_busy2;
     uint16_t cmd_back;
-    int      fifo_idx;
+    int fifo_idx;
 
     uint32_t dst_base;
     uint32_t src_base;
@@ -175,25 +180,29 @@ public:
   } ibm8514;
 
 protected:
-  ibm8514a_device(const machine_config& mconfig, device_type type, const char* tag, device_t* owner, uint32_t clock);
+  ibm8514a_device(const machine_config &mconfig, device_type type,
+                  const char *tag, device_t *owner, uint32_t clock);
 
   virtual void device_start() override ATTR_COLD;
   void ibm8514_write(uint32_t offset, uint32_t src);
   void ibm8514_write_fg(uint32_t offset);
   void ibm8514_write_bg(uint32_t offset);
   uint32_t ibm8514_mix(uint8_t mix_mode, uint32_t src, uint32_t dst);
-  void ibm8514_do_pixel(uint32_t dest_offset, uint32_t src_offset, bool use_fgmix);
+  void ibm8514_do_pixel(uint32_t dest_offset, uint32_t src_offset,
+                        bool use_fgmix);
 
-  required_device<svga_device> m_vga;  // for pass-through
+  required_device<svga_device> m_vga; // for pass-through
 private:
   void ibm8514_draw_vector(uint16_t len, uint8_t dir, bool draw);
   void ibm8514_wait_draw_ssv();
   void ibm8514_draw_ssv(uint8_t data);
   void ibm8514_wait_draw_vector();
 
-  //uint8_t* m_vram;  // the original 8514/A has it's own VRAM, but most VGA+8514 combination cards will have
-          // only one set of VRAM, so this will only be needed in standalone 8514/A cards
-  //uint32_t m_vramsize;
+  // uint8_t* m_vram;  // the original 8514/A has it's own VRAM, but most
+  // VGA+8514 combination cards will have
+  //  only one set of VRAM, so this will only be needed in standalone 8514/A
+  //  cards
+  // uint32_t m_vramsize;
 };
 
 // device type definition

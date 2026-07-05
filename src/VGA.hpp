@@ -26,48 +26,53 @@
  * serve the general public.
  */
 
- /**
-  * \file
-  * Contains the definitions for the VGA base class.
+/**
+ * \file
+ * Contains the definitions for the VGA base class.
  **/
 #if !defined(__VGA_H__)
 #define __VGA_H__
 
 #include "PCIDevice.hpp"
-#include "mame_shims.hpp"
 #include "address_map.hpp"
 #include "coretmpl.hpp"
 #include "ibm8514a.hpp"
+#include "mame_shims.hpp"
 
 using offs_t = uint32_t;
 
 /**
  * \brief Abstract base class for PCI VGA cards.
  **/
-class CVGA : public CPCIDevice
-{
+class CVGA : public CPCIDevice {
   friend class ibm8514a_device;
+
 public:
-  CVGA(class CConfigurator* cfg, class CSystem* c, int pcibus, int pcidev);
+  CVGA(class CConfigurator *cfg, class CSystem *c, int pcibus, int pcidev);
   ~CVGA(void);
 
-  virtual u8    get_actl_palette_idx(u8 index) = 0;
-  virtual void  redraw_area(unsigned x0, unsigned y0, unsigned width,
-    unsigned height) = 0;
+  virtual u8 get_actl_palette_idx(u8 index) = 0;
+  virtual void redraw_area(unsigned x0, unsigned y0, unsigned width,
+                           unsigned height) = 0;
 
   // construction/destruction
-  //vga_device(const machine_config& mconfig, const char* tag, device_t* owner, uint32_t clock);
+  // vga_device(const machine_config& mconfig, const char* tag, device_t* owner,
+  // uint32_t clock);
 
-  //virtual void zero();
-  //virtual uint32_t screen_update(screen_device& screen, bitmap_rgb32& bitmap, const rectangle& cliprect);
-  virtual uint32_t screen_update(bitmap_rgb32& bitmap, const rectangle& cliprect); // this is a MAME deviation, no screen_device technically
+  // virtual void zero();
+  // virtual uint32_t screen_update(screen_device& screen, bitmap_rgb32& bitmap,
+  // const rectangle& cliprect);
+  virtual uint32_t screen_update(
+      bitmap_rgb32 &bitmap,
+      const rectangle
+          &cliprect); // this is a MAME deviation, no screen_device technically
 
-  //void io_map(address_map& map) ATTR_COLD;
+  // void io_map(address_map& map) ATTR_COLD;
 
   // $46e8, $56e8, $66e8, $76e8 for ISA bus
-  //void mode_setup_w(offs_t offset, uint8_t data);
+  // void mode_setup_w(offs_t offset, uint8_t data);
   // $102 ISA bus / $3c3 MCA bus
-  //void wakeup_w(offs_t offset, uint8_t data);
+  // void wakeup_w(offs_t offset, uint8_t data);
 
   virtual uint8_t mem_r(offs_t offset);
   virtual void mem_w(offs_t offset, uint8_t data);
@@ -76,9 +81,10 @@ public:
 
   void set_offset(uint16_t val) { vga.crtc.offset = val; }
   void set_vram_size(size_t vram_size) { vga.svga_intf.vram_size = vram_size; }
-  //auto vsync_cb() { return m_vsync_cb.bind(); }
-  // FIXME: should be protected, but virge_pci.cpp violates this
-  //inline uint16_t get_crtc_port() { return BIT(vga.miscellaneous_output, 0) ? 0x3d0 : 0x3b0; }
+  // auto vsync_cb() { return m_vsync_cb.bind(); }
+  //  FIXME: should be protected, but virge_pci.cpp violates this
+  // inline uint16_t get_crtc_port() { return BIT(vga.miscellaneous_output, 0) ?
+  // 0x3d0 : 0x3b0; }
 
 protected:
   // es40 specific
@@ -88,21 +94,17 @@ protected:
 
   inline pen_t black_pen() const { return 0xFF000000u; }
 
-  inline void set_pen_color(int index, uint8_t r, uint8_t g, uint8_t b)
-  {
-    m_pen_table[index & 0xFF] = 0xFF000000u
-      | (uint32_t(r) << 16)
-      | (uint32_t(g) << 8)
-      | uint32_t(b);
+  inline void set_pen_color(int index, uint8_t r, uint8_t g, uint8_t b) {
+    m_pen_table[index & 0xFF] =
+        0xFF000000u | (uint32_t(r) << 16) | (uint32_t(g) << 8) | uint32_t(b);
   }
 
   screen_device m_screen_shim;
-  screen_device& screen() { return m_screen_shim; }
+  screen_device &screen() { return m_screen_shim; }
   bitmap_rgb32 m_render_bitmap;
 
   // end es40 specific
-  enum
-  {
+  enum {
     SCREEN_OFF = 0,
     TEXT_MODE,
     VGA_MODE,
@@ -118,20 +120,20 @@ protected:
 
   // some stuff skipped
 
-  void vga_vh_text(bitmap_rgb32& bitmap, const rectangle& cliprect);
-  void vga_vh_ega(bitmap_rgb32& bitmap, const rectangle& cliprect);
-  void vga_vh_vga(bitmap_rgb32& bitmap, const rectangle& cliprect);
-  void vga_vh_cga(bitmap_rgb32& bitmap, const rectangle& cliprect);
-  void vga_vh_mono(bitmap_rgb32& bitmap, const rectangle& cliprect);
+  void vga_vh_text(bitmap_rgb32 &bitmap, const rectangle &cliprect);
+  void vga_vh_ega(bitmap_rgb32 &bitmap, const rectangle &cliprect);
+  void vga_vh_vga(bitmap_rgb32 &bitmap, const rectangle &cliprect);
+  void vga_vh_cga(bitmap_rgb32 &bitmap, const rectangle &cliprect);
+  void vga_vh_mono(bitmap_rgb32 &bitmap, const rectangle &cliprect);
   uint8_t pc_vga_choosevideomode();
-  //void recompute_params_clock(int divisor, int xtal);
+  // void recompute_params_clock(int divisor, int xtal);
   virtual void recompute_params();
   uint8_t vga_vblank();
-  //virtual void enter_setup_mode();
+  // virtual void enter_setup_mode();
 
-  //virtual space_config_vector memory_space_config() const override;
+  // virtual space_config_vector memory_space_config() const override;
 
-  //virtual void io_3bx_3dx_map(address_map& map) ATTR_COLD;
+  // virtual void io_3bx_3dx_map(address_map& map) ATTR_COLD;
 
   u8 crtc_address_r(offs_t offset);
   void crtc_address_w(offs_t offset, u8 data);
@@ -140,7 +142,7 @@ protected:
   u8 input_status_1_r(offs_t offset);
   void feature_control_w(offs_t offset, u8 data);
 
-  //virtual void io_3cx_map(address_map& map) ATTR_COLD;
+  // virtual void io_3cx_map(address_map& map) ATTR_COLD;
 
   u8 atc_address_r(offs_t offset);
   void atc_address_data_w(offs_t offset, u8 data);
@@ -167,22 +169,22 @@ protected:
   virtual void gc_data_w(offs_t offset, u8 data);
 
   // TODO: MAME pc_vga.h has these here
-  //virtual void crtc_map(address_map& map) ATTR_COLD;
-  //virtual void sequencer_map(address_map& map) ATTR_COLD;
-  //virtual void gc_map(address_map& map) ATTR_COLD;
-  //virtual void attribute_map(address_map& map) ATTR_COLD;
+  // virtual void crtc_map(address_map& map) ATTR_COLD;
+  // virtual void sequencer_map(address_map& map) ATTR_COLD;
+  // virtual void gc_map(address_map& map) ATTR_COLD;
+  // virtual void attribute_map(address_map& map) ATTR_COLD;
 
-  // NOTE: do not use the subclassed result when determining pitch in SVGA modes.
-  // dw & word mode should apply to normal VGA modes only.
+  // NOTE: do not use the subclassed result when determining pitch in SVGA
+  // modes. dw & word mode should apply to normal VGA modes only.
   virtual uint16_t offset();
   virtual uint32_t latch_start_addr() { return vga.crtc.start_addr_latch; }
   virtual uint8_t vga_latch_write(int offs, uint8_t data);
-  inline uint8_t rotate_right(uint8_t val) { return (val >> vga.gc.rotate_count) | (val << (8 - vga.gc.rotate_count)); }
-  inline uint8_t vga_logical_op(uint8_t data, uint8_t plane, uint8_t mask)
-  {
+  inline uint8_t rotate_right(uint8_t val) {
+    return (val >> vga.gc.rotate_count) | (val << (8 - vga.gc.rotate_count));
+  }
+  inline uint8_t vga_logical_op(uint8_t data, uint8_t plane, uint8_t mask) {
     uint8_t res = 0;
-    switch (vga.gc.logical_op & 3)
-    {
+    switch (vga.gc.logical_op & 3) {
     case 0: /* NONE */
       res = (data & mask) | (vga.gc.latch[plane] & ~mask);
       break;
@@ -201,11 +203,9 @@ protected:
   virtual bool get_interlace_mode() { return false; }
   virtual void palette_update();
 
-  struct vga_t
-  {
-    //vga_t(device_t &owner) { }
-    struct
-    {
+  struct vga_t {
+    // vga_t(device_t &owner) { }
+    struct {
       size_t vram_size;
     } svga_intf;
 
@@ -213,78 +213,75 @@ protected:
     // Subclass sets this to its own backing store during init().
     // Layout: planar — plane 0 at +0, plane 1 at +0x10000,
     //                  plane 2 at +0x20000, plane 3 at +0x30000.
-    uint8_t* memory = nullptr;
+    uint8_t *memory = nullptr;
 
     uint32_t pens[16]; /* the current 16 pens */
 
     uint8_t miscellaneous_output;
     uint8_t feature_control;
 
-    struct
-    {
+    struct {
       uint8_t index;
       uint8_t data[0x100];
       uint8_t map_mask;
-      struct
-      {
+      struct {
         uint8_t A, B;
         u32 base[2];
-      }char_sel;
+      } char_sel;
     } sequencer;
 
-    /* An empty comment at the start of the line indicates that register is currently unused */
-    struct
-    {
+    /* An empty comment at the start of the line indicates that register is
+     * currently unused */
+    struct {
       uint8_t index;
       uint8_t data[0x100];
       uint16_t horz_total;
       uint16_t horz_disp_end;
-      /**/    uint8_t horz_blank_start;
-      /**/    uint8_t horz_blank_end;
-      /**/    uint8_t horz_retrace_start;
-      /**/    uint8_t horz_retrace_skew;
-      /**/    uint8_t horz_retrace_end;
-      /**/    uint8_t disp_enable_skew;
-      /**/    uint8_t evra;
+      /**/ uint8_t horz_blank_start;
+      /**/ uint8_t horz_blank_end;
+      /**/ uint8_t horz_retrace_start;
+      /**/ uint8_t horz_retrace_skew;
+      /**/ uint8_t horz_retrace_end;
+      /**/ uint8_t disp_enable_skew;
+      /**/ uint8_t evra;
       uint16_t vert_total;
       uint16_t vert_disp_end;
-      /**/    uint16_t vert_retrace_start;
-      /**/    uint8_t vert_retrace_end;
+      /**/ uint16_t vert_retrace_start;
+      /**/ uint8_t vert_retrace_end;
       uint16_t vert_blank_start;
       uint16_t line_compare;
       uint32_t cursor_addr;
-      /**/    uint8_t byte_panning;
+      /**/ uint8_t byte_panning;
       uint8_t preset_row_scan;
       uint8_t scan_doubling;
       uint8_t maximum_scan_line;
       uint8_t cursor_enable;
       uint8_t cursor_scan_start;
-      /**/    uint8_t cursor_skew;
+      /**/ uint8_t cursor_skew;
       uint8_t cursor_scan_end;
       uint32_t start_addr;
       uint32_t start_addr_latch;
       uint8_t protect_enable;
-      /**/    uint8_t bandwidth;
+      /**/ uint8_t bandwidth;
       uint16_t offset;
       uint8_t word_mode;
       uint8_t dw;
-      /**/    uint8_t div4;
-      /**/    uint8_t underline_loc;
+      /**/ uint8_t div4;
+      /**/ uint8_t underline_loc;
       uint16_t vert_blank_end;
       uint8_t sync_en;
-      /**/    uint8_t aw;
+      /**/ uint8_t aw;
       uint8_t div2;
-      /**/    uint8_t sldiv;
-      /**/    uint8_t map14;
-      /**/    uint8_t map13;
-      /**/    uint8_t irq_clear;
-      /**/    uint8_t irq_disable;
+      /**/ uint8_t sldiv;
+      /**/ uint8_t map14;
+      /**/ uint8_t map13;
+      /**/ uint8_t irq_clear;
+      /**/ uint8_t irq_disable;
       uint8_t irq_latch;
       uint8_t no_wrap;
     } crtc;
 
-    struct
-    {
+    struct {
       uint8_t index;
       uint8_t latch[4];
       uint8_t set_reset;
@@ -305,9 +302,9 @@ protected:
       uint8_t chain_oe;
     } gc;
 
-    struct
-    {
-      uint8_t index, data[0x15]; int state;
+    struct {
+      uint8_t index, data[0x15];
+      int state;
       uint8_t prot_bit;
       uint8_t pel_shift;
       uint8_t pel_shift_latch;
@@ -327,12 +324,14 @@ protected:
     } cursor;
 
     /* oak vga */
-    struct { uint8_t reg; } oak;
+    struct {
+      uint8_t reg;
+    } oak;
   } vga;
 
-  //required_ioport m_input_sense;
+  // required_ioport m_input_sense;
 
-  //emu_timer* m_vblank_timer;
+  // emu_timer* m_vblank_timer;
 
   enum {
     MAIN_IF_REG = 0,
@@ -344,32 +343,31 @@ protected:
     EXT_REG
   };
 
-  virtual address_map& space(int spacenum) = 0; // ES40 trickery
+  virtual address_map &space(int spacenum) = 0; // ES40 trickery
 
-  //address_space_config m_main_if_space_config;
-  //address_space_config m_crtc_space_config;
-  //address_space_config m_gc_space_config;
-  //address_space_config m_seq_space_config;
-  //address_space_config m_atc_space_config;
+  // address_space_config m_main_if_space_config;
+  // address_space_config m_crtc_space_config;
+  // address_space_config m_gc_space_config;
+  // address_space_config m_seq_space_config;
+  // address_space_config m_atc_space_config;
 
   bool m_ioas = false;
 
-  //devcb_write_line m_vsync_cb;
+  // devcb_write_line m_vsync_cb;
 
-  //----- these belong in mame's SVGA device but we don't use that yet. 
+  //----- these belong in mame's SVGA device but we don't use that yet.
   // TODO: Implement SVGA class for extension for better code re-use
   // svga also has a screen_update but let's not worry about that yet
-  void svga_vh_rgb8(bitmap_rgb32& bitmap, const rectangle& cliprect);
-  void svga_vh_rgb15(bitmap_rgb32& bitmap, const rectangle& cliprect);
-  void svga_vh_rgb16(bitmap_rgb32& bitmap, const rectangle& cliprect);
-  void svga_vh_rgb24(bitmap_rgb32& bitmap, const rectangle& cliprect);
-  void svga_vh_rgb32(bitmap_rgb32& bitmap, const rectangle& cliprect);
-  //virtual uint8_t pc_vga_choosevideomode() override;
-  //virtual void device_start() override ATTR_COLD;
+  void svga_vh_rgb8(bitmap_rgb32 &bitmap, const rectangle &cliprect);
+  void svga_vh_rgb15(bitmap_rgb32 &bitmap, const rectangle &cliprect);
+  void svga_vh_rgb16(bitmap_rgb32 &bitmap, const rectangle &cliprect);
+  void svga_vh_rgb24(bitmap_rgb32 &bitmap, const rectangle &cliprect);
+  void svga_vh_rgb32(bitmap_rgb32 &bitmap, const rectangle &cliprect);
+  // virtual uint8_t pc_vga_choosevideomode() override;
+  // virtual void device_start() override ATTR_COLD;
   virtual u16 line_compare_mask();
 
-  struct
-  {
+  struct {
     uint8_t bank_r, bank_w;
     uint8_t rgb8_en;
     uint8_t rgb15_en;
@@ -384,5 +382,5 @@ private:
   uint32_t start_addr();
 };
 
-extern CVGA* theVGA;
+extern CVGA *theVGA;
 #endif

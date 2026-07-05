@@ -26,76 +26,74 @@
  * serve the general public.
  */
 
- /**
-  * \file
-  * Contains code for the disk base class.
+/**
+ * \file
+ * Contains code for the disk base class.
  **/
-#include "StdAfx.hpp"
 #include "Disk.hpp"
 #include "DiskFile.hpp"
+#include "StdAfx.hpp"
 
 #include <vector>
 
-extern std::vector<CDiskFile*> cd_diskfiles;
+extern std::vector<CDiskFile *> cd_diskfiles;
 
-  /**
-   * \brief Constructor.
-   **/
-CDisk::CDisk(CConfigurator* cfg, CSystem* sys, CDiskController* ctrl,
-	int idebus, int idedev) : CSystemComponent(cfg, sys)
-{
-	char* a;
-	char* b;
-	char* c;
-	char* d;
+/**
+ * \brief Constructor.
+ **/
+CDisk::CDisk(CConfigurator *cfg, CSystem *sys, CDiskController *ctrl,
+             int idebus, int idedev)
+    : CSystemComponent(cfg, sys) {
+  char *a;
+  char *b;
+  char *c;
+  char *d;
 
-	myCfg = cfg;
-	myCtrl = ctrl;
-	myBus = idebus;
-	myDev = idedev;
-	atapi_mode = false;
+  myCfg = cfg;
+  myCtrl = ctrl;
+  myBus = idebus;
+  myDev = idedev;
+  atapi_mode = false;
 
-	a = myCfg->get_myName();
-	b = myCfg->get_myValue();
-	c = myCfg->get_myParent()->get_myName();
-	d = myCfg->get_myParent()->get_myValue();
+  a = myCfg->get_myName();
+  b = myCfg->get_myValue();
+  c = myCfg->get_myParent()->get_myName();
+  d = myCfg->get_myParent()->get_myValue();
 
-	free(devid_string); // we override the default to include the controller.
-	CHECK_ALLOCATION(devid_string = (char*)malloc(
-		strlen(a) + strlen(b) + strlen(c) + strlen(d) + 6));
-	sprintf(devid_string, "%s(%s).%s(%s)", c, d, a, b);
+  free(devid_string); // we override the default to include the controller.
+  CHECK_ALLOCATION(devid_string = (char *)malloc(strlen(a) + strlen(b) +
+                                                 strlen(c) + strlen(d) + 6));
+  sprintf(devid_string, "%s(%s).%s(%s)", c, d, a, b);
 
-	serial_number = myCfg->get_text_value("serial_num", "ES40EM00000");
-	revision_number = myCfg->get_text_value("rev_num", "0.0");
-	read_only = myCfg->get_bool_value("read_only");
-	is_cdrom = myCfg->get_bool_value("cdrom");
+  serial_number = myCfg->get_text_value("serial_num", "ES40EM00000");
+  revision_number = myCfg->get_text_value("rev_num", "0.0");
+  read_only = myCfg->get_bool_value("read_only");
+  is_cdrom = myCfg->get_bool_value("cdrom");
 
-	state.block_size = is_cdrom ? 2048 : 512;
-	state.scsi.sense.available = false;
-	state.scsi.media_changed = 0;
+  state.block_size = is_cdrom ? 2048 : 512;
+  state.scsi.sense.available = false;
+  state.scsi.media_changed = 0;
 
-	myCtrl->register_disk(this, myBus, myDev);
+  myCtrl->register_disk(this, myBus, myDev);
 }
 
 /**
  * \brief Destructor.
  **/
-CDisk::~CDisk(void)
-{
-	free(devid_string);
-	devid_string = nullptr;
+CDisk::~CDisk(void) {
+  free(devid_string);
+  devid_string = nullptr;
 }
 
 /**
  * \Calculate the number of cylinders to report.
  **/
-void CDisk::calc_cylinders()
-{
-	cylinders = byte_size / state.block_size / sectors / heads;
+void CDisk::calc_cylinders() {
+  cylinders = byte_size / state.block_size / sectors / heads;
 
-	off_t_large chs_size = sectors * cylinders * heads * state.block_size;
-	if (chs_size < byte_size)
-		cylinders++;
+  off_t_large chs_size = sectors * cylinders * heads * state.block_size;
+  if (chs_size < byte_size)
+    cylinders++;
 }
 
 /**
@@ -104,108 +102,98 @@ void CDisk::calc_cylinders()
  * Set status fields up to begin a new SCSI command sequence
  * and set the SCSI bus phase to Message Out.
  **/
-void CDisk::scsi_select_me(int bus)
-{
-	state.scsi.msgo.written = 0;
-	state.scsi.msgi.available = 0;
-	state.scsi.msgi.read = 0;
-	state.scsi.cmd.written = 0;
-	state.scsi.dati.available = 0;
-	state.scsi.dati.read = 0;
-	state.scsi.dato.expected = 0;
-	state.scsi.dato.written = 0;
-	state.scsi.stat.available = 0;
-	state.scsi.stat.read = 0;
-	state.scsi.lun_selected = false;
+void CDisk::scsi_select_me(int bus) {
+  state.scsi.msgo.written = 0;
+  state.scsi.msgi.available = 0;
+  state.scsi.msgi.read = 0;
+  state.scsi.cmd.written = 0;
+  state.scsi.dati.available = 0;
+  state.scsi.dati.read = 0;
+  state.scsi.dato.expected = 0;
+  state.scsi.dato.written = 0;
+  state.scsi.stat.available = 0;
+  state.scsi.stat.read = 0;
+  state.scsi.lun_selected = false;
 
-	//state.scsi.disconnect_priv = false;
-	//state.scsi.will_disconnect = false;
-	//state.scsi.disconnected = false;
-	if (atapi_mode)
-		scsi_set_phase(bus, SCSI_PHASE_COMMAND);
-	else
-		scsi_set_phase(bus, SCSI_PHASE_MSG_OUT);
+  // state.scsi.disconnect_priv = false;
+  // state.scsi.will_disconnect = false;
+  // state.scsi.disconnected = false;
+  if (atapi_mode)
+    scsi_set_phase(bus, SCSI_PHASE_COMMAND);
+  else
+    scsi_set_phase(bus, SCSI_PHASE_MSG_OUT);
 }
 
-static u32  disk_magic1 = 0xD15D15D1;
-static u32  disk_magic2 = 0x15D15D15;
+static u32 disk_magic1 = 0xD15D15D1;
+static u32 disk_magic2 = 0x15D15D15;
 
 /**
  * Save state to a Virtual Machine State file.
  **/
-int CDisk::SaveState(FILE* f)
-{
-	long  ss = sizeof(state);
+int CDisk::SaveState(FILE *f) {
+  long ss = sizeof(state);
 
-	fwrite(&disk_magic1, sizeof(u32), 1, f);
-	fwrite(&ss, sizeof(long), 1, f);
-	fwrite(&state, sizeof(state), 1, f);
-	fwrite(&disk_magic2, sizeof(u32), 1, f);
-	printf("%s: %d bytes saved.\n", devid_string, (int)ss);
-	return 0;
+  fwrite(&disk_magic1, sizeof(u32), 1, f);
+  fwrite(&ss, sizeof(long), 1, f);
+  fwrite(&state, sizeof(state), 1, f);
+  fwrite(&disk_magic2, sizeof(u32), 1, f);
+  printf("%s: %d bytes saved.\n", devid_string, (int)ss);
+  return 0;
 }
 
 /**
  * Restore state from a Virtual Machine State file.
  **/
-int CDisk::RestoreState(FILE* f)
-{
-	long    ss;
-	u32     m1;
-	u32     m2;
-	size_t  r;
+int CDisk::RestoreState(FILE *f) {
+  long ss;
+  u32 m1;
+  u32 m2;
+  size_t r;
 
-	r = fread(&m1, sizeof(u32), 1, f);
-	if (r != 1)
-	{
-		printf("%s: unexpected end of file!\n", devid_string);
-		return -1;
-	}
+  r = fread(&m1, sizeof(u32), 1, f);
+  if (r != 1) {
+    printf("%s: unexpected end of file!\n", devid_string);
+    return -1;
+  }
 
-	if (m1 != disk_magic1)
-	{
-		printf("%s: MAGIC 1 does not match!\n", devid_string);
-		return -1;
-	}
+  if (m1 != disk_magic1) {
+    printf("%s: MAGIC 1 does not match!\n", devid_string);
+    return -1;
+  }
 
-	r = fread(&ss, sizeof(long), 1, f);
-	if (r != 1)
-	{
-		printf("%s: unexpected end of file!\n", devid_string);
-		return -1;
-	}
+  r = fread(&ss, sizeof(long), 1, f);
+  if (r != 1) {
+    printf("%s: unexpected end of file!\n", devid_string);
+    return -1;
+  }
 
-	if (ss != sizeof(state))
-	{
-		printf("%s: STRUCT SIZE does not match!\n", devid_string);
-		return -1;
-	}
+  if (ss != sizeof(state)) {
+    printf("%s: STRUCT SIZE does not match!\n", devid_string);
+    return -1;
+  }
 
-	r = fread(&state, sizeof(state), 1, f);
-	if (r != 1)
-	{
-		printf("%s: unexpected end of file!\n", devid_string);
-		return -1;
-	}
+  r = fread(&state, sizeof(state), 1, f);
+  if (r != 1) {
+    printf("%s: unexpected end of file!\n", devid_string);
+    return -1;
+  }
 
-	r = fread(&m2, sizeof(u32), 1, f);
-	if (r != 1)
-	{
-		printf("%s: unexpected end of file!\n", devid_string);
-		return -1;
-	}
+  r = fread(&m2, sizeof(u32), 1, f);
+  if (r != 1) {
+    printf("%s: unexpected end of file!\n", devid_string);
+    return -1;
+  }
 
-	if (m2 != disk_magic2)
-	{
-		printf("%s: MAGIC 1 does not match!\n", devid_string);
-		return -1;
-	}
+  if (m2 != disk_magic2) {
+    printf("%s: MAGIC 1 does not match!\n", devid_string);
+    return -1;
+  }
 
-	//calc_cylinders(); // state.block_size may have changed.
-	determine_layout();
+  // calc_cylinders(); // state.block_size may have changed.
+  determine_layout();
 
-	printf("%s: %d bytes restored.\n", devid_string, (int)ss);
-	return 0;
+  printf("%s: %d bytes restored.\n", devid_string, (int)ss);
+  return 0;
 }
 
 /**
@@ -218,32 +206,30 @@ int CDisk::RestoreState(FILE* f)
  * For an overview of data transfer during a SCSI bus phase,
  * see SCSIDevice::scsi_xfer_ptr.
  **/
-size_t CDisk::scsi_expected_xfer_me(int bus)
-{
-	switch (scsi_get_phase(0))
-	{
-	case SCSI_PHASE_DATA_OUT:
-		return state.scsi.dato.expected - state.scsi.dato.written;
+size_t CDisk::scsi_expected_xfer_me(int bus) {
+  switch (scsi_get_phase(0)) {
+  case SCSI_PHASE_DATA_OUT:
+    return state.scsi.dato.expected - state.scsi.dato.written;
 
-	case SCSI_PHASE_DATA_IN:
-		return state.scsi.dati.available - state.scsi.dati.read;
+  case SCSI_PHASE_DATA_IN:
+    return state.scsi.dati.available - state.scsi.dati.read;
 
-	case SCSI_PHASE_COMMAND:
-		return 256 - state.scsi.cmd.written;
+  case SCSI_PHASE_COMMAND:
+    return 256 - state.scsi.cmd.written;
 
-	case SCSI_PHASE_STATUS:
-		return state.scsi.stat.available - state.scsi.stat.read;
+  case SCSI_PHASE_STATUS:
+    return state.scsi.stat.available - state.scsi.stat.read;
 
-	case SCSI_PHASE_MSG_OUT:
-		return 256 - state.scsi.msgo.written;
+  case SCSI_PHASE_MSG_OUT:
+    return 256 - state.scsi.msgo.written;
 
-	case SCSI_PHASE_MSG_IN:
-		return state.scsi.msgi.available - state.scsi.msgi.read;
+  case SCSI_PHASE_MSG_IN:
+    return state.scsi.msgi.available - state.scsi.msgi.read;
 
-	default:
-		FAILURE_2(IllegalState, "%s: transfer requested in phase %d\n",
-			devid_string, scsi_get_phase(0));
-	}
+  default:
+    FAILURE_2(IllegalState, "%s: transfer requested in phase %d\n",
+              devid_string, scsi_get_phase(0));
+  }
 }
 
 /**
@@ -255,73 +241,71 @@ size_t CDisk::scsi_expected_xfer_me(int bus)
  * For an overview of data transfer during a SCSI bus phase,
  * see SCSIDevice::scsi_xfer_ptr.
  **/
-void* CDisk::scsi_xfer_ptr_me(int bus, size_t bytes)
-{
-	void* res = 0;
+void *CDisk::scsi_xfer_ptr_me(int bus, size_t bytes) {
+  void *res = 0;
 
-	switch (scsi_get_phase(0))
-	{
-	case SCSI_PHASE_DATA_OUT:
-		res = &(state.scsi.dato.data[state.scsi.dato.written]);
-		state.scsi.dato.written += bytes;
-		break;
+  switch (scsi_get_phase(0)) {
+  case SCSI_PHASE_DATA_OUT:
+    res = &(state.scsi.dato.data[state.scsi.dato.written]);
+    state.scsi.dato.written += bytes;
+    break;
 
-	case SCSI_PHASE_DATA_IN:
-		res = &(state.scsi.dati.data[state.scsi.dati.read]);
-		state.scsi.dati.read += bytes;
-		break;
+  case SCSI_PHASE_DATA_IN:
+    res = &(state.scsi.dati.data[state.scsi.dati.read]);
+    state.scsi.dati.read += bytes;
+    break;
 
-	case SCSI_PHASE_COMMAND:
-		res = &(state.scsi.cmd.data[state.scsi.cmd.written]);
-		state.scsi.cmd.written += bytes;
-		break;
+  case SCSI_PHASE_COMMAND:
+    res = &(state.scsi.cmd.data[state.scsi.cmd.written]);
+    state.scsi.cmd.written += bytes;
+    break;
 
-	case SCSI_PHASE_STATUS:
-		res = &(state.scsi.stat.data[state.scsi.stat.read]);
-		state.scsi.stat.read += bytes;
-		break;
+  case SCSI_PHASE_STATUS:
+    res = &(state.scsi.stat.data[state.scsi.stat.read]);
+    state.scsi.stat.read += bytes;
+    break;
 
-	case SCSI_PHASE_MSG_OUT:
-		res = &(state.scsi.msgo.data[state.scsi.msgo.written]);
-		state.scsi.msgo.written += bytes;
-		break;
+  case SCSI_PHASE_MSG_OUT:
+    res = &(state.scsi.msgo.data[state.scsi.msgo.written]);
+    state.scsi.msgo.written += bytes;
+    break;
 
-	case SCSI_PHASE_MSG_IN:
+  case SCSI_PHASE_MSG_IN:
 
-		//if (PT.reselected)
-		//{
-		//  retval = 0x80; // identify
-		//  break;
-		//}
-		//if (PT.disconnected)
-		//{
-		//  if (!PT.dati_ptr)
-		//    retval = 0x04; // disconnect
-		//  else
-		//  {
-		//    if (state.scsi.msgi.read==0)
-		//    {
-		//      retval = 0x02; // save data pointer
-		//      state.scsi.msgi.read=1;
-		//    }
-		//    else if (state.scsi.msgi.read==1)
-		//    {
-		//      retval = 0x04; // disconnect
-		//      state.scsi.msgi.read=0;
-		//    }
-		//  }
-		//  break;
-		//}
-		res = &(state.scsi.msgi.data[state.scsi.msgi.read]);
-		state.scsi.msgi.read += bytes;
-		break;
+    // if (PT.reselected)
+    //{
+    //   retval = 0x80; // identify
+    //   break;
+    // }
+    // if (PT.disconnected)
+    //{
+    //   if (!PT.dati_ptr)
+    //     retval = 0x04; // disconnect
+    //   else
+    //   {
+    //     if (state.scsi.msgi.read==0)
+    //     {
+    //       retval = 0x02; // save data pointer
+    //       state.scsi.msgi.read=1;
+    //     }
+    //     else if (state.scsi.msgi.read==1)
+    //     {
+    //       retval = 0x04; // disconnect
+    //       state.scsi.msgi.read=0;
+    //     }
+    //   }
+    //   break;
+    // }
+    res = &(state.scsi.msgi.data[state.scsi.msgi.read]);
+    state.scsi.msgi.read += bytes;
+    break;
 
-	default:
-		FAILURE_2(IllegalState, "%s: transfer requested in phase %d\n",
-			devid_string, scsi_get_phase(0));
-	}
+  default:
+    FAILURE_2(IllegalState, "%s: transfer requested in phase %d\n",
+              devid_string, scsi_get_phase(0));
+  }
 
-	return res;
+  return res;
 }
 
 /**
@@ -335,470 +319,478 @@ void* CDisk::scsi_xfer_ptr_me(int bus, size_t bytes)
  *
  * \todo Handle disconnect/reconnect properly.
  **/
-void CDisk::scsi_xfer_done_me(int bus)
-{
-	int res;
-	int newphase = scsi_get_phase(0);
+void CDisk::scsi_xfer_done_me(int bus) {
+  int res;
+  int newphase = scsi_get_phase(0);
 
-	switch (scsi_get_phase(0))
-	{
-	case SCSI_PHASE_DATA_OUT:
-		if (state.scsi.dato.written < state.scsi.dato.expected)
-			break;
+  switch (scsi_get_phase(0)) {
+  case SCSI_PHASE_DATA_OUT:
+    if (state.scsi.dato.written < state.scsi.dato.expected)
+      break;
 
-		res = do_scsi_command();
-		if (res == 2)
-			FAILURE(IllegalState, "do_command returned 2 after DATA OUT phase");
+    res = do_scsi_command();
+    if (res == 2)
+      FAILURE(IllegalState, "do_command returned 2 after DATA OUT phase");
 
-		if (state.scsi.dati.available)
-			newphase = SCSI_PHASE_DATA_IN;
-		else
-			newphase = SCSI_PHASE_STATUS;
-		break;
+    if (state.scsi.dati.available)
+      newphase = SCSI_PHASE_DATA_IN;
+    else
+      newphase = SCSI_PHASE_STATUS;
+    break;
 
-	case SCSI_PHASE_DATA_IN:
-		if (state.scsi.dati.read < state.scsi.dati.available)
-			break;
+  case SCSI_PHASE_DATA_IN:
+    if (state.scsi.dati.read < state.scsi.dati.available)
+      break;
 
-		newphase = SCSI_PHASE_STATUS;
-		break;
+    newphase = SCSI_PHASE_STATUS;
+    break;
 
-	case SCSI_PHASE_COMMAND:
-		res = do_scsi_command();
-		if (res == 2)
-			newphase = SCSI_PHASE_DATA_OUT;
-		else if (state.scsi.dati.available)
-			newphase = SCSI_PHASE_DATA_IN;
-		else
-			newphase = SCSI_PHASE_STATUS;
-		break;
+  case SCSI_PHASE_COMMAND:
+    res = do_scsi_command();
+    if (res == 2)
+      newphase = SCSI_PHASE_DATA_OUT;
+    else if (state.scsi.dati.available)
+      newphase = SCSI_PHASE_DATA_IN;
+    else
+      newphase = SCSI_PHASE_STATUS;
+    break;
 
-	case SCSI_PHASE_STATUS:
-		if (state.scsi.stat.read < state.scsi.stat.available)
-			break;
+  case SCSI_PHASE_STATUS:
+    if (state.scsi.stat.read < state.scsi.stat.available)
+      break;
 
-		if (atapi_mode)
-		{
-			scsi_free(0);
-			return;
-		}
+    if (atapi_mode) {
+      scsi_free(0);
+      return;
+    }
 
-		newphase = SCSI_PHASE_MSG_IN;
-		break;
+    newphase = SCSI_PHASE_MSG_IN;
+    break;
 
-	case SCSI_PHASE_MSG_OUT:
-		newphase = do_scsi_message();       // command
-		break;
+  case SCSI_PHASE_MSG_OUT:
+    newphase = do_scsi_message(); // command
+    break;
 
-	case SCSI_PHASE_MSG_IN:
+  case SCSI_PHASE_MSG_IN:
 
-		//if (state.scsi.reselected)
-		//{
-		//  state.scsi.reselected = false;
-		//  newphase = state.scsi.disconnect_phase;
-		//}
-		//else if (state.scsi.disconnected)
-		//{
-		//  if (!state.scsi.msgi.read)
-		//    newphase = -1;
-		//}
-		if (state.scsi.msgi.read < state.scsi.msgi.available)
-			break;
+    // if (state.scsi.reselected)
+    //{
+    //   state.scsi.reselected = false;
+    //   newphase = state.scsi.disconnect_phase;
+    // }
+    // else if (state.scsi.disconnected)
+    //{
+    //   if (!state.scsi.msgi.read)
+    //     newphase = -1;
+    // }
+    if (state.scsi.msgi.read < state.scsi.msgi.available)
+      break;
 
-		if (state.scsi.cmd.written)
-		{
-			scsi_free(0);
-			return;
-		}
-		else
-			newphase = SCSI_PHASE_COMMAND;
-		break;
+    if (state.scsi.cmd.written) {
+      scsi_free(0);
+      return;
+    } else
+      newphase = SCSI_PHASE_COMMAND;
+    break;
 
-	default:
-		FAILURE_2(IllegalState, "%s: transfer requested in phase %d\n",
-			devid_string, scsi_get_phase(0));
-	}
+  default:
+    FAILURE_2(IllegalState, "%s: transfer requested in phase %d\n",
+              devid_string, scsi_get_phase(0));
+  }
 
-	// if data in and can disconnect...
-	//if (state.phase!=7 && newphase==1 && PT.will_disconnect && !PT.disconnected)
-	//{
-	//  printf("%s: Disconnecting now...\n",devid_string);
-	//  PT.disconnected = true;
-	//  PT.disconnect_phase = newphase;
-	//  newphase = 7; // msg in
-	//}
-	if (newphase != scsi_get_phase(0))
-	{
+  // if data in and can disconnect...
+  // if (state.phase!=7 && newphase==1 && PT.will_disconnect &&
+  // !PT.disconnected)
+  //{
+  //  printf("%s: Disconnecting now...\n",devid_string);
+  //  PT.disconnected = true;
+  //  PT.disconnect_phase = newphase;
+  //  newphase = 7; // msg in
+  //}
+  if (newphase != scsi_get_phase(0)) {
 
-		//    if (newphase==-1)
-		//    {
-		//      printf("%s: Disconnect. Timer started!\n",devid_string);
-		//      // disconnect. generate interrupt?
-		//      state.disconnected = 20;
-		//    }
-		scsi_set_phase(0, newphase);
-	}
+    //    if (newphase==-1)
+    //    {
+    //      printf("%s: Disconnect. Timer started!\n",devid_string);
+    //      // disconnect. generate interrupt?
+    //      state.disconnected = 20;
+    //    }
+    scsi_set_phase(0, newphase);
+  }
 
-	//getchar();
+  // getchar();
 }
 
 // SCSI commands:
-#define SCSICMD_TEST_UNIT_READY       0x00
-#define SCSICMD_REQUEST_SENSE         0x03
-#define SCSICMD_INQUIRY               0x12
+#define SCSICMD_TEST_UNIT_READY 0x00
+#define SCSICMD_REQUEST_SENSE 0x03
+#define SCSICMD_INQUIRY 0x12
 
-#define SCSICMD_READ                  0x08
-#define SCSICMD_READ_10               0x28
-#define SCSICMD_READ_12               0xA8
-#define SCSICMD_READ_16               0x88
-#define SCSICMD_READ_32               0x7F
-#define SCSICMD_READ_LONG             0x3E
-#define SCSICMD_READ_CD               0xBE
+#define SCSICMD_READ 0x08
+#define SCSICMD_READ_10 0x28
+#define SCSICMD_READ_12 0xA8
+#define SCSICMD_READ_16 0x88
+#define SCSICMD_READ_32 0x7F
+#define SCSICMD_READ_LONG 0x3E
+#define SCSICMD_READ_CD 0xBE
 
-#define SCSICMD_VERIFY_10             0x2F
+#define SCSICMD_VERIFY_10 0x2F
 
-#define SCSICMD_WRITE                 0x0A
-#define SCSICMD_WRITE_10              0x2A
-#define SCSICMD_WRITE_12              0xAA
-#define SCSICMD_WRITE_LONG            0x3F
+#define SCSICMD_WRITE 0x0A
+#define SCSICMD_WRITE_10 0x2A
+#define SCSICMD_WRITE_12 0xAA
+#define SCSICMD_WRITE_LONG 0x3F
 
-#define SCSICMD_MODE_SELECT           0x15
-#define SCSICMD_MODE_SENSE            0x1a
-#define SCSICMD_START_STOP_UNIT       0x1b
-#define SCSICMD_PREVENT_ALLOW_REMOVE  0x1e
-#define SCSICMD_READ_SUBCHANNEL       0x42
-#define SCSICMD_MODE_SELECT_10        0x55
-#define SCSICMD_MODE_SENSE_10         0x5a
-#define SCSICMD_MAINTENANCE_IN        0xA3
+#define SCSICMD_MODE_SELECT 0x15
+#define SCSICMD_MODE_SENSE 0x1a
+#define SCSICMD_START_STOP_UNIT 0x1b
+#define SCSICMD_PREVENT_ALLOW_REMOVE 0x1e
+#define SCSICMD_READ_SUBCHANNEL 0x42
+#define SCSICMD_MODE_SELECT_10 0x55
+#define SCSICMD_MODE_SENSE_10 0x5a
+#define SCSICMD_MAINTENANCE_IN 0xA3
 
-#define SCSICMD_SYNCHRONIZE_CACHE     0x35
+#define SCSICMD_SYNCHRONIZE_CACHE 0x35
 
 #define SCSICMD_GET_EVENT_STATUS_NOTIFICATION 0x4a
 
 //  SCSI block device commands:
-#define SCSIBLOCKCMD_READ_CAPACITY  0x25
-#define SCSIBLOCKCMD_SEEK           0x2B
+#define SCSIBLOCKCMD_READ_CAPACITY 0x25
+#define SCSIBLOCKCMD_SEEK 0x2B
 
 //  SCSI CD-ROM commands:
-#define SCSICDROM_READ_SUBCHANNEL  0x42
-#define SCSICDROM_READ_TOC         0x43
+#define SCSICDROM_READ_SUBCHANNEL 0x42
+#define SCSICDROM_READ_TOC 0x43
 #define SCSICDROM_MECHANISM_STATUS 0xBD
 
 // SCSI CD-R/RW commands:
-#define SCSICDRRW_FORMAT          0x04
-#define SCSICDRRW_READ_DISC_INFO  0x51
+#define SCSICDRRW_FORMAT 0x04
+#define SCSICDRRW_READ_DISC_INFO 0x51
 #define SCSICDRRW_READ_TRACK_INFO 0x52
-#define SCSICDRRW_RESERVE_TRACK   0x53
-#define SCSICDRRW_SEND_OPC_INFO   0x54
-#define SCSICDRRW_REPAIR_TRACK    0x58
+#define SCSICDRRW_RESERVE_TRACK 0x53
+#define SCSICDRRW_SEND_OPC_INFO 0x54
+#define SCSICDRRW_REPAIR_TRACK 0x58
 #define SCSICDRRW_READ_MASTER_CUE 0x59
-#define SCSICDRRW_CLOSE_TRACK     0x5b
+#define SCSICDRRW_CLOSE_TRACK 0x5b
 #define SCSICDRRW_READ_BUFFER_CAP 0x5c
-#define SCSICDRRW_SEND_CUE_SHEET  0x5d
-#define SCSICDRRW_BLANK           0xa1
-#define SCSICDRRW_UNLOAD          0x1b
+#define SCSICDRRW_SEND_CUE_SHEET 0x5d
+#define SCSICDRRW_BLANK 0xa1
+#define SCSICDRRW_UNLOAD 0x1b
 
 //  SCSI tape commands:
-#define SCSICMD_REWIND            0x01
+#define SCSICMD_REWIND 0x01
 #define SCSICMD_READ_BLOCK_LIMITS 0x05
-#define SCSICMD_SPACE             0x11
+#define SCSICMD_SPACE 0x11
 
 // SCSI mode pages:
-#define SCSIMP_VENDOR               0x00
-#define SCSIMP_READ_WRITE_ERRREC    0x01
+#define SCSIMP_VENDOR 0x00
+#define SCSIMP_READ_WRITE_ERRREC 0x01
 #define SCSIMP_DISCONNECT_RECONNECT 0x02
-#define SCSIMP_FORMAT_PARAMS        0x03
-#define SCSIMP_RIGID_GEOMETRY       0x04
-#define SCSIMP_FLEX_PARAMS          0x05
-#define SCSIMP_CACHING              0x08
-#define SCSIMP_INFO_EXCEPTIONS      0x1C
-#define SCSIMP_CDROM_CAP            0x2A
+#define SCSIMP_FORMAT_PARAMS 0x03
+#define SCSIMP_RIGID_GEOMETRY 0x04
+#define SCSIMP_FLEX_PARAMS 0x05
+#define SCSIMP_CACHING 0x08
+#define SCSIMP_INFO_EXCEPTIONS 0x1C
+#define SCSIMP_CDROM_CAP 0x2A
 
-#define SCSI_OK                     0
-#define SCSI_ILL_CMD                - 1 /* illegal command */
-#define SCSI_LBA_RANGE              - 2 /* LBA out of range */
-#define SCSI_TOO_BIG                - 3 /* Too big for buffer */
+#define SCSI_OK 0
+#define SCSI_ILL_CMD -1   /* illegal command */
+#define SCSI_LBA_RANGE -2 /* LBA out of range */
+#define SCSI_TOO_BIG -3   /* Too big for buffer */
 // Per SPC: for malformed RSOC CDB (e.g., wrong reporting option vs opcode type)
-#define SCSI_INVALID_FIELD			- 4 /* Invalid field in CDB */
-#define SCSI_MEDIA_CHANGE           - 5 /* Media changed */
-#define SCSI_MEDIA_REMOVED          - 6 /* Media removed */
-#define SCSI_INVALID_LUN            - 7 /* Invalid LUN */
+#define SCSI_INVALID_FIELD -4 /* Invalid field in CDB */
+#define SCSI_MEDIA_CHANGE -5  /* Media changed */
+#define SCSI_MEDIA_REMOVED -6 /* Media removed */
+#define SCSI_INVALID_LUN -7   /* Invalid LUN */
 
-void CDisk::do_scsi_error(int errcode, int info)
-{
-	state.scsi.stat.available = 1;
-	state.scsi.stat.data[0] = 0;
-	state.scsi.stat.read = 0;
-	state.scsi.msgi.available = 1;
-	state.scsi.msgi.data[0] = 0;
-	state.scsi.msgi.read = 0;
+void CDisk::do_scsi_error(int errcode, int info) {
+  state.scsi.stat.available = 1;
+  state.scsi.stat.data[0] = 0;
+  state.scsi.stat.read = 0;
+  state.scsi.msgi.available = 1;
+  state.scsi.msgi.data[0] = 0;
+  state.scsi.msgi.read = 0;
 
-	if (errcode == SCSI_OK)
-	{
+  if (errcode == SCSI_OK) {
 #if defined(DEBUG_SCSI)
-		printf("%s: Command returns OK status.\n", devid_string);
+    printf("%s: Command returns OK status.\n", devid_string);
 #endif
-		return;
-	}
+    return;
+  }
 
-	state.scsi.stat.data[0] = 0x02;       // check sense
-	state.scsi.sense.data[0] = 0xf0;      // error code
-	state.scsi.sense.data[1] = 0x00;      // segment number
-	state.scsi.sense.data[3] = info >> 24;      // info
-	state.scsi.sense.data[4] = info >> 16;
-	state.scsi.sense.data[5] = info >> 8;
-	state.scsi.sense.data[6] = info & 0xFF;
-	state.scsi.sense.data[7] = 10;        // additional sense length
-	state.scsi.sense.data[8] = 0x00;      // command specific
-	state.scsi.sense.data[9] = 0x00;
-	state.scsi.sense.data[10] = 0x00;
-	state.scsi.sense.data[11] = 0x00;
-	state.scsi.sense.data[14] = 0x00;     // FRU code
-	state.scsi.sense.data[15] = 0x00;     // sense key specific
-	state.scsi.sense.data[16] = 0x00;
-	state.scsi.sense.data[17] = 0x00;
-	state.scsi.sense.available = 18;
+  state.scsi.stat.data[0] = 0x02;        // check sense
+  state.scsi.sense.data[0] = 0xf0;       // error code
+  state.scsi.sense.data[1] = 0x00;       // segment number
+  state.scsi.sense.data[3] = info >> 24; // info
+  state.scsi.sense.data[4] = info >> 16;
+  state.scsi.sense.data[5] = info >> 8;
+  state.scsi.sense.data[6] = info & 0xFF;
+  state.scsi.sense.data[7] = 10;   // additional sense length
+  state.scsi.sense.data[8] = 0x00; // command specific
+  state.scsi.sense.data[9] = 0x00;
+  state.scsi.sense.data[10] = 0x00;
+  state.scsi.sense.data[11] = 0x00;
+  state.scsi.sense.data[14] = 0x00; // FRU code
+  state.scsi.sense.data[15] = 0x00; // sense key specific
+  state.scsi.sense.data[16] = 0x00;
+  state.scsi.sense.data[17] = 0x00;
+  state.scsi.sense.available = 18;
 
-	switch (errcode)
-	{
-	case SCSI_ILL_CMD:
-		state.scsi.sense.data[2] = 0x05;    // illegal request
-		state.scsi.sense.data[12] = 0x20;   // invalid command
-		state.scsi.sense.data[13] = 0x00;
+  switch (errcode) {
+  case SCSI_ILL_CMD:
+    state.scsi.sense.data[2] = 0x05;  // illegal request
+    state.scsi.sense.data[12] = 0x20; // invalid command
+    state.scsi.sense.data[13] = 0x00;
 #if defined(DEBUG_SCSI)
-		printf("%s: Command returns check sense status (sense: ILLEGAL COMMAND).\n",
-			devid_string);
+    printf("%s: Command returns check sense status (sense: ILLEGAL COMMAND).\n",
+           devid_string);
 #endif
-		break;
+    break;
 
-	case SCSI_INVALID_FIELD:
-		state.scsi.sense.data[2] = 0x05;   // ILLEGAL REQUEST
-		state.scsi.sense.data[12] = 0x24;   // INVALID FIELD IN CDB
-		state.scsi.sense.data[13] = 0x00;
+  case SCSI_INVALID_FIELD:
+    state.scsi.sense.data[2] = 0x05;  // ILLEGAL REQUEST
+    state.scsi.sense.data[12] = 0x24; // INVALID FIELD IN CDB
+    state.scsi.sense.data[13] = 0x00;
 #if defined(DEBUG_SCSI)
-		printf("%s: Check sense: INVALID FIELD IN CDB.\n", devid_string);
+    printf("%s: Check sense: INVALID FIELD IN CDB.\n", devid_string);
 #endif
-		break;
+    break;
 
-	case SCSI_INVALID_LUN:
-		state.scsi.sense.data[2] = 0x05;   // ILLEGAL REQUEST
-		state.scsi.sense.data[12] = 0x25;   // INVALID LUN
-		state.scsi.sense.data[13] = 0x00;
+  case SCSI_INVALID_LUN:
+    state.scsi.sense.data[2] = 0x05;  // ILLEGAL REQUEST
+    state.scsi.sense.data[12] = 0x25; // INVALID LUN
+    state.scsi.sense.data[13] = 0x00;
 #if defined(DEBUG_SCSI)
-		printf("%s: Check sense: INVALID LUN.\n", devid_string);
+    printf("%s: Check sense: INVALID LUN.\n", devid_string);
 #endif
-		break;
+    break;
 
-	case SCSI_LBA_RANGE:
-		state.scsi.sense.data[2] = 0x05;    // illegal request
-		state.scsi.sense.data[12] = 0x21;   // LBA out of range
-		state.scsi.sense.data[13] = 0x00;
+  case SCSI_LBA_RANGE:
+    state.scsi.sense.data[2] = 0x05;  // illegal request
+    state.scsi.sense.data[12] = 0x21; // LBA out of range
+    state.scsi.sense.data[13] = 0x00;
 #if defined(DEBUG_SCSI)
-		printf("%s: Command returns check sense status (sense: LBA OUT OF RANGE).\n",
-			devid_string);
+    printf(
+        "%s: Command returns check sense status (sense: LBA OUT OF RANGE).\n",
+        devid_string);
 #endif
-		break;
+    break;
 
-	case SCSI_MEDIA_CHANGE:
-		state.scsi.sense.data[2] = 0x06;    // unit attention
-		state.scsi.sense.data[12] = 0x28;   // media changed
-		state.scsi.sense.data[13] = 0x00;
-		break;
+  case SCSI_MEDIA_CHANGE:
+    state.scsi.sense.data[2] = 0x06;  // unit attention
+    state.scsi.sense.data[12] = 0x28; // media changed
+    state.scsi.sense.data[13] = 0x00;
+    break;
 
-	case SCSI_MEDIA_REMOVED:
-		state.scsi.sense.data[2] = 0x02;    // not ready
-		state.scsi.sense.data[12] = 0x3a;   // media not present
-		state.scsi.sense.data[13] = 0x00;
-		break;
+  case SCSI_MEDIA_REMOVED:
+    state.scsi.sense.data[2] = 0x02;  // not ready
+    state.scsi.sense.data[12] = 0x3a; // media not present
+    state.scsi.sense.data[13] = 0x00;
+    break;
 
-	case SCSI_TOO_BIG:
-		state.scsi.sense.data[2] = 0x05;    // illegal request
-		state.scsi.sense.data[12] = 0x55;   // system resource failure
-		state.scsi.sense.data[13] = 0x00;
+  case SCSI_TOO_BIG:
+    state.scsi.sense.data[2] = 0x05;  // illegal request
+    state.scsi.sense.data[12] = 0x55; // system resource failure
+    state.scsi.sense.data[13] = 0x00;
 #if defined(DEBUG_SCSI)
-		printf("%s: Command returns check sense status (sense: SYSTEM RESOURCE FAILURE).\n",
-			devid_string);
+    printf("%s: Command returns check sense status (sense: SYSTEM RESOURCE "
+           "FAILURE).\n",
+           devid_string);
 #endif
-		break;
-	}
+    break;
+  }
 }
 
 /**
  * Basic algorithm taken from libcdio for converting lba to msf
  **/
-static u32 lba2msf(off_t_large lba)
-{
-#define PREGAP_SECTORS    150
+static u32 lba2msf(off_t_large lba) {
+#define PREGAP_SECTORS 150
 #define CD_FRAMES_PER_SEC 75
-#define CD_MAX_LSN        450150
+#define CD_MAX_LSN 450150
 
-#define bin2bcd(x)        ((x / 10) << 4) | (x % 10)
-	int m;
+#define bin2bcd(x) ((x / 10) << 4) | (x % 10)
+  int m;
 
-	int s;
+  int s;
 
-	int f;
-	lba -= PREGAP_SECTORS;
-	if (lba >= -PREGAP_SECTORS)
-	{
-		m = (lba + PREGAP_SECTORS) / (CD_FRAMES_PER_SEC * 60);
-		lba -= m * (CD_FRAMES_PER_SEC * 60);
-		s = (lba + PREGAP_SECTORS) / CD_FRAMES_PER_SEC;
-		lba -= s * CD_FRAMES_PER_SEC;
-		f = lba + PREGAP_SECTORS;
-	}
-	else
-	{
-		m = (lba + CD_MAX_LSN) / (CD_FRAMES_PER_SEC * 60);
-		lba -= m * (CD_FRAMES_PER_SEC * 60);
-		s = (lba + CD_MAX_LSN) / CD_FRAMES_PER_SEC;
-		lba -= s * CD_FRAMES_PER_SEC;
-		f = lba + CD_MAX_LSN;
-	}
+  int f;
+  lba -= PREGAP_SECTORS;
+  if (lba >= -PREGAP_SECTORS) {
+    m = (lba + PREGAP_SECTORS) / (CD_FRAMES_PER_SEC * 60);
+    lba -= m * (CD_FRAMES_PER_SEC * 60);
+    s = (lba + PREGAP_SECTORS) / CD_FRAMES_PER_SEC;
+    lba -= s * CD_FRAMES_PER_SEC;
+    f = lba + PREGAP_SECTORS;
+  } else {
+    m = (lba + CD_MAX_LSN) / (CD_FRAMES_PER_SEC * 60);
+    lba -= m * (CD_FRAMES_PER_SEC * 60);
+    s = (lba + CD_MAX_LSN) / CD_FRAMES_PER_SEC;
+    lba -= s * CD_FRAMES_PER_SEC;
+    f = lba + CD_MAX_LSN;
+  }
 
-	if (m > 99)
-		m = 99;
+  if (m > 99)
+    m = 99;
 
-	//printf("m=%d, s=%d, f=%d == m=%x, s=%x, f=%x\n", m,s,f,bin2bcd(m),bin2bcd(s),bin2bcd(f));
-	return bin2bcd(m) << 16 | bin2bcd(s) << 8 | bin2bcd(f);
+  // printf("m=%d, s=%d, f=%d == m=%x, s=%x, f=%x\n",
+  // m,s,f,bin2bcd(m),bin2bcd(s),bin2bcd(f));
+  return bin2bcd(m) << 16 | bin2bcd(s) << 8 | bin2bcd(f);
 }
 
-static inline bool opcode_has_service_actions(u8 op)
-{
-	// Common SA-coded opcodes (SPC/MMC/SBC families)
-	switch (op) {
-	case 0x7F: // VARIABLE LENGTH CDB
-	case 0x9E: // SERVICE ACTION IN(16)
-	case 0x9F: // SERVICE ACTION OUT(16)
-	case 0xA3: // MAINTENANCE IN (this command)
-	case 0xA4: // MAINTENANCE OUT
-		return true;
-	default:   return false;
-	}
+static inline bool opcode_has_service_actions(u8 op) {
+  // Common SA-coded opcodes (SPC/MMC/SBC families)
+  switch (op) {
+  case 0x7F: // VARIABLE LENGTH CDB
+  case 0x9E: // SERVICE ACTION IN(16)
+  case 0x9F: // SERVICE ACTION OUT(16)
+  case 0xA3: // MAINTENANCE IN (this command)
+  case 0xA4: // MAINTENANCE OUT
+    return true;
+  default:
+    return false;
+  }
 }
 
-static inline int cdb_len_for_opcode(u8 op)
-{
-	// Return canonical CDB sizes for commands this emulator already handles.
-	switch (op) {
-		// 6-byte CDBs
-	case 0x00: /* TEST UNIT READY   */ return 6;
-	case 0x03: /* REQUEST SENSE     */ return 6;
-	case 0x08: /* READ (6)          */ return 6;
-	case 0x0A: /* WRITE (6)         */ return 6;
-	case 0x12: /* INQUIRY           */ return 6;
-	case 0x1A: /* MODE SENSE (6)    */ return 6;
-	case 0x3E: /* READ LONG         */ return 6;
+static inline int cdb_len_for_opcode(u8 op) {
+  // Return canonical CDB sizes for commands this emulator already handles.
+  switch (op) {
+    // 6-byte CDBs
+  case 0x00: /* TEST UNIT READY   */
+    return 6;
+  case 0x03: /* REQUEST SENSE     */
+    return 6;
+  case 0x08: /* READ (6)          */
+    return 6;
+  case 0x0A: /* WRITE (6)         */
+    return 6;
+  case 0x12: /* INQUIRY           */
+    return 6;
+  case 0x1A: /* MODE SENSE (6)    */
+    return 6;
+  case 0x3E: /* READ LONG         */
+    return 6;
 
-		// 10-byte CDBs
-	case 0x25: /* READ CAPACITY(10) */ return 10;
-	case 0x28: /* READ (10)         */ return 10;
-	case 0x2A: /* WRITE (10)        */ return 10;
-	case 0x2F: /* VERIFY (10)       */ return 10;
-	case 0x35: /* SYNCHRONIZE CACHE */ return 10;
-	case 0x5A: /* MODE SENSE (10)   */ return 10;
+    // 10-byte CDBs
+  case 0x25: /* READ CAPACITY(10) */
+    return 10;
+  case 0x28: /* READ (10)         */
+    return 10;
+  case 0x2A: /* WRITE (10)        */
+    return 10;
+  case 0x2F: /* VERIFY (10)       */
+    return 10;
+  case 0x35: /* SYNCHRONIZE CACHE */
+    return 10;
+  case 0x5A: /* MODE SENSE (10)   */
+    return 10;
 
-		// 12-byte CDBs (supported by this tree)
-	case 0xA8: /* READ (12)         */ return 12;
-	case 0xAA: /* WRITE (12)        */ return 12;
-	}
-	return -1; // unknown/unsupported
+    // 12-byte CDBs (supported by this tree)
+  case 0xA8: /* READ (12)         */
+    return 12;
+  case 0xAA: /* WRITE (12)        */
+    return 12;
+  }
+  return -1; // unknown/unsupported
 }
 
-static inline void put_be16(u8* p, u16 v) { p[0] = u8(v >> 8); p[1] = u8(v); }
-static inline void put_be32(u8* p, u32 v) {
-	p[0] = u8(v >> 24); p[1] = u8(v >> 16); p[2] = u8(v >> 8); p[3] = u8(v);
-
+static inline void put_be16(u8 *p, u16 v) {
+  p[0] = u8(v >> 8);
+  p[1] = u8(v);
+}
+static inline void put_be32(u8 *p, u32 v) {
+  p[0] = u8(v >> 24);
+  p[1] = u8(v >> 16);
+  p[2] = u8(v >> 8);
+  p[3] = u8(v);
 }
 
-static inline uint16_t read_16bit(const uint8_t* buf)
-{
-	return (buf[0] << 8) | buf[1];
+static inline uint16_t read_16bit(const uint8_t *buf) {
+  return (buf[0] << 8) | buf[1];
 }
 
 // some packet handling macros
-#define EXTRACT_FIELD(arr,byte,start,num_bits) (((arr)[(byte)] >> (start)) & ((1 << (num_bits)) - 1))
-#define get_packet_field(arr,b,s,n) (EXTRACT_FIELD((arr),(b),(s),(n)))
-#define get_packet_byte(arr,b) (arr[(b)])
-#define get_packet_word(arr,b) (((uint16_t)arr[(b)] << 8) | arr[(b)+1])
+#define EXTRACT_FIELD(arr, byte, start, num_bits)                              \
+  (((arr)[(byte)] >> (start)) & ((1 << (num_bits)) - 1))
+#define get_packet_field(arr, b, s, n) (EXTRACT_FIELD((arr), (b), (s), (n)))
+#define get_packet_byte(arr, b) (arr[(b)])
+#define get_packet_word(arr, b) (((uint16_t)arr[(b)] << 8) | arr[(b) + 1])
 
 // This, too, is straight out of Bochs.
-int read_sub_channel(uint8_t* buf, bool sub_q, bool msf, int start_track, int format, int alloc_length) {
-	int ret_len = 4;
+int read_sub_channel(uint8_t *buf, bool sub_q, bool msf, int start_track,
+                     int format, int alloc_length) {
+  int ret_len = 4;
 
-	buf[0] = 0;
-	buf[1] = 0; // audio status not supported
-	buf[2] = 0;
-	buf[3] = 4;
+  buf[0] = 0;
+  buf[1] = 0; // audio status not supported
+  buf[2] = 0;
+  buf[3] = 4;
 
-	if (sub_q) { // !sub_q == header only
-		if (format == 1) {
-			buf[2] = 0;  // length (MSB -> LSB)
-			buf[3] = 12; // 
+  if (sub_q) { // !sub_q == header only
+    if (format == 1) {
+      buf[2] = 0;  // length (MSB -> LSB)
+      buf[3] = 12; //
 
-			buf[4] = 1;  // format code = 1
-			buf[5] = (0 << 4) | (0 << 0); // ADR | CONTROL
-			buf[6] = 1;  // track number
-			buf[7] = 1;  // index number
-			if (msf) {
-				// in TIME format
-				uint32_t lba = /*BX_SELECTED_DRIVE(channel).cdrom.curr_lba*/ 0 + (2 * 75); // 150 = 2 second lead-in from start
-				int mins = (lba / 75) / 60;
-				int secs = (lba / 75) % 60;
-				int frames = lba % 75;
-				buf[8] = 0;  // Absolute CD Address (H = 0)
-				buf[9] = mins;  // M field (0 -> 99)
-				buf[10] = secs;  // S field (0 -> 59)
-				buf[11] = frames;  // F field (0 -> 74)
-				buf[12] = 0;  // Track Relative CD Address (H = 0)
-				buf[13] = mins;  // M field (0 -> 99)
-				buf[14] = secs;  // S field (0 -> 59)
-				buf[15] = frames;  // F field (0 -> 74)
-			}
-			else {
-				// LBA = (((M * 60) + S) * 75) + F - 150
-				// in LBA format
-				buf[8] = 0;  // Absolute CD Address (MSB -> LSB)
-				buf[9] = 0;  //
-				buf[10] = 0;  //
-				buf[11] = 1;  //
-				buf[12] = 0;  // Track Relative CD Address (MSB -> LSB)
-				buf[13] = 0;  //
-				buf[14] = 0;  //
-				buf[15] = 1;  //
-			}
-			ret_len = 16;
+      buf[4] = 1;                   // format code = 1
+      buf[5] = (0 << 4) | (0 << 0); // ADR | CONTROL
+      buf[6] = 1;                   // track number
+      buf[7] = 1;                   // index number
+      if (msf) {
+        // in TIME format
+        uint32_t lba = /*BX_SELECTED_DRIVE(channel).cdrom.curr_lba*/ 0 +
+                       (2 * 75); // 150 = 2 second lead-in from start
+        int mins = (lba / 75) / 60;
+        int secs = (lba / 75) % 60;
+        int frames = lba % 75;
+        buf[8] = 0;       // Absolute CD Address (H = 0)
+        buf[9] = mins;    // M field (0 -> 99)
+        buf[10] = secs;   // S field (0 -> 59)
+        buf[11] = frames; // F field (0 -> 74)
+        buf[12] = 0;      // Track Relative CD Address (H = 0)
+        buf[13] = mins;   // M field (0 -> 99)
+        buf[14] = secs;   // S field (0 -> 59)
+        buf[15] = frames; // F field (0 -> 74)
+      } else {
+        // LBA = (((M * 60) + S) * 75) + F - 150
+        // in LBA format
+        buf[8] = 0;  // Absolute CD Address (MSB -> LSB)
+        buf[9] = 0;  //
+        buf[10] = 0; //
+        buf[11] = 1; //
+        buf[12] = 0; // Track Relative CD Address (MSB -> LSB)
+        buf[13] = 0; //
+        buf[14] = 0; //
+        buf[15] = 1; //
+      }
+      ret_len = 16;
 
-		}
-		else if (format == 2) {
-			buf[3] = 20;
-			buf[4] = 2;
-			buf[8] = 0; // no MCN
-			memset(&buf[9], 0, 13);
-			buf[22] = 0; // zero
-			buf[23] = 0; // AFRAME (0 -> 4Ah)
-			ret_len = 24;
+    } else if (format == 2) {
+      buf[3] = 20;
+      buf[4] = 2;
+      buf[8] = 0; // no MCN
+      memset(&buf[9], 0, 13);
+      buf[22] = 0; // zero
+      buf[23] = 0; // AFRAME (0 -> 4Ah)
+      ret_len = 24;
 
-		}
-		else if (format == 3) {
-			buf[3] = 20;
-			buf[4] = 3;
-			buf[5] = (1 << 4) | (4 << 0); // 0x14
-			buf[6] = 1;
-			buf[7] = 0; // reserved
-			buf[8] = 0; // no ISRC
-			memset(&buf[9], 0, 12);
-			buf[21] = 0; // zero
-			buf[22] = 0; // AFRAME (0 -> 4Ah)
-			buf[23] = 0; // reserved
-			ret_len = 24;
-		}
-		else {
-			ret_len = 0;
-		}
-	}
+    } else if (format == 3) {
+      buf[3] = 20;
+      buf[4] = 3;
+      buf[5] = (1 << 4) | (4 << 0); // 0x14
+      buf[6] = 1;
+      buf[7] = 0; // reserved
+      buf[8] = 0; // no ISRC
+      memset(&buf[9], 0, 12);
+      buf[21] = 0; // zero
+      buf[22] = 0; // AFRAME (0 -> 4Ah)
+      buf[23] = 0; // reserved
+      ret_len = 24;
+    } else {
+      ret_len = 0;
+    }
+  }
 
-	return ret_len;
+  return ret_len;
 }
 
 /**
@@ -809,67 +801,76 @@ int read_sub_channel(uint8_t* buf, bool sub_q, bool msf, int start_track, int fo
  * single-page templates in do_scsi_command(). The body is zeroed first, so it
  * stays correct even when it lands past the caller's pre-zeroed region.
  **/
-int CDisk::mode_sense_page(int page, bool changeable, int q)
-{
-	u8* d = state.scsi.dati.data;
-	int len;
+int CDisk::mode_sense_page(int page, bool changeable, int q) {
+  u8 *d = state.scsi.dati.data;
+  int len;
 
-	switch (page)
-	{
-	case SCSIMP_READ_WRITE_ERRREC: len = 10;   break;
-	case SCSIMP_FORMAT_PARAMS:     len = 22;   break;
-	case SCSIMP_RIGID_GEOMETRY:    len = 22;   break;
-	case SCSIMP_CACHING:           len = 0x12; break;
-	case SCSIMP_INFO_EXCEPTIONS:   len = 0x0a; break;
-	case SCSIMP_CDROM_CAP:         len = 0x14; break;
-	default:                       return q;   // unknown page: emit nothing
-	}
+  switch (page) {
+  case SCSIMP_READ_WRITE_ERRREC:
+    len = 10;
+    break;
+  case SCSIMP_FORMAT_PARAMS:
+    len = 22;
+    break;
+  case SCSIMP_RIGID_GEOMETRY:
+    len = 22;
+    break;
+  case SCSIMP_CACHING:
+    len = 0x12;
+    break;
+  case SCSIMP_INFO_EXCEPTIONS:
+    len = 0x0a;
+    break;
+  case SCSIMP_CDROM_CAP:
+    len = 0x14;
+    break;
+  default:
+    return q; // unknown page: emit nothing
+  }
 
-	for (int i = 0; i < len + 2; i++)
-		d[q + i] = 0;
-	d[q + 0] = (u8)page;
-	d[q + 1] = (u8)len;
+  for (int i = 0; i < len + 2; i++)
+    d[q + i] = 0;
+  d[q + 0] = (u8)page;
+  d[q + 1] = (u8)len;
 
-	if (!changeable)
-	{
-		switch (page)
-		{
-		case SCSIMP_FORMAT_PARAMS:
-			d[q + 11] = (u8)get_sectors();
-			d[q + 12] = (u8)(get_block_size() >> 8) & 255;
-			d[q + 13] = (u8)(get_block_size() >> 0) & 255;
-			break;
+  if (!changeable) {
+    switch (page) {
+    case SCSIMP_FORMAT_PARAMS:
+      d[q + 11] = (u8)get_sectors();
+      d[q + 12] = (u8)(get_block_size() >> 8) & 255;
+      d[q + 13] = (u8)(get_block_size() >> 0) & 255;
+      break;
 
-		case SCSIMP_RIGID_GEOMETRY:
-			d[q + 2] = (u8)(get_cylinders() >> 16) & 255;
-			d[q + 3] = (u8)(get_cylinders() >> 8) & 255;
-			d[q + 4] = (u8)get_cylinders() & 255;
-			d[q + 5] = (u8)get_heads();
-			d[q + 20] = (7200 >> 8) & 255;
-			d[q + 21] = 7200 & 255;
-			break;
+    case SCSIMP_RIGID_GEOMETRY:
+      d[q + 2] = (u8)(get_cylinders() >> 16) & 255;
+      d[q + 3] = (u8)(get_cylinders() >> 8) & 255;
+      d[q + 4] = (u8)get_cylinders() & 255;
+      d[q + 5] = (u8)get_heads();
+      d[q + 20] = (7200 >> 8) & 255;
+      d[q + 21] = 7200 & 255;
+      break;
 
-		case SCSIMP_CACHING:
-			d[q + 2] = 0x0a;
-			break;
+    case SCSIMP_CACHING:
+      d[q + 2] = 0x0a;
+      break;
 
-		case SCSIMP_CDROM_CAP:
-			d[q + 2] = 0x03;
-			d[q + 6] = state.scsi.locked ? 0x23 : 0x21;
-			d[q + 8] = (u8)(2800 >> 8);
-			d[q + 9] = (u8)(2800 >> 0);
-			d[q + 12] = (u8)(64 >> 8);
-			d[q + 13] = (u8)(64 >> 0);
-			d[q + 14] = (u8)(2800 >> 8);
-			d[q + 15] = (u8)(2800 >> 0);
-			break;
+    case SCSIMP_CDROM_CAP:
+      d[q + 2] = 0x03;
+      d[q + 6] = state.scsi.locked ? 0x23 : 0x21;
+      d[q + 8] = (u8)(2800 >> 8);
+      d[q + 9] = (u8)(2800 >> 0);
+      d[q + 12] = (u8)(64 >> 8);
+      d[q + 13] = (u8)(64 >> 0);
+      d[q + 14] = (u8)(2800 >> 8);
+      d[q + 15] = (u8)(2800 >> 0);
+      break;
 
-		default:
-			break;
-		}
-	}
+    default:
+      break;
+    }
+  }
 
-	return q + len + 2;
+  return q + len + 2;
 }
 
 /**
@@ -884,1457 +885,1433 @@ int CDisk::mode_sense_page(int page, bool changeable, int q)
  * called again once the data out has been received from
  * the initiator.
  **/
-int CDisk::do_scsi_command()
-{
-	unsigned int  retlen = 0;
-	int           q;
-	int           pagecode;
-	u32           ofs = 0;
+int CDisk::do_scsi_command() {
+  unsigned int retlen = 0;
+  int q;
+  int pagecode;
+  u32 ofs = 0;
 
 #if defined(DEBUG_SCSI)
-	printf("%s: %d-byte command ", devid_string, state.scsi.cmd.written);
-	for (unsigned int x = 0; x < state.scsi.cmd.written; x++)
-		printf("%02x ", state.scsi.cmd.data[x]);
-	printf("\n");
+  printf("%s: %d-byte command ", devid_string, state.scsi.cmd.written);
+  for (unsigned int x = 0; x < state.scsi.cmd.written; x++)
+    printf("%02x ", state.scsi.cmd.data[x]);
+  printf("\n");
 #endif
-	if (state.scsi.cmd.written < 1)
-		return 0;
+  if (state.scsi.cmd.written < 1)
+    return 0;
 
-	if (state.scsi.cmd.data[1] & 0xe0)
-	{
+  if (state.scsi.cmd.data[1] & 0xe0) {
 #if defined(DEBUG_SCSI)
-		printf("%s: LUN selected...\n", devid_string);
+    printf("%s: LUN selected...\n", devid_string);
 #endif
-		state.scsi.lun_selected = true;
-	}
+    state.scsi.lun_selected = true;
+  }
 
-	if (state.scsi.lun_selected && state.scsi.cmd.data[0] != SCSICMD_INQUIRY
-		&& state.scsi.cmd.data[0] != SCSICMD_REQUEST_SENSE)
-	{
-		do_scsi_error(SCSI_INVALID_FIELD, state.scsi.cmd.data[1] >> 5);
-		return 0;
-	}
+  if (state.scsi.lun_selected && state.scsi.cmd.data[0] != SCSICMD_INQUIRY &&
+      state.scsi.cmd.data[0] != SCSICMD_REQUEST_SENSE) {
+    do_scsi_error(SCSI_INVALID_FIELD, state.scsi.cmd.data[1] >> 5);
+    return 0;
+  }
 
-	switch (state.scsi.cmd.data[0])
-	{
-	case SCSICMD_TEST_UNIT_READY:
+  switch (state.scsi.cmd.data[0]) {
+  case SCSICMD_TEST_UNIT_READY:
 #if defined(DEBUG_SCSI)
-		printf("%s: TEST UNIT READY.\n", devid_string);
+    printf("%s: TEST UNIT READY.\n", devid_string);
 #endif
 
-		// unit is always ready...
-		// ...unless it's a cdrom and the media was changed.
-		if (cdrom()) {
-			if (state.scsi.media_changed == 1) {
-				do_scsi_error(SCSI_MEDIA_REMOVED);
-				state.scsi.media_changed = -1;
-				break;
-			}
-			else if (state.scsi.media_changed == -1) {
-				do_scsi_error(SCSI_MEDIA_CHANGE);
-				state.scsi.media_changed = 0;
-				break;
-			}
-		}
-		do_scsi_error(SCSI_OK);
-		break;
-	
-	case SCSICMD_READ_SUBCHANNEL:
-	{
-		bool msf = get_packet_field(state.scsi.cmd.data, 1, 1, 1);
-		bool sub_q = get_packet_field(state.scsi.cmd.data, 2, 6, 1);
-		uint8_t data_format = get_packet_byte(state.scsi.cmd.data, 3);
-		uint8_t track_number = get_packet_byte(state.scsi.cmd.data, 6);
-		uint16_t alloc_length = get_packet_word(state.scsi.cmd.data, 7);
-		// TODO: Return when empty CD drives are finally a thing again.
-		{
-			int ret_len = read_sub_channel(state.scsi.dati.data, sub_q, msf, track_number, data_format, alloc_length);
-			if (ret_len == 0)
-			{
-				do_scsi_error(SCSI_ILL_CMD);
-				break;
-			}
-			state.scsi.dati.available = ret_len;
-			state.scsi.dati.read = 0;
-			do_scsi_error(SCSI_OK);
-		}
-		break;
-	}
+    // unit is always ready...
+    // ...unless it's a cdrom and the media was changed.
+    if (cdrom()) {
+      if (state.scsi.media_changed == 1) {
+        do_scsi_error(SCSI_MEDIA_REMOVED);
+        state.scsi.media_changed = -1;
+        break;
+      } else if (state.scsi.media_changed == -1) {
+        do_scsi_error(SCSI_MEDIA_CHANGE);
+        state.scsi.media_changed = 0;
+        break;
+      }
+    }
+    do_scsi_error(SCSI_OK);
+    break;
 
-	case SCSICMD_GET_EVENT_STATUS_NOTIFICATION:
-	{
-		if (!cdrom()) {
-			do_scsi_error(SCSI_ILL_CMD);
-			break;
-		}
-		// Straight copied out of Bochs.
-		bool polled = (state.scsi.cmd.data[1] & (1 << 0)) > 0;
-		int event_length, request = state.scsi.cmd.data[4];
-		uint16_t alloc_length = read_16bit(state.scsi.cmd.data + 7);
-		bool inserted = true;
-		if (polled) {
-			// we currently only support the MEDIA event (bit 4)
-			if (request == (1 << 4)) {
-				state.scsi.dati.data[0] = 0;
-				state.scsi.dati.data[1] = 4;  // MEDIA event is 4 bytes long
-				state.scsi.dati.data[2] = (0 << 7) | 4;  // 4 = MEDIA event
-				state.scsi.dati.data[3] = (1 << 4);  // we only support the MEDIA event (bit 4)
-				state.scsi.dati.data[4] =
-					(!state.scsi.media_changed) ? 0 : // Event code: 0 = no change
-					(inserted) ? 4 : 3;      // Event code: 4 = media changed, 3 = removed
-				state.scsi.dati.data[5] =
-					(inserted) ? (1 << 1) : 0; // Media Status (bit 1 = Media Present)
-				state.scsi.dati.data[6] = 0;
-				state.scsi.dati.data[7] = 0;
-				event_length = (alloc_length <= 4) ? 4 : 8;
-			}
-			else {
-				state.scsi.dati.data[0] = 0;
-				state.scsi.dati.data[1] = 0;
-				state.scsi.dati.data[2] = (1 << 7) | (uint8_t)request;
-				state.scsi.dati.data[3] = (1 << 4);  // we only support the MEDIA event (bit 4)
-				event_length = 4;
-			}
-			state.scsi.dati.available = event_length;
-			state.scsi.dati.read = 0;
-			do_scsi_error(SCSI_OK);
-		} else {
-			do_scsi_error(SCSI_INVALID_FIELD);
-		}
-		break;
-	}
+  case SCSICMD_READ_SUBCHANNEL: {
+    bool msf = get_packet_field(state.scsi.cmd.data, 1, 1, 1);
+    bool sub_q = get_packet_field(state.scsi.cmd.data, 2, 6, 1);
+    uint8_t data_format = get_packet_byte(state.scsi.cmd.data, 3);
+    uint8_t track_number = get_packet_byte(state.scsi.cmd.data, 6);
+    uint16_t alloc_length = get_packet_word(state.scsi.cmd.data, 7);
+    // TODO: Return when empty CD drives are finally a thing again.
+    {
+      int ret_len = read_sub_channel(state.scsi.dati.data, sub_q, msf,
+                                     track_number, data_format, alloc_length);
+      if (ret_len == 0) {
+        do_scsi_error(SCSI_ILL_CMD);
+        break;
+      }
+      state.scsi.dati.available = ret_len;
+      state.scsi.dati.read = 0;
+      do_scsi_error(SCSI_OK);
+    }
+    break;
+  }
 
-	case SCSICMD_REQUEST_SENSE:
+  case SCSICMD_GET_EVENT_STATUS_NOTIFICATION: {
+    if (!cdrom()) {
+      do_scsi_error(SCSI_ILL_CMD);
+      break;
+    }
+    // Straight copied out of Bochs.
+    bool polled = (state.scsi.cmd.data[1] & (1 << 0)) > 0;
+    int event_length, request = state.scsi.cmd.data[4];
+    uint16_t alloc_length = read_16bit(state.scsi.cmd.data + 7);
+    bool inserted = true;
+    if (polled) {
+      // we currently only support the MEDIA event (bit 4)
+      if (request == (1 << 4)) {
+        state.scsi.dati.data[0] = 0;
+        state.scsi.dati.data[1] = 4;            // MEDIA event is 4 bytes long
+        state.scsi.dati.data[2] = (0 << 7) | 4; // 4 = MEDIA event
+        state.scsi.dati.data[3] =
+            (1 << 4); // we only support the MEDIA event (bit 4)
+        state.scsi.dati.data[4] =
+            (!state.scsi.media_changed) ? 0 : // Event code: 0 = no change
+                (inserted) ? 4
+                           : 3; // Event code: 4 = media changed, 3 = removed
+        state.scsi.dati.data[5] =
+            (inserted) ? (1 << 1) : 0; // Media Status (bit 1 = Media Present)
+        state.scsi.dati.data[6] = 0;
+        state.scsi.dati.data[7] = 0;
+        event_length = (alloc_length <= 4) ? 4 : 8;
+      } else {
+        state.scsi.dati.data[0] = 0;
+        state.scsi.dati.data[1] = 0;
+        state.scsi.dati.data[2] = (1 << 7) | (uint8_t)request;
+        state.scsi.dati.data[3] =
+            (1 << 4); // we only support the MEDIA event (bit 4)
+        event_length = 4;
+      }
+      state.scsi.dati.available = event_length;
+      state.scsi.dati.read = 0;
+      do_scsi_error(SCSI_OK);
+    } else {
+      do_scsi_error(SCSI_INVALID_FIELD);
+    }
+    break;
+  }
+
+  case SCSICMD_REQUEST_SENSE:
 #if defined(DEBUG_SCSI)
-		printf("%s: REQUEST SENSE.\n", devid_string);
+    printf("%s: REQUEST SENSE.\n", devid_string);
 #endif
-		retlen = state.scsi.cmd.data[4];
+    retlen = state.scsi.cmd.data[4];
 
-		//    FAILURE("Sense requested");
-		if (!state.scsi.sense.available)
-		{
+    //    FAILURE("Sense requested");
+    if (!state.scsi.sense.available) {
 #if defined(DEBUG_SCSI)
-			printf("%s: NO SENSE.\n", devid_string);
+      printf("%s: NO SENSE.\n", devid_string);
 #endif
-			state.scsi.sense.data[0] = 0xf0;    // error code
-			state.scsi.sense.data[1] = 0x00;    // segment number
-			state.scsi.sense.data[2] = 0x00;    // sense key: no sense
-			state.scsi.sense.data[3] = 0x00;    // info
-			state.scsi.sense.data[4] = 0x00;
-			state.scsi.sense.data[5] = 0x00;
-			state.scsi.sense.data[6] = 0x00;
-			state.scsi.sense.data[7] = 10;      // additional sense length
-			state.scsi.sense.data[8] = 0x00;    // command specific
-			state.scsi.sense.data[9] = 0x00;
-			state.scsi.sense.data[10] = 0x00;
-			state.scsi.sense.data[11] = 0x00;
-			state.scsi.sense.data[12] = 0x00;   // additional sense code: no additional sense
-			state.scsi.sense.data[13] = 0x00;   // additional qualifier
-			state.scsi.sense.data[14] = 0x00;   // FRU code
-			state.scsi.sense.data[15] = 0x00;   // sense key specific
-			state.scsi.sense.data[16] = 0x00;
-			state.scsi.sense.data[17] = 0x00;
-			state.scsi.sense.available = 18;
-		}
+      state.scsi.sense.data[0] = 0xf0; // error code
+      state.scsi.sense.data[1] = 0x00; // segment number
+      state.scsi.sense.data[2] = 0x00; // sense key: no sense
+      state.scsi.sense.data[3] = 0x00; // info
+      state.scsi.sense.data[4] = 0x00;
+      state.scsi.sense.data[5] = 0x00;
+      state.scsi.sense.data[6] = 0x00;
+      state.scsi.sense.data[7] = 10;   // additional sense length
+      state.scsi.sense.data[8] = 0x00; // command specific
+      state.scsi.sense.data[9] = 0x00;
+      state.scsi.sense.data[10] = 0x00;
+      state.scsi.sense.data[11] = 0x00;
+      state.scsi.sense.data[12] =
+          0x00; // additional sense code: no additional sense
+      state.scsi.sense.data[13] = 0x00; // additional qualifier
+      state.scsi.sense.data[14] = 0x00; // FRU code
+      state.scsi.sense.data[15] = 0x00; // sense key specific
+      state.scsi.sense.data[16] = 0x00;
+      state.scsi.sense.data[17] = 0x00;
+      state.scsi.sense.available = 18;
+    }
 
 #if defined(DEBUG_SCSI)
-		printf("%s: Returning data: ", devid_string);
-		for (unsigned int x1 = 0; x1 < state.scsi.sense.available; x1++)
-			printf("%02x ", state.scsi.sense.data[x1]);
-		printf("\n");
+    printf("%s: Returning data: ", devid_string);
+    for (unsigned int x1 = 0; x1 < state.scsi.sense.available; x1++)
+      printf("%02x ", state.scsi.sense.data[x1]);
+    printf("\n");
 #endif
-		state.scsi.dati.read = 0;
-		state.scsi.dati.available = retlen;
-		memcpy(state.scsi.dati.data, state.scsi.sense.data,
-			state.scsi.sense.available);
-		for (unsigned int x2 = state.scsi.sense.available; x2 < retlen; x2++)
-			state.scsi.dati.data[x2] = 0;
+    state.scsi.dati.read = 0;
+    state.scsi.dati.available = retlen;
+    memcpy(state.scsi.dati.data, state.scsi.sense.data,
+           state.scsi.sense.available);
+    for (unsigned int x2 = state.scsi.sense.available; x2 < retlen; x2++)
+      state.scsi.dati.data[x2] = 0;
 
-		if (state.scsi.sense.data[2] == 0x06) {
-			state.scsi.sense.data[2] = 0x00;
-		}
+    if (state.scsi.sense.data[2] == 0x06) {
+      state.scsi.sense.data[2] = 0x00;
+    }
 
-		do_scsi_error(SCSI_OK);
-		break;
+    do_scsi_error(SCSI_OK);
+    break;
 
-	case SCSICMD_INQUIRY:
-	{
+  case SCSICMD_INQUIRY: {
 #if defined(DEBUG_SCSI)
-		printf("%s: INQUIRY.\n", devid_string);
+    printf("%s: INQUIRY.\n", devid_string);
 #endif
-		if ((state.scsi.cmd.data[1] & 0x1e) != 0x00)
-		{
-			FAILURE_2(NotImplemented,
-				"%s: Don't know how to handle INQUIRY with cmd[1]=0x%02x.\n",
-				devid_string, state.scsi.cmd.data[1]);
-			break;
-		}
+    if ((state.scsi.cmd.data[1] & 0x1e) != 0x00) {
+      FAILURE_2(NotImplemented,
+                "%s: Don't know how to handle INQUIRY with cmd[1]=0x%02x.\n",
+                devid_string, state.scsi.cmd.data[1]);
+      break;
+    }
 
-		u8  qual_dev = state.scsi.lun_selected ? 0x7F : (cdrom() ? 0x05 : 0x00);
+    u8 qual_dev = state.scsi.lun_selected ? 0x7F : (cdrom() ? 0x05 : 0x00);
 
-		retlen = state.scsi.cmd.data[4];
-		state.scsi.dati.data[0] = qual_dev; // device type
-		if (state.scsi.cmd.data[1] & 0x01)
-		{
+    retlen = state.scsi.cmd.data[4];
+    state.scsi.dati.data[0] = qual_dev; // device type
+    if (state.scsi.cmd.data[1] & 0x01) {
 
-			// Vital Product Data
-			switch (state.scsi.cmd.data[2])
-			{
-			case 0x00:
+      // Vital Product Data
+      switch (state.scsi.cmd.data[2]) {
+      case 0x00:
 
-				// Page 0 is basically a list of page codes supported, so if
-				// any others are added, make sure to insert them in the proper
-				// place and increase the page length.
-				state.scsi.dati.data[1] = 0x00; // page code 0
-				state.scsi.dati.data[2] = 0x00; // reserved
-				state.scsi.dati.data[3] = 0x02; // page length
-				state.scsi.dati.data[4] = 0x00; // page 0 is supported.
-				state.scsi.dati.data[5] = 0x80; // page 0x80 is supported.
-				break;
+        // Page 0 is basically a list of page codes supported, so if
+        // any others are added, make sure to insert them in the proper
+        // place and increase the page length.
+        state.scsi.dati.data[1] = 0x00; // page code 0
+        state.scsi.dati.data[2] = 0x00; // reserved
+        state.scsi.dati.data[3] = 0x02; // page length
+        state.scsi.dati.data[4] = 0x00; // page 0 is supported.
+        state.scsi.dati.data[5] = 0x80; // page 0x80 is supported.
+        break;
 
-			case 0x80:
-				char serial_number2[20];
-				sprintf(serial_number2, "SRL%04x", scsi_initiator_id[0] * 0x0101);
+      case 0x80:
+        char serial_number2[20];
+        sprintf(serial_number2, "SRL%04x", scsi_initiator_id[0] * 0x0101);
 
-				// unit serial number page
-				state.scsi.dati.data[1] = 0x80; // page code: 0x80
-				state.scsi.dati.data[2] = 0x00; // reserved
-				state.scsi.dati.data[3] = (u8)strlen(serial_number2);
-				memcpy(&state.scsi.dati.data[4], serial_number2, strlen(serial_number2));
-				break;
+        // unit serial number page
+        state.scsi.dati.data[1] = 0x80; // page code: 0x80
+        state.scsi.dati.data[2] = 0x00; // reserved
+        state.scsi.dati.data[3] = (u8)strlen(serial_number2);
+        memcpy(&state.scsi.dati.data[4], serial_number2,
+               strlen(serial_number2));
+        break;
 
-			default:
+      default:
 #if 1
-				FAILURE_1(NotImplemented,
-					"Don't know format for vital product data page %02x!!\n", state.scsi.cmd.data[2]);
+        FAILURE_1(NotImplemented,
+                  "Don't know format for vital product data page %02x!!\n",
+                  state.scsi.cmd.data[2]);
 #else
-				state.scsi.dati.data[1] = state.scsi.cmd.data[2]; // page code
-				state.scsi.dati.data[2] = 0x00; // reserved
+        state.scsi.dati.data[1] = state.scsi.cmd.data[2]; // page code
+        state.scsi.dati.data[2] = 0x00;                   // reserved
 #endif
-			}
-		}
-		else
-		{
+      }
+    } else {
 
-			//  Return values:
-			if (retlen < 36)
-			{
-				printf("%s: SCSI inquiry len=%i, <36!\n", devid_string, retlen);
-				retlen = 36;
-			}
+      //  Return values:
+      if (retlen < 36) {
+        printf("%s: SCSI inquiry len=%i, <36!\n", devid_string, retlen);
+        retlen = 36;
+      }
 
-			state.scsi.dati.data[1] = 0;      // not removable;
-			state.scsi.dati.data[2] = 0x02;   // ANSI scsi 2
-			state.scsi.dati.data[3] = 0x02;   // response format
-			state.scsi.dati.data[4] = 32;     // additional length
-			state.scsi.dati.data[5] = 0;      // reserved
-			state.scsi.dati.data[6] = 0x04;   // reserved
-			state.scsi.dati.data[7] = 0x60;   // capabilities
+      state.scsi.dati.data[1] = 0;    // not removable;
+      state.scsi.dati.data[2] = 0x02; // ANSI scsi 2
+      state.scsi.dati.data[3] = 0x02; // response format
+      state.scsi.dati.data[4] = 32;   // additional length
+      state.scsi.dati.data[5] = 0;    // reserved
+      state.scsi.dati.data[6] = 0x04; // reserved
+      state.scsi.dati.data[7] = 0x60; // capabilities
 
-			//                        vendor  model           rev.
-			memcpy(&(state.scsi.dati.data[8]), "DEC     RZ58     (C) DEC2000", 28);
+      //                        vendor  model           rev.
+      memcpy(&(state.scsi.dati.data[8]), "DEC     RZ58     (C) DEC2000", 28);
 
-			//  Some data is different for CD-ROM drives:
-			if (cdrom())
-			{
-				state.scsi.dati.data[1] = 0x80; //  0x80 = removable
+      //  Some data is different for CD-ROM drives:
+      if (cdrom()) {
+        state.scsi.dati.data[1] = 0x80; //  0x80 = removable
 
-				//                           vendor  model           rev.
-				memcpy(&(state.scsi.dati.data[8]), "DEC     RRD42   (C) DEC 4.5d", 28);
-			}
-		}
+        //                           vendor  model           rev.
+        memcpy(&(state.scsi.dati.data[8]), "DEC     RRD42   (C) DEC 4.5d", 28);
+      }
+    }
 
-		state.scsi.dati.read = 0;
-		state.scsi.dati.available = retlen;
+    state.scsi.dati.read = 0;
+    state.scsi.dati.available = retlen;
 
 #if defined(DEBUG_SCSI)
-		printf("%s: Returning data: ", devid_string);
-		for (unsigned int x1 = 0; x1 < 36; x1++)
-			printf("%02x ", state.scsi.dati.data[x1]);
-		printf("\n");
+    printf("%s: Returning data: ", devid_string);
+    for (unsigned int x1 = 0; x1 < 36; x1++)
+      printf("%02x ", state.scsi.dati.data[x1]);
+    printf("\n");
 #endif
-		do_scsi_error(SCSI_OK);
-	}
-	break;
+    do_scsi_error(SCSI_OK);
+  } break;
 
-	// Also from Bochs.
-	case 0x46: // get configuration (mmc4r05a.pdf, page 286) (pages are physical pdf pages, not page numbers listed on specific page)
-	{
-		//                Bit8u rt = (state.scsi.dati.data[1] & (3<<0));
-		if (!cdrom())
-		{
-			do_scsi_error(SCSI_ILL_CMD);
-			break;
-		}
-		uint16_t start_feature = read_16bit(state.scsi.cmd.data + 2);
-		uint16_t alloc_length = read_16bit(state.scsi.cmd.data + 7);
-		uint8_t *feature_ptr = state.scsi.dati.data;
-		bool inserted = true;
+  // Also from Bochs.
+  case 0x46: // get configuration (mmc4r05a.pdf, page 286) (pages are physical
+             // pdf pages, not page numbers listed on specific page)
+  {
+    //                Bit8u rt = (state.scsi.dati.data[1] & (3<<0));
+    if (!cdrom()) {
+      do_scsi_error(SCSI_ILL_CMD);
+      break;
+    }
+    uint16_t start_feature = read_16bit(state.scsi.cmd.data + 2);
+    uint16_t alloc_length = read_16bit(state.scsi.cmd.data + 7);
+    uint8_t *feature_ptr = state.scsi.dati.data;
+    bool inserted = true;
 
-		// The controller buffer is guaranteed to be at least 2048 bytes.
-		// The largest return for this command is guaranteed to be less than 1024 bytes.
-		// Therefore, we just build the return as if requested all bytes,
-		//  then only return up to 'alloc_length' bytes.
+    // The controller buffer is guaranteed to be at least 2048 bytes.
+    // The largest return for this command is guaranteed to be less than 1024
+    // bytes. Therefore, we just build the return as if requested all bytes,
+    //  then only return up to 'alloc_length' bytes.
 
-		if (alloc_length >= 8)
-		{
-			// create a header (page 287)
-			// state.scsi.dati.data[0] = 0;  // length is calculated below
-			// state.scsi.dati.data[1] = 0;
-			// state.scsi.dati.data[2] = 0;
-			// state.scsi.dati.data[3] = 0;
-			state.scsi.dati.data[4] = 0; // reserved
-			state.scsi.dati.data[5] = 0; // reserved
-			state.scsi.dati.data[6] = 0; // we only support profile 8 (cd-rom)
-			state.scsi.dati.data[7] = 8; //
-			feature_ptr += 8;
+    if (alloc_length >= 8) {
+      // create a header (page 287)
+      // state.scsi.dati.data[0] = 0;  // length is calculated below
+      // state.scsi.dati.data[1] = 0;
+      // state.scsi.dati.data[2] = 0;
+      // state.scsi.dati.data[3] = 0;
+      state.scsi.dati.data[4] = 0; // reserved
+      state.scsi.dati.data[5] = 0; // reserved
+      state.scsi.dati.data[6] = 0; // we only support profile 8 (cd-rom)
+      state.scsi.dati.data[7] = 8; //
+      feature_ptr += 8;
 
-			// page: 238
-			// Profile 8 requires feature numbers, 0x0, 0x1, 0x2, 0x3, 0x10, 0x1E, 0x100, 0x105
+      // page: 238
+      // Profile 8 requires feature numbers, 0x0, 0x1, 0x2, 0x3, 0x10, 0x1E,
+      // 0x100, 0x105
 
-			// profile list (feature 0x0000) (mmc4r05a.pdf, page 174)
-			if (start_feature == 0x0000)
-			{
-				feature_ptr[0] = 0x00; // Feature Code 0x000
-				feature_ptr[1] = 0x00;
-				feature_ptr[2] = (0 << 6) | (0 << 2) | (1 << 1) | (inserted << 0); // version 1, persistent = 1, current = 1 if inserted
-				feature_ptr[3] = 4;												   // additional length = (1 * 4)
-				feature_ptr[4] = 0x00;											   // profile 0x0008
-				feature_ptr[5] = 0x08;											   //
-				feature_ptr[6] = (0 << 1) | (inserted << 0);					   // reserved, Current = 1 if inserted
-				feature_ptr[7] = 0;												   // reserved
-				feature_ptr += 8;
-			}
+      // profile list (feature 0x0000) (mmc4r05a.pdf, page 174)
+      if (start_feature == 0x0000) {
+        feature_ptr[0] = 0x00; // Feature Code 0x000
+        feature_ptr[1] = 0x00;
+        feature_ptr[2] =
+            (0 << 6) | (0 << 2) | (1 << 1) |
+            (inserted
+             << 0); // version 1, persistent = 1, current = 1 if inserted
+        feature_ptr[3] = 4;    // additional length = (1 * 4)
+        feature_ptr[4] = 0x00; // profile 0x0008
+        feature_ptr[5] = 0x08; //
+        feature_ptr[6] =
+            (0 << 1) | (inserted << 0); // reserved, Current = 1 if inserted
+        feature_ptr[7] = 0;             // reserved
+        feature_ptr += 8;
+      }
 
-			// core feature (feature 0x0001) (mmc4r05a.pdf, page 174)
-			if (start_feature <= 0x0001)
-			{
-				feature_ptr[0] = 0x00; // Feature Code 0x001
-				feature_ptr[1] = 0x01;
-				feature_ptr[2] = (0 << 6) | (1 << 2) | (1 << 1) | (1 << 0); // version 1, persistent = 1, current = 1
-				feature_ptr[3] = 8;											// additional length = 8
-				feature_ptr[4] = 0;											// physical interface standard:
-				feature_ptr[5] = 0;											//   2 = ATAPI
-				feature_ptr[6] = 0;											//
-				feature_ptr[7] = 2;											//
-				feature_ptr[8] = (0 << 1) | (0 << 0);						// reserved, DBE = 0
-				feature_ptr[9] = 0;											//
-				feature_ptr[10] = 0;										//
-				feature_ptr[11] = 0;										//
-				feature_ptr += 12;
-			}
+      // core feature (feature 0x0001) (mmc4r05a.pdf, page 174)
+      if (start_feature <= 0x0001) {
+        feature_ptr[0] = 0x00; // Feature Code 0x001
+        feature_ptr[1] = 0x01;
+        feature_ptr[2] = (0 << 6) | (1 << 2) | (1 << 1) |
+                         (1 << 0); // version 1, persistent = 1, current = 1
+        feature_ptr[3] = 8;        // additional length = 8
+        feature_ptr[4] = 0;        // physical interface standard:
+        feature_ptr[5] = 0;        //   2 = ATAPI
+        feature_ptr[6] = 0;        //
+        feature_ptr[7] = 2;        //
+        feature_ptr[8] = (0 << 1) | (0 << 0); // reserved, DBE = 0
+        feature_ptr[9] = 0;                   //
+        feature_ptr[10] = 0;                  //
+        feature_ptr[11] = 0;                  //
+        feature_ptr += 12;
+      }
 
-			// morphing feature (feature 0x0002) (mmc4r05a.pdf, page 178)
-			if (start_feature <= 0x0002)
-			{
-				feature_ptr[0] = 0x00; // Feature Code 0x002
-				feature_ptr[1] = 0x02;
-				feature_ptr[2] = (0 << 6) | (1 << 2) | (1 << 1) | (1 << 0); // version 1, persistent = 1, current = 1
-				feature_ptr[3] = 4;											// additional length = 4
-				feature_ptr[4] = (0 << 1) | (0 << 0);						// OCEvent = 0 (see page 178), ASYNC = 0 (0 = polling of EVENT STATUS NOTIFICATION)
-				feature_ptr[5] = 0;											//
-				feature_ptr[6] = 0;											//
-				feature_ptr[7] = 0;											//
-				feature_ptr += 8;
-			}
+      // morphing feature (feature 0x0002) (mmc4r05a.pdf, page 178)
+      if (start_feature <= 0x0002) {
+        feature_ptr[0] = 0x00; // Feature Code 0x002
+        feature_ptr[1] = 0x02;
+        feature_ptr[2] = (0 << 6) | (1 << 2) | (1 << 1) |
+                         (1 << 0); // version 1, persistent = 1, current = 1
+        feature_ptr[3] = 4;        // additional length = 4
+        feature_ptr[4] =
+            (0 << 1) | (0 << 0); // OCEvent = 0 (see page 178), ASYNC = 0 (0 =
+                                 // polling of EVENT STATUS NOTIFICATION)
+        feature_ptr[5] = 0;      //
+        feature_ptr[6] = 0;      //
+        feature_ptr[7] = 0;      //
+        feature_ptr += 8;
+      }
 
-			// Removable Medium feature (feature 0x0003) (mmc4r05a.pdf, page 179)
-			if (start_feature <= 0x0003)
-			{
-				feature_ptr[0] = 0x00; // Feature Code 0x003
-				feature_ptr[1] = 0x03;
-				feature_ptr[2] = (0 << 6) | (0 << 2) | (1 << 1) | (1 << 0); // version 0, persistent = 1, current = 1
-				feature_ptr[3] = 4;											// additional length = 4
-				feature_ptr[4] = (0 << 5)									// Loading Mech type: 0
-								 | (0 << 3)									// No Eject Mech
-								 | (1 << 2)									// No Pvnt Jumper
-								 | (0 << 0);								// Lock = 0 (no locking mechanism)
-				feature_ptr[5] = 0;											//
-				feature_ptr[6] = 0;											//
-				feature_ptr[7] = 0;											//
-				feature_ptr += 8;
-			}
+      // Removable Medium feature (feature 0x0003) (mmc4r05a.pdf, page 179)
+      if (start_feature <= 0x0003) {
+        feature_ptr[0] = 0x00; // Feature Code 0x003
+        feature_ptr[1] = 0x03;
+        feature_ptr[2] = (0 << 6) | (0 << 2) | (1 << 1) |
+                         (1 << 0);   // version 0, persistent = 1, current = 1
+        feature_ptr[3] = 4;          // additional length = 4
+        feature_ptr[4] = (0 << 5)    // Loading Mech type: 0
+                         | (0 << 3)  // No Eject Mech
+                         | (1 << 2)  // No Pvnt Jumper
+                         | (0 << 0); // Lock = 0 (no locking mechanism)
+        feature_ptr[5] = 0;          //
+        feature_ptr[6] = 0;          //
+        feature_ptr[7] = 0;          //
+        feature_ptr += 8;
+      }
 
-			// Random Readable feature (feature 0x0010) (mmc4r05a.pdf, page 182)
-			if (start_feature <= 0x0010)
-			{
-				feature_ptr[0] = 0x00; // Feature Code 0x010
-				feature_ptr[1] = 0x10;
-				feature_ptr[2] = (0 << 6) | (0 << 2) | (1 << 1) | (1 << 0); // version 0, persistent = 1, current = 1
-				feature_ptr[3] = 8;											// additional length = 8
-				feature_ptr[4] = 0x00;										// Logical Block Size:
-				feature_ptr[5] = 0x00;										//   2048 (0x800)
-				feature_ptr[6] = 0x08;										//
-				feature_ptr[7] = 0x00;										//
-				feature_ptr[8] = (16 >> 8);				// blocking
-				feature_ptr[9] = (16 & 0xFF);
-				feature_ptr[10] = (0 << 0); // PP = 0
-				feature_ptr[11] = 0;
-				feature_ptr += 12;
-			}
+      // Random Readable feature (feature 0x0010) (mmc4r05a.pdf, page 182)
+      if (start_feature <= 0x0010) {
+        feature_ptr[0] = 0x00; // Feature Code 0x010
+        feature_ptr[1] = 0x10;
+        feature_ptr[2] = (0 << 6) | (0 << 2) | (1 << 1) |
+                         (1 << 0);  // version 0, persistent = 1, current = 1
+        feature_ptr[3] = 8;         // additional length = 8
+        feature_ptr[4] = 0x00;      // Logical Block Size:
+        feature_ptr[5] = 0x00;      //   2048 (0x800)
+        feature_ptr[6] = 0x08;      //
+        feature_ptr[7] = 0x00;      //
+        feature_ptr[8] = (16 >> 8); // blocking
+        feature_ptr[9] = (16 & 0xFF);
+        feature_ptr[10] = (0 << 0); // PP = 0
+        feature_ptr[11] = 0;
+        feature_ptr += 12;
+      }
 
-			// CD Read feature (feature 0x001E) (mmc4r05a.pdf, page 185)
-			if (start_feature <= 0x001E)
-			{
-				feature_ptr[0] = 0x00; // Feature Code 0x01E
-				feature_ptr[1] = 0x1E;
-				feature_ptr[2] = (0 << 6) | (2 << 2) | (1 << 1) | (1 << 0); // version 2, persistent = 1, current = 1
-				feature_ptr[3] = 4;											// additional length = 4
-				feature_ptr[4] = (0 << 7) | (0 << 1) | (0 << 0);			// DAP = 0, C2 Flags = 0, CD-Text = 0
-				feature_ptr[5] = 0;
-				feature_ptr[6] = 0;
-				feature_ptr[7] = 0;
-				feature_ptr += 8;
-			}
+      // CD Read feature (feature 0x001E) (mmc4r05a.pdf, page 185)
+      if (start_feature <= 0x001E) {
+        feature_ptr[0] = 0x00; // Feature Code 0x01E
+        feature_ptr[1] = 0x1E;
+        feature_ptr[2] = (0 << 6) | (2 << 2) | (1 << 1) |
+                         (1 << 0); // version 2, persistent = 1, current = 1
+        feature_ptr[3] = 4;        // additional length = 4
+        feature_ptr[4] = (0 << 7) | (0 << 1) |
+                         (0 << 0); // DAP = 0, C2 Flags = 0, CD-Text = 0
+        feature_ptr[5] = 0;
+        feature_ptr[6] = 0;
+        feature_ptr[7] = 0;
+        feature_ptr += 8;
+      }
 
-			// Timeout feature (feature 0x0105) (mmc4r05a.pdf, page 222)
-			if (start_feature <= 0x0105)
-			{
-				feature_ptr[0] = 0x01; // Feature Code 0x105
-				feature_ptr[1] = 0x05;
-				feature_ptr[2] = (0 << 6) | (1 << 2) | (1 << 1) | (1 << 0); // version 1, persistent = 1, current = 1
-				feature_ptr[3] = 4;											// additional length = 4
-				feature_ptr[4] = (0 << 0);									// Group 3 = 0
-				feature_ptr[5] = 0;
-				feature_ptr[6] = 0;
-				feature_ptr[7] = 0;
-				feature_ptr += 8;
-			}
+      // Timeout feature (feature 0x0105) (mmc4r05a.pdf, page 222)
+      if (start_feature <= 0x0105) {
+        feature_ptr[0] = 0x01; // Feature Code 0x105
+        feature_ptr[1] = 0x05;
+        feature_ptr[2] = (0 << 6) | (1 << 2) | (1 << 1) |
+                         (1 << 0); // version 1, persistent = 1, current = 1
+        feature_ptr[3] = 4;        // additional length = 4
+        feature_ptr[4] = (0 << 0); // Group 3 = 0
+        feature_ptr[5] = 0;
+        feature_ptr[6] = 0;
+        feature_ptr[7] = 0;
+        feature_ptr += 8;
+      }
 
-			// update the return length
-			// The Data Length field indicates the amount of data available given a sufficient allocation length following this field.
-			// This length shall not be truncated due to an insufficient Allocation Length.
-			uint16_t return_length = (uint16_t)(feature_ptr - state.scsi.dati.data) - 4;
-			state.scsi.dati.data[0] = 0;
-			state.scsi.dati.data[1] = 0;
-			state.scsi.dati.data[2] = (return_length >> 8);
-			state.scsi.dati.data[3] = (return_length & 0xFF);
+      // update the return length
+      // The Data Length field indicates the amount of data available given a
+      // sufficient allocation length following this field. This length shall
+      // not be truncated due to an insufficient Allocation Length.
+      uint16_t return_length =
+          (uint16_t)(feature_ptr - state.scsi.dati.data) - 4;
+      state.scsi.dati.data[0] = 0;
+      state.scsi.dati.data[1] = 0;
+      state.scsi.dati.data[2] = (return_length >> 8);
+      state.scsi.dati.data[3] = (return_length & 0xFF);
 
-			/* Bochs used this because of ReactOS boot problems, but this should be in fact correct. */
-			state.scsi.dati.available = return_length + 4;
-			state.scsi.dati.read = 0;
-		}
-		else
-		{
-			do_scsi_error(SCSI_INVALID_FIELD);
-		}
-	}
-	break;
+      /* Bochs used this because of ReactOS boot problems, but this should be in
+       * fact correct. */
+      state.scsi.dati.available = return_length + 4;
+      state.scsi.dati.read = 0;
+    } else {
+      do_scsi_error(SCSI_INVALID_FIELD);
+    }
+  } break;
 
-	case SCSICMD_START_STOP_UNIT:
-		// Accept and ignore start/stop/eject requests (AXPbox workaround for
-		// guests that issue 0x1B against emulated disks).
+  case SCSICMD_START_STOP_UNIT:
+    // Accept and ignore start/stop/eject requests (AXPbox workaround for
+    // guests that issue 0x1B against emulated disks).
 #if defined(DEBUG_SCSI)
-		printf("%s: START STOP UNIT.\n", devid_string);
+    printf("%s: START STOP UNIT.\n", devid_string);
 #endif
-		do_scsi_error(SCSI_OK);
-		break;
+    do_scsi_error(SCSI_OK);
+    break;
 
-	case SCSICMD_MODE_SENSE:
-	case SCSICMD_MODE_SENSE_10:
+  case SCSICMD_MODE_SENSE:
+  case SCSICMD_MODE_SENSE_10:
 #if defined(DEBUG_SCSI)
-		printf("%s: MODE SENSE.\n", devid_string);
+    printf("%s: MODE SENSE.\n", devid_string);
 #endif
-		{
-			int num_blk_desc = 1;
+    {
+      int num_blk_desc = 1;
 
-			if (state.scsi.cmd.data[0] == SCSICMD_MODE_SENSE)
-			{
-				q = 4;
-				retlen = state.scsi.cmd.data[4];
-				state.scsi.dati.data[0] = retlen; // mode data length
-				state.scsi.dati.data[1] = cdrom() ? 0x01 : 0x00;  // medium type (120 mm data for CD-ROM)
-				state.scsi.dati.data[2] = 0x00; // device specific parameter
-				state.scsi.dati.data[3] = 8 * num_blk_desc;       // block descriptor length: 1 page (?)
-			}
-			else
-			{
-				q = 8;
-				retlen = state.scsi.cmd.data[7] * 256 + state.scsi.cmd.data[8];
-				state.scsi.dati.data[0] = (u8)(retlen >> 8);     // mode data length
-				state.scsi.dati.data[1] = (u8)retlen;
-				state.scsi.dati.data[2] = cdrom() ? 0x01 : 0x00;  // medium type (120 mm data for CD-ROM)
-				state.scsi.dati.data[3] = 0x00; // device specific parameter
-				state.scsi.dati.data[4] = 0x00; // reserved
-				state.scsi.dati.data[5] = 0x00; // reserved
-				state.scsi.dati.data[6] = (u8)((8 * num_blk_desc) >> 8); //  block descriptor length: 1 page (?)
-				state.scsi.dati.data[7] = (u8)(8 * num_blk_desc);
-			}
+      if (state.scsi.cmd.data[0] == SCSICMD_MODE_SENSE) {
+        q = 4;
+        retlen = state.scsi.cmd.data[4];
+        state.scsi.dati.data[0] = retlen; // mode data length
+        state.scsi.dati.data[1] =
+            cdrom() ? 0x01 : 0x00;      // medium type (120 mm data for CD-ROM)
+        state.scsi.dati.data[2] = 0x00; // device specific parameter
+        state.scsi.dati.data[3] =
+            8 * num_blk_desc; // block descriptor length: 1 page (?)
+      } else {
+        q = 8;
+        retlen = state.scsi.cmd.data[7] * 256 + state.scsi.cmd.data[8];
+        state.scsi.dati.data[0] = (u8)(retlen >> 8); // mode data length
+        state.scsi.dati.data[1] = (u8)retlen;
+        state.scsi.dati.data[2] =
+            cdrom() ? 0x01 : 0x00;      // medium type (120 mm data for CD-ROM)
+        state.scsi.dati.data[3] = 0x00; // device specific parameter
+        state.scsi.dati.data[4] = 0x00; // reserved
+        state.scsi.dati.data[5] = 0x00; // reserved
+        state.scsi.dati.data[6] =
+            (u8)((8 * num_blk_desc) >>
+                 8); //  block descriptor length: 1 page (?)
+        state.scsi.dati.data[7] = (u8)(8 * num_blk_desc);
+      }
 
-			if ((state.scsi.cmd.data[2] & 0xc0) > 0x40)
-			{
-				FAILURE_2(NotImplemented, "%s: mode sense, cmd[2] = 0x%02x.\n",
-					devid_string, state.scsi.cmd.data[2]);
-			}
+      if ((state.scsi.cmd.data[2] & 0xc0) > 0x40) {
+        FAILURE_2(NotImplemented, "%s: mode sense, cmd[2] = 0x%02x.\n",
+                  devid_string, state.scsi.cmd.data[2]);
+      }
 
-			bool  changeable = ((state.scsi.cmd.data[2] & 0xc0) == 0x40);
+      bool changeable = ((state.scsi.cmd.data[2] & 0xc0) == 0x40);
 
-			//  Return data:
-			if (retlen > DATI_BUFSZ)
-			{
-				printf("%s: read too big (%d)\n", devid_string, retlen);
-				do_scsi_error(SCSI_TOO_BIG);
-				break;
-			}
+      //  Return data:
+      if (retlen > DATI_BUFSZ) {
+        printf("%s: read too big (%d)\n", devid_string, retlen);
+        do_scsi_error(SCSI_TOO_BIG);
+        break;
+      }
 
-			state.scsi.dati.read = 0;
-			state.scsi.dati.available = retlen; //  Restore size.
-			pagecode = state.scsi.cmd.data[2] & 0x3f;
+      state.scsi.dati.read = 0;
+      state.scsi.dati.available = retlen; //  Restore size.
+      pagecode = state.scsi.cmd.data[2] & 0x3f;
 
-			//printf("[ MODE SENSE pagecode=%i ]\n", pagecode);
-			state.scsi.dati.data[q++] = 0x00;   //  density code
-			state.scsi.dati.data[q++] = 0;      //  nr of blocks, high (0 = all remaining blocks)
-			state.scsi.dati.data[q++] = 0;      //  nr of blocks, mid
-			state.scsi.dati.data[q++] = 0;      //  nr of blocks, low
-			state.scsi.dati.data[q++] = 0x00;   //  reserved
-			state.scsi.dati.data[q++] = (u8)(get_block_size() >> 16) & 255;
-			state.scsi.dati.data[q++] = (u8)(get_block_size() >> 8) & 255;
-			state.scsi.dati.data[q++] = (u8)(get_block_size() >> 0) & 255;
+      // printf("[ MODE SENSE pagecode=%i ]\n", pagecode);
+      state.scsi.dati.data[q++] = 0x00; //  density code
+      state.scsi.dati.data[q++] =
+          0; //  nr of blocks, high (0 = all remaining blocks)
+      state.scsi.dati.data[q++] = 0;    //  nr of blocks, mid
+      state.scsi.dati.data[q++] = 0;    //  nr of blocks, low
+      state.scsi.dati.data[q++] = 0x00; //  reserved
+      state.scsi.dati.data[q++] = (u8)(get_block_size() >> 16) & 255;
+      state.scsi.dati.data[q++] = (u8)(get_block_size() >> 8) & 255;
+      state.scsi.dati.data[q++] = (u8)(get_block_size() >> 0) & 255;
 
-			for (unsigned int x1 = q; x1 < retlen; x1++)
-				state.scsi.dati.data[x1] = 0;
+      for (unsigned int x1 = q; x1 < retlen; x1++)
+        state.scsi.dati.data[x1] = 0;
 
-			do_scsi_error(SCSI_OK);
+      do_scsi_error(SCSI_OK);
 
-			// Page 0x3F = return every mode page the device supports (SPC).
-			// Concatenate the implemented pages after the header + block
-			// descriptor and report the real mode data length; the buffer past
-			// them is already zero-padded to the allocation length we return.
-			if (pagecode == 0x3f)
-			{
-				q = mode_sense_page(SCSIMP_READ_WRITE_ERRREC, changeable, q);
-				if (!cdrom())
-				{
-					q = mode_sense_page(SCSIMP_FORMAT_PARAMS, changeable, q);
-					q = mode_sense_page(SCSIMP_RIGID_GEOMETRY, changeable, q);
-				}
-				q = mode_sense_page(SCSIMP_CACHING, changeable, q);
-				q = mode_sense_page(SCSIMP_INFO_EXCEPTIONS, changeable, q);
-				if (cdrom())
-					q = mode_sense_page(SCSIMP_CDROM_CAP, changeable, q);
+      // Page 0x3F = return every mode page the device supports (SPC).
+      // Concatenate the implemented pages after the header + block
+      // descriptor and report the real mode data length; the buffer past
+      // them is already zero-padded to the allocation length we return.
+      if (pagecode == 0x3f) {
+        q = mode_sense_page(SCSIMP_READ_WRITE_ERRREC, changeable, q);
+        if (!cdrom()) {
+          q = mode_sense_page(SCSIMP_FORMAT_PARAMS, changeable, q);
+          q = mode_sense_page(SCSIMP_RIGID_GEOMETRY, changeable, q);
+        }
+        q = mode_sense_page(SCSIMP_CACHING, changeable, q);
+        q = mode_sense_page(SCSIMP_INFO_EXCEPTIONS, changeable, q);
+        if (cdrom())
+          q = mode_sense_page(SCSIMP_CDROM_CAP, changeable, q);
 
-				if (state.scsi.cmd.data[0] == SCSICMD_MODE_SENSE)
-					state.scsi.dati.data[0] = (u8)(q - 1);
-				else
-				{
-					state.scsi.dati.data[0] = (u8)((q - 2) >> 8);
-					state.scsi.dati.data[1] = (u8)(q - 2);
-				}
-				break;
-			}
+        if (state.scsi.cmd.data[0] == SCSICMD_MODE_SENSE)
+          state.scsi.dati.data[0] = (u8)(q - 1);
+        else {
+          state.scsi.dati.data[0] = (u8)((q - 2) >> 8);
+          state.scsi.dati.data[1] = (u8)(q - 2);
+        }
+        break;
+      }
 
-			//  descriptors, 8 bytes (each)
-			//  page, n bytes (each)
-			switch (pagecode)
-			{
-			case SCSIMP_VENDOR: // vendor specific
-				//  TODO: Nothing here?
-				break;
+      //  descriptors, 8 bytes (each)
+      //  page, n bytes (each)
+      switch (pagecode) {
+      case SCSIMP_VENDOR: // vendor specific
+        //  TODO: Nothing here?
+        break;
 
-			case SCSIMP_READ_WRITE_ERRREC:        //  read-write error recovery page
-				state.scsi.dati.data[q + 0] = pagecode;
-				state.scsi.dati.data[q + 1] = 10;
-				break;
+      case SCSIMP_READ_WRITE_ERRREC: //  read-write error recovery page
+        state.scsi.dati.data[q + 0] = pagecode;
+        state.scsi.dati.data[q + 1] = 10;
+        break;
 
-			case SCSIMP_FORMAT_PARAMS:            //  format device page
-				state.scsi.dati.data[q + 0] = pagecode;
-				state.scsi.dati.data[q + 1] = 22;
-				if (!changeable)
-				{
+      case SCSIMP_FORMAT_PARAMS: //  format device page
+        state.scsi.dati.data[q + 0] = pagecode;
+        state.scsi.dati.data[q + 1] = 22;
+        if (!changeable) {
 
-					//  10,11 = sectors per track
-					state.scsi.dati.data[q + 10] = 0;
-					state.scsi.dati.data[q + 11] = (u8)get_sectors();
+          //  10,11 = sectors per track
+          state.scsi.dati.data[q + 10] = 0;
+          state.scsi.dati.data[q + 11] = (u8)get_sectors();
 
-					//  12,13 = physical sector size
-					state.scsi.dati.data[q + 12] = (u8)(get_block_size() >> 8) & 255;
-					state.scsi.dati.data[q + 13] = (u8)(get_block_size() >> 0) & 255;
-				}
-				break;
+          //  12,13 = physical sector size
+          state.scsi.dati.data[q + 12] = (u8)(get_block_size() >> 8) & 255;
+          state.scsi.dati.data[q + 13] = (u8)(get_block_size() >> 0) & 255;
+        }
+        break;
 
-			case SCSIMP_RIGID_GEOMETRY:           //  rigid disk geometry page
-				state.scsi.dati.data[q + 0] = pagecode;
-				state.scsi.dati.data[q + 1] = 22;
-				if (!changeable)
-				{
-					state.scsi.dati.data[q + 2] = (u8)(get_cylinders() >> 16) & 255;
-					state.scsi.dati.data[q + 3] = (u8)(get_cylinders() >> 8) & 255;
-					state.scsi.dati.data[q + 4] = (u8)get_cylinders() & 255;
-					state.scsi.dati.data[q + 5] = (u8)get_heads();
+      case SCSIMP_RIGID_GEOMETRY: //  rigid disk geometry page
+        state.scsi.dati.data[q + 0] = pagecode;
+        state.scsi.dati.data[q + 1] = 22;
+        if (!changeable) {
+          state.scsi.dati.data[q + 2] = (u8)(get_cylinders() >> 16) & 255;
+          state.scsi.dati.data[q + 3] = (u8)(get_cylinders() >> 8) & 255;
+          state.scsi.dati.data[q + 4] = (u8)get_cylinders() & 255;
+          state.scsi.dati.data[q + 5] = (u8)get_heads();
 
-					//rpms
-					state.scsi.dati.data[q + 20] = (7200 >> 8) & 255;
-					state.scsi.dati.data[q + 21] = 7200 & 255;
-				}
-				break;
+          // rpms
+          state.scsi.dati.data[q + 20] = (7200 >> 8) & 255;
+          state.scsi.dati.data[q + 21] = 7200 & 255;
+        }
+        break;
 
-			case SCSIMP_FLEX_PARAMS:              //  flexible disk page
-				if (cdrom())
-				{
-					FAILURE_1(NotImplemented,
-						"%s: CD-ROM write parameter page not implemented.\n", devid_string);
-				}
+      case SCSIMP_FLEX_PARAMS: //  flexible disk page
+        if (cdrom()) {
+          FAILURE_1(NotImplemented,
+                    "%s: CD-ROM write parameter page not implemented.\n",
+                    devid_string);
+        }
 
-				state.scsi.dati.data[q + 0] = pagecode;
-				state.scsi.dati.data[q + 1] = 0x1e; // length
-				if (!changeable)
-				{
+        state.scsi.dati.data[q + 0] = pagecode;
+        state.scsi.dati.data[q + 1] = 0x1e; // length
+        if (!changeable) {
 
-					//  2,3 = transfer rate
-					state.scsi.dati.data[q + 2] = ((5000) >> 8) & 255;
-					state.scsi.dati.data[q + 3] = (5000) & 255;
+          //  2,3 = transfer rate
+          state.scsi.dati.data[q + 2] = ((5000) >> 8) & 255;
+          state.scsi.dati.data[q + 3] = (5000) & 255;
 
-					state.scsi.dati.data[q + 4] = (u8)get_heads();
-					state.scsi.dati.data[q + 5] = (u8)get_sectors();
+          state.scsi.dati.data[q + 4] = (u8)get_heads();
+          state.scsi.dati.data[q + 5] = (u8)get_sectors();
 
-					//  6,7 = data bytes per sector
-					state.scsi.dati.data[q + 6] = (u8)(get_block_size() >> 8) & 255;
-					state.scsi.dati.data[q + 7] = (u8)(get_block_size() >> 0) & 255;
+          //  6,7 = data bytes per sector
+          state.scsi.dati.data[q + 6] = (u8)(get_block_size() >> 8) & 255;
+          state.scsi.dati.data[q + 7] = (u8)(get_block_size() >> 0) & 255;
 
-					state.scsi.dati.data[q + 8] = (u8)(get_cylinders() >> 8) & 255;
-					state.scsi.dati.data[q + 9] = (u8)get_cylinders() & 255;
+          state.scsi.dati.data[q + 8] = (u8)(get_cylinders() >> 8) & 255;
+          state.scsi.dati.data[q + 9] = (u8)get_cylinders() & 255;
 
-					//rpms
-					state.scsi.dati.data[q + 28] = (7200 >> 8) & 255;
-					state.scsi.dati.data[q + 29] = 7200 & 255;
-				}
-				break;
+          // rpms
+          state.scsi.dati.data[q + 28] = (7200 >> 8) & 255;
+          state.scsi.dati.data[q + 29] = 7200 & 255;
+        }
+        break;
 
-			case SCSIMP_CACHING:  // Caching page
-				state.scsi.dati.data[q + 0] = pagecode; // page code
-				state.scsi.dati.data[q + 1] = 0x12;     // page length
-				if (!changeable)
-				{
+      case SCSIMP_CACHING:                      // Caching page
+        state.scsi.dati.data[q + 0] = pagecode; // page code
+        state.scsi.dati.data[q + 1] = 0x12;     // page length
+        if (!changeable) {
 
-					// 2 = IC,ABPF,CAP,DISC,SIZE,WCE,MF,RCD
-					//     |  |    |   |    |    |   |  +- read cache disable (0=no)
-					//     |  |    |   |    |    |   +---- multiplication factor (0=block)
-					//     |  |    |   |    |    +-------- write cache enable (0=no cache)
-					//     |  |    |   |    +------------- use cache segment size (0=no)
-					//     |  |    |   +------------------ prefetch across cyls (1=yes)
-					//     |  |    +---------------------- cache analysis (0=drive)
-					//     |  +--------------------------- abort prefetch (1=abrt on cmd)
-					//     +------------------------------ initiator control (0=drive)
-					state.scsi.dati.data[q + 2] = 0x0a;
+          // 2 = IC,ABPF,CAP,DISC,SIZE,WCE,MF,RCD
+          //     |  |    |   |    |    |   |  +- read cache disable (0=no)
+          //     |  |    |   |    |    |   +---- multiplication factor (0=block)
+          //     |  |    |   |    |    +-------- write cache enable (0=no cache)
+          //     |  |    |   |    +------------- use cache segment size (0=no)
+          //     |  |    |   +------------------ prefetch across cyls (1=yes)
+          //     |  |    +---------------------- cache analysis (0=drive)
+          //     |  +--------------------------- abort prefetch (1=abrt on cmd)
+          //     +------------------------------ initiator control (0=drive)
+          state.scsi.dati.data[q + 2] = 0x0a;
 
-					state.scsi.dati.data[q + 3] = 0;      // read/write cache retention
-					state.scsi.dati.data[q + 4] = 0x00;   // disable prefetch
-					state.scsi.dati.data[q + 5] = 0x00;   // for req's greater than this
-					state.scsi.dati.data[q + 6] = 0;      // minimum prefetch
-					state.scsi.dati.data[q + 7] = 0;
+          state.scsi.dati.data[q + 3] = 0;    // read/write cache retention
+          state.scsi.dati.data[q + 4] = 0x00; // disable prefetch
+          state.scsi.dati.data[q + 5] = 0x00; // for req's greater than this
+          state.scsi.dati.data[q + 6] = 0;    // minimum prefetch
+          state.scsi.dati.data[q + 7] = 0;
 
-					state.scsi.dati.data[q + 8] = 0;      // maximum prefetch
-					state.scsi.dati.data[q + 9] = 0;
+          state.scsi.dati.data[q + 8] = 0; // maximum prefetch
+          state.scsi.dati.data[q + 9] = 0;
 
-					state.scsi.dati.data[q + 10] = 0;     // maximum prefetch ceiling
-					state.scsi.dati.data[q + 11] = 0;
+          state.scsi.dati.data[q + 10] = 0; // maximum prefetch ceiling
+          state.scsi.dati.data[q + 11] = 0;
 
-					state.scsi.dati.data[q + 12] = 0;
-					state.scsi.dati.data[q + 13] = 0;     // # cache segments
-					state.scsi.dati.data[q + 14] = 0;     // cache segement size
-					state.scsi.dati.data[q + 15] = 0;
+          state.scsi.dati.data[q + 12] = 0;
+          state.scsi.dati.data[q + 13] = 0; // # cache segments
+          state.scsi.dati.data[q + 14] = 0; // cache segement size
+          state.scsi.dati.data[q + 15] = 0;
 
-					state.scsi.dati.data[q + 16] = 0;     // reserved
-					state.scsi.dati.data[q + 17] = 0;     // non-cache segement size
-					state.scsi.dati.data[q + 18] = 0;
-					state.scsi.dati.data[q + 19] = 0;
-				}
-				break;
+          state.scsi.dati.data[q + 16] = 0; // reserved
+          state.scsi.dati.data[q + 17] = 0; // non-cache segement size
+          state.scsi.dati.data[q + 18] = 0;
+          state.scsi.dati.data[q + 19] = 0;
+        }
+        break;
 
-			case SCSIMP_INFO_EXCEPTIONS:  // informational exceptions control (IEC)
-				state.scsi.dati.data[q + 0] = pagecode;
-				state.scsi.dati.data[q + 1] = 0x0a;   // length
-				// Body left zero: DEXCPT=0, MRIE=0 (no informational-exception
-				// reporting). A valid, benign page so 0x1C no longer rejects.
-				break;
+      case SCSIMP_INFO_EXCEPTIONS: // informational exceptions control (IEC)
+        state.scsi.dati.data[q + 0] = pagecode;
+        state.scsi.dati.data[q + 1] = 0x0a; // length
+        // Body left zero: DEXCPT=0, MRIE=0 (no informational-exception
+        // reporting). A valid, benign page so 0x1C no longer rejects.
+        break;
 
-			case SCSIMP_CDROM_CAP:  // CD-ROM capabilities
-				state.scsi.dati.data[q + 0] = pagecode;
-				state.scsi.dati.data[q + 1] = 0x14;   // length
-				if (!changeable)
-				{
-					state.scsi.dati.data[q + 2] = 0x03; // read CD-R/CD-RW
-					state.scsi.dati.data[q + 3] = 0x00; // no write
-					state.scsi.dati.data[q + 4] = 0x00; // dvd/audio capabilities
-					state.scsi.dati.data[q + 5] = 0x00; // cd-da capabilities
-					state.scsi.dati.data[q + 6] = state.scsi.locked ? 0x23 : 0x21;  // tray-loader
-					state.scsi.dati.data[q + 7] = 0x00;
-					state.scsi.dati.data[q + 8] = (u8)(2800 >> 8);   // max read speed in kBps (2.8Mbps = 16x)
-					state.scsi.dati.data[q + 9] = (u8)(2800 >> 0);
-					state.scsi.dati.data[q + 10] = (u8)(0 >> 8);     // number of volume levels
-					state.scsi.dati.data[q + 11] = (u8)(0 >> 0);
-					state.scsi.dati.data[q + 12] = (u8)(64 >> 8);    // buffer size in KBytes
-					state.scsi.dati.data[q + 13] = (u8)(64 >> 0);
-					state.scsi.dati.data[q + 14] = (u8)(2800 >> 8);  // current read speed
-					state.scsi.dati.data[q + 15] = (u8)(2800 >> 0);
-					state.scsi.dati.data[q + 16] = 0; // reserved
-					state.scsi.dati.data[q + 17] = 0; // digital output format
-					state.scsi.dati.data[q + 18] = (u8)(0 >> 8); // max write speed
-					state.scsi.dati.data[q + 19] = (u8)(0 >> 0);
-					state.scsi.dati.data[q + 20] = (u8)(0 >> 8); // current write speed
-					state.scsi.dati.data[q + 21] = (u8)(0 >> 0);
-				}
-				break;
+      case SCSIMP_CDROM_CAP: // CD-ROM capabilities
+        state.scsi.dati.data[q + 0] = pagecode;
+        state.scsi.dati.data[q + 1] = 0x14; // length
+        if (!changeable) {
+          state.scsi.dati.data[q + 2] = 0x03; // read CD-R/CD-RW
+          state.scsi.dati.data[q + 3] = 0x00; // no write
+          state.scsi.dati.data[q + 4] = 0x00; // dvd/audio capabilities
+          state.scsi.dati.data[q + 5] = 0x00; // cd-da capabilities
+          state.scsi.dati.data[q + 6] =
+              state.scsi.locked ? 0x23 : 0x21; // tray-loader
+          state.scsi.dati.data[q + 7] = 0x00;
+          state.scsi.dati.data[q + 8] =
+              (u8)(2800 >> 8); // max read speed in kBps (2.8Mbps = 16x)
+          state.scsi.dati.data[q + 9] = (u8)(2800 >> 0);
+          state.scsi.dati.data[q + 10] =
+              (u8)(0 >> 8); // number of volume levels
+          state.scsi.dati.data[q + 11] = (u8)(0 >> 0);
+          state.scsi.dati.data[q + 12] = (u8)(64 >> 8); // buffer size in KBytes
+          state.scsi.dati.data[q + 13] = (u8)(64 >> 0);
+          state.scsi.dati.data[q + 14] = (u8)(2800 >> 8); // current read speed
+          state.scsi.dati.data[q + 15] = (u8)(2800 >> 0);
+          state.scsi.dati.data[q + 16] = 0;            // reserved
+          state.scsi.dati.data[q + 17] = 0;            // digital output format
+          state.scsi.dati.data[q + 18] = (u8)(0 >> 8); // max write speed
+          state.scsi.dati.data[q + 19] = (u8)(0 >> 0);
+          state.scsi.dati.data[q + 20] = (u8)(0 >> 8); // current write speed
+          state.scsi.dati.data[q + 21] = (u8)(0 >> 0);
+        }
+        break;
 
-			default:
-				// SPC: an unsupported page in MODE SENSE returns CHECK CONDITION
-				// with sense ILLEGAL REQUEST / INVALID FIELD IN CDB. Drivers
-				// (Win2K cdrom.sys/atapi.sys among them) probe optional pages
-				// via this exact mechanism — the error path is the contract.
-				printf("%s: MODE_SENSE page 0x%02x unsupported -> INVALID FIELD IN CDB\n",
-					devid_string, pagecode);
-				do_scsi_error(SCSI_INVALID_FIELD);
-				return 0;
-			}
-
-#if defined(DEBUG_SCSI)
-			printf("%s: Returning data: ", devid_string);
-			for (unsigned int x1 = 0; x1 < q + 30; x1++)
-				printf("%02x ", state.scsi.dati.data[x1]);
-			printf("\n");
-#endif
-		}
-		break;
-
-		// NetBSD wants this.... who else wants it I wonder? We'll give it to 'em!
-	case SCSICMD_MAINTENANCE_IN:  // REPORT SUPPORTED OPERATION CODES lives here (SA=0x0C)
-	{
-#if defined(DEBUG_SCSI)
-		printf("%s: MAINTENANCE IN.\n", devid_string);
-#endif
-		const u8  sa = state.scsi.cmd.data[1];
-		const u8  rctd = (state.scsi.cmd.data[2] >> 7) & 1; // request Command Timeouts Desc
-		const u8  ropt = (state.scsi.cmd.data[2] & 0x07);   // reporting options
-		const u8  req_op = state.scsi.cmd.data[3];          // requested opcode
-		const u16 req_sa = (u16(state.scsi.cmd.data[4]) << 8) | state.scsi.cmd.data[5];
-		const u32 alloc = (u32(state.scsi.cmd.data[6]) << 24) |
-			(u32(state.scsi.cmd.data[7]) << 16) |
-			(u32(state.scsi.cmd.data[8]) << 8) |
-			(u32(state.scsi.cmd.data[9]) << 0);
-
-		if (sa != 0x0C) {                 // Only RSOC is implemented
-			do_scsi_error(SCSI_ILL_CMD);  // invalid operation code (service action)
-			break;
-
-		}
-
-		// Convenience shorthands
-		u8* p = state.scsi.dati.data;
-		auto finish_ok = [&](u32 nbytes) {
-			state.scsi.dati.read = 0;
-			state.scsi.dati.available = (alloc < nbytes) ? alloc : nbytes;
-			do_scsi_error(SCSI_OK);
-			};
-
-		// ---- Reporting options ----
-		if (ropt == 0x00) {
-			// ---- all_commands ----
-				// Small, accurate list of commands we actually implement.
-			struct Desc { u8 op; u16 cdb_len; u16 svc; };
-			static const Desc kCmds[] = {
-			{0x00,  6, 0}, // TEST UNIT READY
-			{0x03,  6, 0}, // REQUEST SENSE
-			{0x12,  6, 0}, // INQUIRY
-			{0x1A,  6, 0}, // MODE SENSE(6)
-			{0x25, 10, 0}, // READ CAPACITY(10)
-			{0x28, 10, 0}, // READ(10)
-			{0x2A, 10, 0}, // WRITE(10)
-			{0x2F, 10, 0}, // VERIFY(10)
-			{0x35, 10, 0}, // SYNCHRONIZE CACHE(10)
-			{0x5A, 10, 0}, // MODE SENSE(10)
-			{0xA8, 12, 0}, // READ(12)
-			{0xAA, 12, 0}, // WRITE(12)
-			{0x3E,  6, 0}, // READ LONG
-			};
-			const u32 n = (u32)(sizeof(kCmds) / sizeof(kCmds[0]));
-			const u32 desc_len = rctd ? (8 + 12) : 8;   // Table 166 (+ Table 171 when RCTD=1)
-			const u32 payload = n * desc_len;
-
-			// Header: 4-byte COMMAND DATA LENGTH (size of descriptors only)
-			put_be32(p, payload); p += 4;
-
-			for (u32 i = 0; i < n; ++i) {
-				const Desc& d = kCmds[i];
-				p[0] = d.op;  p[1] = 0;                 // opcode, reserved
-				put_be16(p + 2, d.svc);                 // service action (0 for non-SA)
-				p[4] = 0;
-				// flags: [5]=reserved [4]=RWCDLP [3]=MLU [2]=CDLP [1]=CTDP [0]=SERVACTV
-				p[5] = rctd ? 0x02 : 0x00;              // set CTDP when including descriptor
-				put_be16(p + 6, d.cdb_len);             // CDB length
-				p += 8;
-				if (rctd) {
-					// Command Timeouts descriptor (Table 171) - all zeros is fine
-					put_be16(p + 0, 0x000A); // descriptor length (10h bytes after the length)
-					p[2] = 0x00;             // reserved
-					p[3] = 0x00;             // command specific
-					memset(p + 4, 0x00, 8);  // nominal + recommended timeouts
-					p += 12;
-
-				}
-
-			}
-			finish_ok((u32)(p - state.scsi.dati.data));
-			break;
-		}
-
-		if (ropt == 0x01) {
-			// ---- one_command (non-SA only) ----
-			if (opcode_has_service_actions(req_op)) {
-				do_scsi_error(SCSI_INVALID_FIELD);  // spec mandates INVALID FIELD IN CDB here
-				break;
-			}
-			const int cdb_len = cdb_len_for_opcode(req_op);
-
-			// Byte 0..1: flags (RWCDLP=0) and CTDP/MLU/CDLP/SUPPORT
-			p[0] = 0x00;              // RWCDLP=0
-			p[1] = 0x00;              // CTDP=0, MLU=0, CDLP=0
-			p[1] |= 0x03;             // SUPPORT=011b ("supported") by default
-			if (cdb_len < 0) {
-				p[1] = (p[1] & ~0x07) | 0x01; // SUPPORT=001b ("not supported")
-				finish_ok(2);                 // bytes after 1 are undefined when not supported
-				break;
-
-			}
-			put_be16(p + 2, (u16)cdb_len);    // CDB SIZE
-			// CDB USAGE DATA: set opcode, everything else 0 (conservative)
-			memset(p + 4, 0x00, (size_t)cdb_len);
-			p[4] = req_op;                    // first byte is the opcode
-			p += 4 + cdb_len;
-
-			// (Optional) include a zeroed timeouts descriptor when requested
-			if (rctd) {
-				p[-(int)0] = p[-(int)0]; // no-op to keep style
-				put_be16(p + 0, 0x000A);
-				p[2] = 0x00; p[3] = 0x00;
-				memset(p + 4, 0x00, 8);
-				p += 12;
-				// Reflect presence via CTDP bit
-				state.scsi.dati.data[1] |= 0x80; // CTDP=1
-
-			}
-			finish_ok((u32)(p - state.scsi.dati.data));
-			break;
-		}
-
-		if (ropt == 0x02) {
-			// ---- one_service_action (opcode MUST have SA) ----
-			if (!opcode_has_service_actions(req_op)) {
-				do_scsi_error(SCSI_INVALID_FIELD);  // opcode without SAs -> INVALID FIELD
-				break;
-			}
-			// We don’t actually implement any SA-coded commands -> say "not supported"
-			p[0] = 0x00;
-			p[1] = (0x01);              // SUPPORT=001b (not supported)
-			finish_ok(2);
-			break;
-		}
-
-		if (ropt == 0x03) {
-			// ---- either: SA if present, otherwise no-SA with SA==0 ----
-			if (opcode_has_service_actions(req_op)) {
-				// We don't support any SA variants -> NOT SUPPORTED (no CHECK CONDITION here)
-				p[0] = 0x00; p[1] = 0x01;     // SUPPORT=001b
-				finish_ok(2);
-				break;
-			}
-			else {
-				// Treat as one_command for a non-SA opcode; REQUESTED SA must be 0
-				if (req_sa != 0) {
-					p[0] = 0x00; p[1] = 0x01; // NOT SUPPORTED (per 3.37.3 for 011b)
-					finish_ok(2);
-					break;
-				}
-				const int cdb_len = cdb_len_for_opcode(req_op);
-				p[0] = 0x00; p[1] = 0x03;    // SUPPORT=011b (supported)
-				if (cdb_len < 0) {
-					p[1] = 0x01;             // not supported
-					finish_ok(2);
-					break;
-				}
-				put_be16(p + 2, (u16)cdb_len);
-				memset(p + 4, 0x00, (size_t)cdb_len);
-				p[4] = req_op;
-				p += 4 + cdb_len;
-				if (rctd) {
-					put_be16(p + 0, 0x000A);
-					p[2] = 0x00; p[3] = 0x00;
-					memset(p + 4, 0x00, 8);
-					p += 12;
-					state.scsi.dati.data[1] |= 0x80; // CTDP=1
-				}
-				finish_ok((u32)(p - state.scsi.dati.data));
-				break;
-			}
-		}
-
-		// All other reporting options are reserved
-		do_scsi_error(SCSI_INVALID_FIELD);
-		break;
-	}
-
-	case SCSICMD_PREVENT_ALLOW_REMOVE:
-		if (state.scsi.cmd.data[4] & 1)
-		{
-			state.scsi.locked = true;
-#if defined(DEBUG_SCSI)
-			printf("%s: PREVENT MEDIA REMOVAL.\n", devid_string);
-#endif
-		}
-		else
-		{
-			state.scsi.locked = false;
-#if defined(DEBUG_SCSI)
-			printf("%s: ALLOW MEDIA REMOVAL.\n", devid_string);
-#endif
-		}
-
-		do_scsi_error(SCSI_OK);
-		break;
-
-	case SCSICMD_MODE_SELECT:
-	case SCSICMD_MODE_SELECT_10:
-	{
-		const bool mode_select_10 = (state.scsi.cmd.data[0] == SCSICMD_MODE_SELECT_10);
-		state.scsi.dato.expected = mode_select_10 ?
-			((state.scsi.cmd.data[7] << 8) | state.scsi.cmd.data[8]) :
-			state.scsi.cmd.data[4];
-
-		if (state.scsi.dato.expected > DATO_BUFSZ)
-		{
-			printf("%s: mode select too big (%d)\n", devid_string, state.scsi.dato.expected);
-			do_scsi_error(SCSI_TOO_BIG);
-			break;
-		}
-
-		// get data out first...
-		if (state.scsi.dato.written < state.scsi.dato.expected)
-			return 2;
+      default:
+        // SPC: an unsupported page in MODE SENSE returns CHECK CONDITION
+        // with sense ILLEGAL REQUEST / INVALID FIELD IN CDB. Drivers
+        // (Win2K cdrom.sys/atapi.sys among them) probe optional pages
+        // via this exact mechanism — the error path is the contract.
+        printf(
+            "%s: MODE_SENSE page 0x%02x unsupported -> INVALID FIELD IN CDB\n",
+            devid_string, pagecode);
+        do_scsi_error(SCSI_INVALID_FIELD);
+        return 0;
+      }
 
 #if defined(DEBUG_SCSI)
-		printf("%s: MODE SELECT%s.\n", devid_string, mode_select_10 ? " (10)" : "");
-		printf("Data: ");
-		for (unsigned int x = 0; x < state.scsi.dato.written; x++)
-			printf("%02x ", state.scsi.dato.data[x]);
-		printf("\n");
+      printf("%s: Returning data: ", devid_string);
+      for (unsigned int x1 = 0; x1 < q + 30; x1++)
+        printf("%02x ", state.scsi.dati.data[x1]);
+      printf("\n");
 #endif
+    }
+    break;
 
-		bool block_size_updated = false;
-		if (!mode_select_10)
-		{
-			if (state.scsi.dato.written == 12
-				&& state.scsi.dato.data[0] == 0x00         // data length
-				//&& state.scsi.dato.data[1] == 0x05 // medium type - ignore
-				&& state.scsi.dato.data[2] == 0x00         // dev. specific
-				&& state.scsi.dato.data[3] == 0x08         // block descriptor length
-				&& state.scsi.dato.data[4] == 0x00         // density code
-				&& state.scsi.dato.data[5] == 0x00         // all blocks
-				&& state.scsi.dato.data[6] == 0x00         // all blocks
-				&& state.scsi.dato.data[7] == 0x00         // all blocks
-				&& state.scsi.dato.data[8] == 0x00)        // reserved
-			{
-				set_block_size((state.scsi.dato.data[9] << 16) |
-					(state.scsi.dato.data[10] << 8) | state.scsi.dato.data[11]);
-				block_size_updated = true;
-			}
-		}
-		else
-		{
-			if (state.scsi.dato.written >= 16
-				&& state.scsi.dato.data[0] == 0x00         // mode data length MSB/reserved
-				&& state.scsi.dato.data[1] == 0x00         // mode data length LSB/reserved
-				//&& state.scsi.dato.data[2] == 0x05 // medium type - ignore
-				&& state.scsi.dato.data[3] == 0x00         // dev. specific
-				&& state.scsi.dato.data[4] == 0x00         // reserved
-				&& state.scsi.dato.data[5] == 0x00         // reserved
-				&& state.scsi.dato.data[6] == 0x00         // block descriptor length MSB
-				&& state.scsi.dato.data[7] == 0x08         // block descriptor length LSB
-				&& state.scsi.dato.data[8] == 0x00         // density code
-				&& state.scsi.dato.data[9] == 0x00         // all blocks
-				&& state.scsi.dato.data[10] == 0x00        // all blocks
-				&& state.scsi.dato.data[11] == 0x00        // all blocks
-				&& state.scsi.dato.data[12] == 0x00)       // reserved
-			{
-				set_block_size((state.scsi.dato.data[13] << 16) |
-					(state.scsi.dato.data[14] << 8) | state.scsi.dato.data[15]);
-				block_size_updated = true;
-			}
-		}
+    // NetBSD wants this.... who else wants it I wonder? We'll give it to 'em!
+  case SCSICMD_MAINTENANCE_IN: // REPORT SUPPORTED OPERATION CODES lives here
+                               // (SA=0x0C)
+  {
+#if defined(DEBUG_SCSI)
+    printf("%s: MAINTENANCE IN.\n", devid_string);
+#endif
+    const u8 sa = state.scsi.cmd.data[1];
+    const u8 rctd =
+        (state.scsi.cmd.data[2] >> 7) & 1; // request Command Timeouts Desc
+    const u8 ropt = (state.scsi.cmd.data[2] & 0x07); // reporting options
+    const u8 req_op = state.scsi.cmd.data[3];        // requested opcode
+    const u16 req_sa =
+        (u16(state.scsi.cmd.data[4]) << 8) | state.scsi.cmd.data[5];
+    const u32 alloc = (u32(state.scsi.cmd.data[6]) << 24) |
+                      (u32(state.scsi.cmd.data[7]) << 16) |
+                      (u32(state.scsi.cmd.data[8]) << 8) |
+                      (u32(state.scsi.cmd.data[9]) << 0);
+
+    if (sa != 0x0C) {              // Only RSOC is implemented
+      do_scsi_error(SCSI_ILL_CMD); // invalid operation code (service action)
+      break;
+    }
+
+    // Convenience shorthands
+    u8 *p = state.scsi.dati.data;
+    auto finish_ok = [&](u32 nbytes) {
+      state.scsi.dati.read = 0;
+      state.scsi.dati.available = (alloc < nbytes) ? alloc : nbytes;
+      do_scsi_error(SCSI_OK);
+    };
+
+    // ---- Reporting options ----
+    if (ropt == 0x00) {
+      // ---- all_commands ----
+      // Small, accurate list of commands we actually implement.
+      struct Desc {
+        u8 op;
+        u16 cdb_len;
+        u16 svc;
+      };
+      static const Desc kCmds[] = {
+          {0x00, 6, 0},  // TEST UNIT READY
+          {0x03, 6, 0},  // REQUEST SENSE
+          {0x12, 6, 0},  // INQUIRY
+          {0x1A, 6, 0},  // MODE SENSE(6)
+          {0x25, 10, 0}, // READ CAPACITY(10)
+          {0x28, 10, 0}, // READ(10)
+          {0x2A, 10, 0}, // WRITE(10)
+          {0x2F, 10, 0}, // VERIFY(10)
+          {0x35, 10, 0}, // SYNCHRONIZE CACHE(10)
+          {0x5A, 10, 0}, // MODE SENSE(10)
+          {0xA8, 12, 0}, // READ(12)
+          {0xAA, 12, 0}, // WRITE(12)
+          {0x3E, 6, 0},  // READ LONG
+      };
+      const u32 n = (u32)(sizeof(kCmds) / sizeof(kCmds[0]));
+      const u32 desc_len =
+          rctd ? (8 + 12) : 8; // Table 166 (+ Table 171 when RCTD=1)
+      const u32 payload = n * desc_len;
+
+      // Header: 4-byte COMMAND DATA LENGTH (size of descriptors only)
+      put_be32(p, payload);
+      p += 4;
+
+      for (u32 i = 0; i < n; ++i) {
+        const Desc &d = kCmds[i];
+        p[0] = d.op;
+        p[1] = 0;               // opcode, reserved
+        put_be16(p + 2, d.svc); // service action (0 for non-SA)
+        p[4] = 0;
+        // flags: [5]=reserved [4]=RWCDLP [3]=MLU [2]=CDLP [1]=CTDP [0]=SERVACTV
+        p[5] = rctd ? 0x02 : 0x00;  // set CTDP when including descriptor
+        put_be16(p + 6, d.cdb_len); // CDB length
+        p += 8;
+        if (rctd) {
+          // Command Timeouts descriptor (Table 171) - all zeros is fine
+          put_be16(p + 0,
+                   0x000A); // descriptor length (10h bytes after the length)
+          p[2] = 0x00;      // reserved
+          p[3] = 0x00;      // command specific
+          memset(p + 4, 0x00, 8); // nominal + recommended timeouts
+          p += 12;
+        }
+      }
+      finish_ok((u32)(p - state.scsi.dati.data));
+      break;
+    }
+
+    if (ropt == 0x01) {
+      // ---- one_command (non-SA only) ----
+      if (opcode_has_service_actions(req_op)) {
+        do_scsi_error(
+            SCSI_INVALID_FIELD); // spec mandates INVALID FIELD IN CDB here
+        break;
+      }
+      const int cdb_len = cdb_len_for_opcode(req_op);
+
+      // Byte 0..1: flags (RWCDLP=0) and CTDP/MLU/CDLP/SUPPORT
+      p[0] = 0x00;  // RWCDLP=0
+      p[1] = 0x00;  // CTDP=0, MLU=0, CDLP=0
+      p[1] |= 0x03; // SUPPORT=011b ("supported") by default
+      if (cdb_len < 0) {
+        p[1] = (p[1] & ~0x07) | 0x01; // SUPPORT=001b ("not supported")
+        finish_ok(2); // bytes after 1 are undefined when not supported
+        break;
+      }
+      put_be16(p + 2, (u16)cdb_len); // CDB SIZE
+      // CDB USAGE DATA: set opcode, everything else 0 (conservative)
+      memset(p + 4, 0x00, (size_t)cdb_len);
+      p[4] = req_op; // first byte is the opcode
+      p += 4 + cdb_len;
+
+      // (Optional) include a zeroed timeouts descriptor when requested
+      if (rctd) {
+        p[-(int)0] = p[-(int)0]; // no-op to keep style
+        put_be16(p + 0, 0x000A);
+        p[2] = 0x00;
+        p[3] = 0x00;
+        memset(p + 4, 0x00, 8);
+        p += 12;
+        // Reflect presence via CTDP bit
+        state.scsi.dati.data[1] |= 0x80; // CTDP=1
+      }
+      finish_ok((u32)(p - state.scsi.dati.data));
+      break;
+    }
+
+    if (ropt == 0x02) {
+      // ---- one_service_action (opcode MUST have SA) ----
+      if (!opcode_has_service_actions(req_op)) {
+        do_scsi_error(
+            SCSI_INVALID_FIELD); // opcode without SAs -> INVALID FIELD
+        break;
+      }
+      // We don’t actually implement any SA-coded commands -> say "not
+      // supported"
+      p[0] = 0x00;
+      p[1] = (0x01); // SUPPORT=001b (not supported)
+      finish_ok(2);
+      break;
+    }
+
+    if (ropt == 0x03) {
+      // ---- either: SA if present, otherwise no-SA with SA==0 ----
+      if (opcode_has_service_actions(req_op)) {
+        // We don't support any SA variants -> NOT SUPPORTED (no CHECK CONDITION
+        // here)
+        p[0] = 0x00;
+        p[1] = 0x01; // SUPPORT=001b
+        finish_ok(2);
+        break;
+      } else {
+        // Treat as one_command for a non-SA opcode; REQUESTED SA must be 0
+        if (req_sa != 0) {
+          p[0] = 0x00;
+          p[1] = 0x01; // NOT SUPPORTED (per 3.37.3 for 011b)
+          finish_ok(2);
+          break;
+        }
+        const int cdb_len = cdb_len_for_opcode(req_op);
+        p[0] = 0x00;
+        p[1] = 0x03; // SUPPORT=011b (supported)
+        if (cdb_len < 0) {
+          p[1] = 0x01; // not supported
+          finish_ok(2);
+          break;
+        }
+        put_be16(p + 2, (u16)cdb_len);
+        memset(p + 4, 0x00, (size_t)cdb_len);
+        p[4] = req_op;
+        p += 4 + cdb_len;
+        if (rctd) {
+          put_be16(p + 0, 0x000A);
+          p[2] = 0x00;
+          p[3] = 0x00;
+          memset(p + 4, 0x00, 8);
+          p += 12;
+          state.scsi.dati.data[1] |= 0x80; // CTDP=1
+        }
+        finish_ok((u32)(p - state.scsi.dati.data));
+        break;
+      }
+    }
+
+    // All other reporting options are reserved
+    do_scsi_error(SCSI_INVALID_FIELD);
+    break;
+  }
+
+  case SCSICMD_PREVENT_ALLOW_REMOVE:
+    if (state.scsi.cmd.data[4] & 1) {
+      state.scsi.locked = true;
+#if defined(DEBUG_SCSI)
+      printf("%s: PREVENT MEDIA REMOVAL.\n", devid_string);
+#endif
+    } else {
+      state.scsi.locked = false;
+#if defined(DEBUG_SCSI)
+      printf("%s: ALLOW MEDIA REMOVAL.\n", devid_string);
+#endif
+    }
+
+    do_scsi_error(SCSI_OK);
+    break;
+
+  case SCSICMD_MODE_SELECT:
+  case SCSICMD_MODE_SELECT_10: {
+    const bool mode_select_10 =
+        (state.scsi.cmd.data[0] == SCSICMD_MODE_SELECT_10);
+    state.scsi.dato.expected =
+        mode_select_10
+            ? ((state.scsi.cmd.data[7] << 8) | state.scsi.cmd.data[8])
+            : state.scsi.cmd.data[4];
+
+    if (state.scsi.dato.expected > DATO_BUFSZ) {
+      printf("%s: mode select too big (%d)\n", devid_string,
+             state.scsi.dato.expected);
+      do_scsi_error(SCSI_TOO_BIG);
+      break;
+    }
+
+    // get data out first...
+    if (state.scsi.dato.written < state.scsi.dato.expected)
+      return 2;
 
 #if defined(DEBUG_SCSI)
-		if (block_size_updated)
-			printf("%s: Block size set to %d.\n", devid_string, get_block_size());
+    printf("%s: MODE SELECT%s.\n", devid_string, mode_select_10 ? " (10)" : "");
+    printf("Data: ");
+    for (unsigned int x = 0; x < state.scsi.dato.written; x++)
+      printf("%02x ", state.scsi.dato.data[x]);
+    printf("\n");
 #endif
-		if (!block_size_updated)
-		{
-			unsigned int x;
-			printf("%s: MODE SELECT%s ignored.\nCommand: ", devid_string,
-				mode_select_10 ? " (10)" : "");
-			for (x = 0; x < state.scsi.cmd.written; x++)
-				printf("%02x ", state.scsi.cmd.data[x]);
-			printf("\nData: ");
-			for (x = 0; x < state.scsi.dato.written; x++)
-				printf("%02x ", state.scsi.dato.data[x]);
-			printf("\n");
-		}
 
-		// ignore it...
-		do_scsi_error(SCSI_OK);
-		break;
-	}
-
-	case SCSIBLOCKCMD_SEEK:
-	{
-		auto ofs = (state.scsi.cmd.data[2] << 24) + (state.scsi.cmd.data[3] << 16) + (state.scsi.cmd.data[4] << 8) + state.scsi.cmd.data[5];
-		if (ofs >= get_lba_size()) {
-			do_scsi_error(SCSI_LBA_RANGE);
-			break;
-		}
-		seek_block(ofs);
-		do_scsi_error(SCSI_OK);
-		break;
-	}
-
-	case SCSIBLOCKCMD_READ_CAPACITY:
-#if defined(DEBUG_SCSI)
-		printf("%s: READ CAPACITY.\n", devid_string);
-#endif
-		if (state.scsi.cmd.data[8] & 1)
-		{
-			FAILURE_1(NotImplemented,
-				"%s: Don't know how to handle READ CAPACITY with PMI bit set.\n",
-				devid_string);
-			break;
-		}
-
-		// READ CAPACITY returns the number of the last LBA (n-1);
-		// not the number of LBA's (n)
-		state.scsi.dati.data[0] = (u8)((get_lba_size() - 1) >> 24) & 255;
-		state.scsi.dati.data[1] = (u8)((get_lba_size() - 1) >> 16) & 255;
-		state.scsi.dati.data[2] = (u8)((get_lba_size() - 1) >> 8) & 255;
-		state.scsi.dati.data[3] = (u8)((get_lba_size() - 1) >> 0) & 255;
-
-		state.scsi.dati.data[4] = (u8)(get_block_size() >> 24) & 255;
-		state.scsi.dati.data[5] = (u8)(get_block_size() >> 16) & 255;
-		state.scsi.dati.data[6] = (u8)(get_block_size() >> 8) & 255;
-		state.scsi.dati.data[7] = (u8)(get_block_size() >> 0) & 255;
-
-		state.scsi.dati.read = 0;
-		state.scsi.dati.available = 8;
+    bool block_size_updated = false;
+    if (!mode_select_10) {
+      if (state.scsi.dato.written == 12 &&
+          state.scsi.dato.data[0] == 0x00 // data length
+          //&& state.scsi.dato.data[1] == 0x05 // medium type - ignore
+          && state.scsi.dato.data[2] == 0x00  // dev. specific
+          && state.scsi.dato.data[3] == 0x08  // block descriptor length
+          && state.scsi.dato.data[4] == 0x00  // density code
+          && state.scsi.dato.data[5] == 0x00  // all blocks
+          && state.scsi.dato.data[6] == 0x00  // all blocks
+          && state.scsi.dato.data[7] == 0x00  // all blocks
+          && state.scsi.dato.data[8] == 0x00) // reserved
+      {
+        set_block_size((state.scsi.dato.data[9] << 16) |
+                       (state.scsi.dato.data[10] << 8) |
+                       state.scsi.dato.data[11]);
+        block_size_updated = true;
+      }
+    } else {
+      if (state.scsi.dato.written >= 16 &&
+          state.scsi.dato.data[0] == 0x00    // mode data length MSB/reserved
+          && state.scsi.dato.data[1] == 0x00 // mode data length LSB/reserved
+          //&& state.scsi.dato.data[2] == 0x05 // medium type - ignore
+          && state.scsi.dato.data[3] == 0x00   // dev. specific
+          && state.scsi.dato.data[4] == 0x00   // reserved
+          && state.scsi.dato.data[5] == 0x00   // reserved
+          && state.scsi.dato.data[6] == 0x00   // block descriptor length MSB
+          && state.scsi.dato.data[7] == 0x08   // block descriptor length LSB
+          && state.scsi.dato.data[8] == 0x00   // density code
+          && state.scsi.dato.data[9] == 0x00   // all blocks
+          && state.scsi.dato.data[10] == 0x00  // all blocks
+          && state.scsi.dato.data[11] == 0x00  // all blocks
+          && state.scsi.dato.data[12] == 0x00) // reserved
+      {
+        set_block_size((state.scsi.dato.data[13] << 16) |
+                       (state.scsi.dato.data[14] << 8) |
+                       state.scsi.dato.data[15]);
+        block_size_updated = true;
+      }
+    }
 
 #if defined(DEBUG_SCSI)
-		printf("%s: Returning data: ", devid_string);
-		for (unsigned int x1 = 0; x1 < 8; x1++)
-			printf("%02x ", state.scsi.dati.data[x1]);
-		printf("\n");
+    if (block_size_updated)
+      printf("%s: Block size set to %d.\n", devid_string, get_block_size());
 #endif
-		do_scsi_error(SCSI_OK);
-		break;
+    if (!block_size_updated) {
+      unsigned int x;
+      printf("%s: MODE SELECT%s ignored.\nCommand: ", devid_string,
+             mode_select_10 ? " (10)" : "");
+      for (x = 0; x < state.scsi.cmd.written; x++)
+        printf("%02x ", state.scsi.cmd.data[x]);
+      printf("\nData: ");
+      for (x = 0; x < state.scsi.dato.written; x++)
+        printf("%02x ", state.scsi.dato.data[x]);
+      printf("\n");
+    }
 
-	case SCSICMD_VERIFY_10:
-	{
+    // ignore it...
+    do_scsi_error(SCSI_OK);
+    break;
+  }
+
+  case SCSIBLOCKCMD_SEEK: {
+    auto ofs = (state.scsi.cmd.data[2] << 24) + (state.scsi.cmd.data[3] << 16) +
+               (state.scsi.cmd.data[4] << 8) + state.scsi.cmd.data[5];
+    if (ofs >= get_lba_size()) {
+      do_scsi_error(SCSI_LBA_RANGE);
+      break;
+    }
+    seek_block(ofs);
+    do_scsi_error(SCSI_OK);
+    break;
+  }
+
+  case SCSIBLOCKCMD_READ_CAPACITY:
 #if defined(DEBUG_SCSI)
-		printf("%s: VERIFY(10).\n", devid_string);
+    printf("%s: READ CAPACITY.\n", devid_string);
 #endif
-		// BYTCHK requests a DATA OUT compare buffer. The emulator can verify
-		// media readability, but does not implement host-data comparison.
-		if (state.scsi.cmd.data[1] & 0x02)
-		{
-			do_scsi_error(SCSI_INVALID_FIELD);
-			break;
-		}
+    if (state.scsi.cmd.data[8] & 1) {
+      FAILURE_1(
+          NotImplemented,
+          "%s: Don't know how to handle READ CAPACITY with PMI bit set.\n",
+          devid_string);
+      break;
+    }
 
-		off_t_large verify_ofs =
-			((off_t_large)state.scsi.cmd.data[2] << 24) |
-			((off_t_large)state.scsi.cmd.data[3] << 16) |
-			((off_t_large)state.scsi.cmd.data[4] << 8) |
-			((off_t_large)state.scsi.cmd.data[5] << 0);
-		retlen = (state.scsi.cmd.data[7] << 8) | state.scsi.cmd.data[8];
+    // READ CAPACITY returns the number of the last LBA (n-1);
+    // not the number of LBA's (n)
+    state.scsi.dati.data[0] = (u8)((get_lba_size() - 1) >> 24) & 255;
+    state.scsi.dati.data[1] = (u8)((get_lba_size() - 1) >> 16) & 255;
+    state.scsi.dati.data[2] = (u8)((get_lba_size() - 1) >> 8) & 255;
+    state.scsi.dati.data[3] = (u8)((get_lba_size() - 1) >> 0) & 255;
 
-		if ((verify_ofs + retlen) > get_lba_size())
-		{
-			do_scsi_error(SCSI_LBA_RANGE);
-			break;
-		}
+    state.scsi.dati.data[4] = (u8)(get_block_size() >> 24) & 255;
+    state.scsi.dati.data[5] = (u8)(get_block_size() >> 16) & 255;
+    state.scsi.dati.data[6] = (u8)(get_block_size() >> 8) & 255;
+    state.scsi.dati.data[7] = (u8)(get_block_size() >> 0) & 255;
 
-		do_scsi_error(SCSI_OK);
-		break;
-	}
-
-	case SCSICMD_READ:
-	case SCSICMD_READ_10:
-	case SCSICMD_READ_12:
-	case SCSICMD_READ_CD:
-#if defined(DEBUG_SCSI)
-		printf("%s: READ.\n", devid_string);
-#endif
-
-		//if (state.scsi.disconnect_priv)
-		//{
-		//  //printf("%s: Will disconnect before returning read data.\n", devid_string);
-		//  state.scsi.will_disconnect = true;
-		//}
-		if (state.scsi.cmd.data[0] == SCSICMD_READ)
-		{
-
-			//  bits 4..0 of cmd[1], and cmd[2] and cmd[3]
-			//  hold the logical block address.
-			//
-			//  cmd[4] holds the number of logical blocks
-			//  to transfer. (Special case if the value is
-			//  0, actually means 256.)
-			ofs = ((state.scsi.cmd.data[1] & 0x1f) << 16) + (state.scsi.cmd.data[2] << 8) + state.scsi.cmd.data[3];
-			retlen = state.scsi.cmd.data[4];
-			if (retlen == 0)
-				retlen = 256;
-		}
-		else if (state.scsi.cmd.data[0] == SCSICMD_READ_10)
-		{
-
-			//  cmd[2..5] hold the logical block address.
-			//  cmd[7..8] holds the number of logical
-			ofs = (state.scsi.cmd.data[2] << 24) + (state.scsi.cmd.data[3] << 16) + (state.scsi.cmd.data[4] << 8) + state.scsi.cmd.data[5];
-			retlen = (state.scsi.cmd.data[7] << 8) + state.scsi.cmd.data[8];
-		}
-		else if (state.scsi.cmd.data[0] == SCSICMD_READ_12)
-		{
-
-			//  cmd[2..5] hold the logical block address.
-			//  cmd[6..9] holds the number of logical
-			ofs = (state.scsi.cmd.data[2] << 24) + (state.scsi.cmd.data[3] << 16) + (state.scsi.cmd.data[4] << 8) + state.scsi.cmd.data[5];
-			retlen = (state.scsi.cmd.data[6] << 24) + (state.scsi.cmd.data[7] << 16) + (state.scsi.cmd.data[8] << 8) + state.scsi.cmd.data[9];
-		}
-		else if (state.scsi.cmd.data[0] == SCSICMD_READ_CD)
-		{
-			// MMC READ CD (0xBE) byte 9 selects which sector subfields to return:
-			//   bit 7    SYNC          (12-byte sync)
-			//   bits 6:5 HEADER CODE   (00=none, 01=Hdr, 10=SubHdr, 11=both)
-			//   bit 4    USER DATA     (2048 bytes of user data)
-			//   bit 3    EDC/ECC       (288 bytes EDC+ECC)
-			//   bits 2:1 ERROR FIELD   (C2 error info)
-			//   bit 0    reserved
-			// Win2K's cdrom.sys sometimes issues this with byte 9 == 0x00 (no
-			// fields explicitly requested) — most real drives treat that as the
-			// default data-only read. We handle 0x00 (default) and 0x10 (user
-			// data only) identically: a plain 2048-byte-per-block read. Anything
-			// requesting sync/header/ECC subfields is rejected with INVALID
-			// FIELD IN CDB so the driver can fall back to a basic READ.
-			const u8 sub = state.scsi.cmd.data[9];
-			if (sub != 0x00 && sub != 0x10)
-			{
-				printf("%s: READ CD subfield byte 0x%02x unsupported -> INVALID FIELD IN CDB\n",
-					devid_string, sub);
-				do_scsi_error(SCSI_INVALID_FIELD);
-				return 0;
-			}
-
-			//  cmd[2..5] hold the logical block address.
-			//  cmd[6..8] holds the number of logical blocks to transfer.
-			ofs = (state.scsi.cmd.data[2] << 24) + (state.scsi.cmd.data[3] << 16) + (state.scsi.cmd.data[4] << 8) + state.scsi.cmd.data[5];
-			retlen = (state.scsi.cmd.data[6] << 16) +
-				(state.scsi.cmd.data[7] << 8) +
-				state.scsi.cmd.data[8];
-		}
-
-		// Within bounds?
-		if ((ofs + retlen) > get_lba_size())
-		{
-			do_scsi_error(SCSI_LBA_RANGE);
-			break;
-		}
-
-		// Would exceed buffer?
-		if (retlen * get_block_size() > DATI_BUFSZ)
-		{
-			printf("%s: read too big (%d)\n", devid_string, retlen);
-			do_scsi_error(SCSI_TOO_BIG);
-			break;
-		}
-
-		//  Return data:
-		seek_block(ofs);
-		read_blocks(state.scsi.dati.data, retlen);
-		state.scsi.dati.read = 0;
-		state.scsi.dati.available = retlen * get_block_size();
+    state.scsi.dati.read = 0;
+    state.scsi.dati.available = 8;
 
 #if defined(DEBUG_SCSI)
-		printf("%s: READ  ofs=%d size=%d\n", devid_string, ofs, retlen);
+    printf("%s: Returning data: ", devid_string);
+    for (unsigned int x1 = 0; x1 < 8; x1++)
+      printf("%02x ", state.scsi.dati.data[x1]);
+    printf("\n");
 #endif
-		do_scsi_error(SCSI_OK);
-		break;
+    do_scsi_error(SCSI_OK);
+    break;
 
-	case SCSICMD_READ_LONG:
+  case SCSICMD_VERIFY_10: {
 #if defined(DEBUG_SCSI)
-		printf("%s: READ_LONG.\n", devid_string);
+    printf("%s: VERIFY(10).\n", devid_string);
 #endif
+    // BYTCHK requests a DATA OUT compare buffer. The emulator can verify
+    // media readability, but does not implement host-data comparison.
+    if (state.scsi.cmd.data[1] & 0x02) {
+      do_scsi_error(SCSI_INVALID_FIELD);
+      break;
+    }
 
-		// The read long command is used to read one block of disk data, including
-		// ECC data. OpenVMS uses read long / write long to do host-based shadowing.
-		// During driver initialization, OpenVMS will check each disk to see if it
-		// supports host-based shadowing, by trying to find the right size for read
-		// long commands. The emulated scsi disk sets the size for read long / write
-		// long commands to 514 bytes (the first value OpenVMS tries).
-		//  cmd[2..5] hold the logical block address.
-		//  cmd[7..8] holds the number of bytes to transfer
-		ofs = (state.scsi.cmd.data[2] << 24) + (state.scsi.cmd.data[3] << 16) + (state.scsi.cmd.data[4] << 8) + state.scsi.cmd.data[5];
-		retlen = (state.scsi.cmd.data[7] << 8) + state.scsi.cmd.data[8];
+    off_t_large verify_ofs = ((off_t_large)state.scsi.cmd.data[2] << 24) |
+                             ((off_t_large)state.scsi.cmd.data[3] << 16) |
+                             ((off_t_large)state.scsi.cmd.data[4] << 8) |
+                             ((off_t_large)state.scsi.cmd.data[5] << 0);
+    retlen = (state.scsi.cmd.data[7] << 8) | state.scsi.cmd.data[8];
 
-		state.scsi.stat.available = 1;
-		state.scsi.stat.data[0] = 0;
-		state.scsi.stat.read = 0;
-		state.scsi.msgi.available = 1;
-		state.scsi.msgi.data[0] = 0;
-		state.scsi.msgi.read = 0;
+    if ((verify_ofs + retlen) > get_lba_size()) {
+      do_scsi_error(SCSI_LBA_RANGE);
+      break;
+    }
 
-		// If the requested size is not 514 bytes, don't accept it.
-		if (retlen != 514)
-		{
-			do_scsi_error(SCSI_ILL_CMD);
-			break;
-		}
+    do_scsi_error(SCSI_OK);
+    break;
+  }
 
-		// Within bounds?
-		if ((ofs + 1) > get_lba_size())
-		{
-			do_scsi_error(SCSI_LBA_RANGE);
-			break;
-		}
-
-		// Would exceed buffer?
-		if (retlen > DATI_BUFSZ)
-		{
-			printf("%s: read too big (%d)\n", devid_string, retlen);
-			do_scsi_error(SCSI_TOO_BIG);
-			break;
-		}
-
-		//  Return data:
-		seek_block(ofs);
-		read_blocks(state.scsi.dati.data, 1);
-		for (unsigned int x1 = get_block_size(); x1 < retlen; x1++)
-			state.scsi.dati.data[x1] = 0;             // set ECC bytes to 0.
-		state.scsi.dati.read = 0;
-		state.scsi.dati.available = retlen;
-		do_scsi_error(SCSI_OK);
-		break;
-
-	case SCSICMD_WRITE:
-	case SCSICMD_WRITE_10:
-	case SCSICMD_WRITE_12:
+  case SCSICMD_READ:
+  case SCSICMD_READ_10:
+  case SCSICMD_READ_12:
+  case SCSICMD_READ_CD:
 #if defined(DEBUG_SCSI)
-		printf("%s: WRITE.\n", devid_string);
+    printf("%s: READ.\n", devid_string);
 #endif
-		if (state.scsi.cmd.data[0] == SCSICMD_WRITE)
-		{
 
-			//  bits 4..0 of cmd[1], and cmd[2] and cmd[3]
-			//  hold the logical block address.
-			//
-			//  cmd[4] holds the number of logical blocks
-			//  to transfer. (Special case if the value is
-			//  0, actually means 256.)
-			ofs = ((state.scsi.cmd.data[1] & 0x1f) << 16) + (state.scsi.cmd.data[2] << 8) + state.scsi.cmd.data[3];
-			retlen = state.scsi.cmd.data[4];
-			if (retlen == 0)
-				retlen = 256;
-		}
-		else if (state.scsi.cmd.data[0] == SCSICMD_WRITE_10)
-		{
+    // if (state.scsi.disconnect_priv)
+    //{
+    //   //printf("%s: Will disconnect before returning read data.\n",
+    //   devid_string); state.scsi.will_disconnect = true;
+    // }
+    if (state.scsi.cmd.data[0] == SCSICMD_READ) {
 
-			//  cmd[2..5] hold the logical block address.
-			//  cmd[7..8] holds the number of logical blocks
-			//  to transfer.
-			ofs = (state.scsi.cmd.data[2] << 24) + (state.scsi.cmd.data[3] << 16) + (state.scsi.cmd.data[4] << 8) + state.scsi.cmd.data[5];
-			retlen = (state.scsi.cmd.data[7] << 8) + state.scsi.cmd.data[8];
-		}
-		else
-		{
-			//  WRITE_12:
-			//  cmd[2..5] hold the logical block address.
-			//  cmd[6..9] holds the number of logical blocks
-			//  to transfer.
-			ofs = (state.scsi.cmd.data[2] << 24) + (state.scsi.cmd.data[3] << 16) + (state.scsi.cmd.data[4] << 8) + state.scsi.cmd.data[5];
-			retlen = (state.scsi.cmd.data[6] << 24) + (state.scsi.cmd.data[7] << 16) + (state.scsi.cmd.data[8] << 8) + state.scsi.cmd.data[9];
-		}
+      //  bits 4..0 of cmd[1], and cmd[2] and cmd[3]
+      //  hold the logical block address.
+      //
+      //  cmd[4] holds the number of logical blocks
+      //  to transfer. (Special case if the value is
+      //  0, actually means 256.)
+      ofs = ((state.scsi.cmd.data[1] & 0x1f) << 16) +
+            (state.scsi.cmd.data[2] << 8) + state.scsi.cmd.data[3];
+      retlen = state.scsi.cmd.data[4];
+      if (retlen == 0)
+        retlen = 256;
+    } else if (state.scsi.cmd.data[0] == SCSICMD_READ_10) {
 
-		// Within bounds?
-		if (((ofs + retlen)) > get_lba_size())
-		{
-			do_scsi_error(SCSI_LBA_RANGE);
-			break;
-		}
+      //  cmd[2..5] hold the logical block address.
+      //  cmd[7..8] holds the number of logical
+      ofs = (state.scsi.cmd.data[2] << 24) + (state.scsi.cmd.data[3] << 16) +
+            (state.scsi.cmd.data[4] << 8) + state.scsi.cmd.data[5];
+      retlen = (state.scsi.cmd.data[7] << 8) + state.scsi.cmd.data[8];
+    } else if (state.scsi.cmd.data[0] == SCSICMD_READ_12) {
 
-		// Would exceed buffer?
-		if (retlen * get_block_size() > DATO_BUFSZ)
-		{
-			printf("%s: write too big (%d)\n", devid_string,
-				(int)(retlen * get_block_size()));
-			do_scsi_error(SCSI_TOO_BIG);
-			break;
-		}
+      //  cmd[2..5] hold the logical block address.
+      //  cmd[6..9] holds the number of logical
+      ofs = (state.scsi.cmd.data[2] << 24) + (state.scsi.cmd.data[3] << 16) +
+            (state.scsi.cmd.data[4] << 8) + state.scsi.cmd.data[5];
+      retlen = (state.scsi.cmd.data[6] << 24) + (state.scsi.cmd.data[7] << 16) +
+               (state.scsi.cmd.data[8] << 8) + state.scsi.cmd.data[9];
+    } else if (state.scsi.cmd.data[0] == SCSICMD_READ_CD) {
+      // MMC READ CD (0xBE) byte 9 selects which sector subfields to return:
+      //   bit 7    SYNC          (12-byte sync)
+      //   bits 6:5 HEADER CODE   (00=none, 01=Hdr, 10=SubHdr, 11=both)
+      //   bit 4    USER DATA     (2048 bytes of user data)
+      //   bit 3    EDC/ECC       (288 bytes EDC+ECC)
+      //   bits 2:1 ERROR FIELD   (C2 error info)
+      //   bit 0    reserved
+      // Win2K's cdrom.sys sometimes issues this with byte 9 == 0x00 (no
+      // fields explicitly requested) — most real drives treat that as the
+      // default data-only read. We handle 0x00 (default) and 0x10 (user
+      // data only) identically: a plain 2048-byte-per-block read. Anything
+      // requesting sync/header/ECC subfields is rejected with INVALID
+      // FIELD IN CDB so the driver can fall back to a basic READ.
+      const u8 sub = state.scsi.cmd.data[9];
+      if (sub != 0x00 && sub != 0x10) {
+        printf("%s: READ CD subfield byte 0x%02x unsupported -> INVALID FIELD "
+               "IN CDB\n",
+               devid_string, sub);
+        do_scsi_error(SCSI_INVALID_FIELD);
+        return 0;
+      }
 
-		state.scsi.dato.expected = retlen * get_block_size();
+      //  cmd[2..5] hold the logical block address.
+      //  cmd[6..8] holds the number of logical blocks to transfer.
+      ofs = (state.scsi.cmd.data[2] << 24) + (state.scsi.cmd.data[3] << 16) +
+            (state.scsi.cmd.data[4] << 8) + state.scsi.cmd.data[5];
+      retlen = (state.scsi.cmd.data[6] << 16) + (state.scsi.cmd.data[7] << 8) +
+               state.scsi.cmd.data[8];
+    }
 
-		if (state.scsi.dato.written < state.scsi.dato.expected)
-			return 2;
+    // Within bounds?
+    if ((ofs + retlen) > get_lba_size()) {
+      do_scsi_error(SCSI_LBA_RANGE);
+      break;
+    }
 
-		//  Write data
-		seek_block(ofs);
-		write_blocks(state.scsi.dato.data, retlen);
+    // Would exceed buffer?
+    if (retlen * get_block_size() > DATI_BUFSZ) {
+      printf("%s: read too big (%d)\n", devid_string, retlen);
+      do_scsi_error(SCSI_TOO_BIG);
+      break;
+    }
 
-#if defined(DEBUG_SCSI)
-		printf("%s: WRITE  ofs=%d size=%d\n", devid_string, ofs, retlen);
-#endif
-		do_scsi_error(SCSI_OK);
-		break;
-
-	case SCSICMD_SYNCHRONIZE_CACHE:
-#if defined(DEBUG_SCSI)
-		printf("%s: SYNCHRONIZE CACHE.\n", devid_string);
-#endif
-		flush();
-		do_scsi_error(SCSI_OK);
-		break;
-
-	case SCSICDROM_READ_TOC:
-	{
-#if defined(DEBUG_SCSI)
-		printf("%s: CDROM READ TOC.\n", devid_string);
-#endif
-		if (state.scsi.cmd.data[2] & 0x0f)
-		{
-			FAILURE_2(NotImplemented,
-				"%s: I don't understand READ TOC/PMA/ATIP with format %01x.\n",
-				devid_string, state.scsi.cmd.data[2] & 0x0f);
-		}
-
-		if (state.scsi.cmd.data[6] > 1 && state.scsi.cmd.data[6] != 0xAA)
-		{
-			FAILURE_2(InvalidArgument, "%s: I don't know CD-ROM track 0x%02x.\n",
-				devid_string, state.scsi.cmd.data[6]);
-		}
-
-		retlen = state.scsi.cmd.data[7] * 256 + state.scsi.cmd.data[8];
-
-		state.scsi.dati.available = retlen;
-		state.scsi.dati.read = 0;
-
-		int q2 = 2;
-
-		/*Here's an actual response from a single-track pressed CD to the
-		  command  0x43, 00, 00, 00, 00, 00, 00, 00, 0x0c, 0x40, 00, 00
-
-		  0000 00 0a 01 01 00 14 01 00 00 00 00 00 00 00 00 00 ................
-		  0010 00 43 d6 02 00 81 ff ff 19 00 00 00 00 00 00 00 .C..............
-		  0020 01 00 00 00 00 00 00 00 01 00 00 00 01 00 01 00 ................
-		  0030 00 00 00 00 00 10 00 00 00 10 00 00 01 00 00 00 ................
-		*/
-		state.scsi.dati.data[q2++] = 1;            // first track
-		state.scsi.dati.data[q2++] = 1;            // last track
-		if (state.scsi.cmd.data[6] <= 1)
-		{
-			state.scsi.dati.data[q2++] = 0;          // reserved
-			state.scsi.dati.data[q2++] = 0x14;       // adr/control (Q-channel: current position, data track, no copy)
-			state.scsi.dati.data[q2++] = 1;          // track number
-			state.scsi.dati.data[q2++] = 0;          // reserved
-			if (state.scsi.cmd.data[1] & 0x02)
-			{
-				u32 x = lba2msf(0);
-				state.scsi.dati.data[q2++] = 0;
-				state.scsi.dati.data[q2++] = (x & 0xff0000) >> 16;
-				state.scsi.dati.data[q2++] = (x & 0xff00) >> 8;
-				state.scsi.dati.data[q2++] = x & 0xff;
-			}
-			else
-			{
-				state.scsi.dati.data[q2++] = 0 >> 24;  //lba
-				state.scsi.dati.data[q2++] = 0 >> 16;
-				state.scsi.dati.data[q2++] = 0 >> 8;
-				state.scsi.dati.data[q2++] = 0;
-			}
-		}
-
-		state.scsi.dati.data[q2++] = 0;            // reserved
-		state.scsi.dati.data[q2++] = 0x16;         // adr/control (Q-channel: current position, data track, copy)
-		state.scsi.dati.data[q2++] = 0xAA;         // track number
-		state.scsi.dati.data[q2++] = 0;            // reserved
-		if (state.scsi.cmd.data[1] & 0x02)
-		{
-			u32 x = lba2msf(get_lba_size());
-			state.scsi.dati.data[q2++] = 0;
-			state.scsi.dati.data[q2++] = (x & 0xff0000) >> 16;
-			state.scsi.dati.data[q2++] = (x & 0xff00) >> 8;
-			state.scsi.dati.data[q2++] = x & 0xff;
-		}
-		else
-		{
-			state.scsi.dati.data[q2++] = (u8)(get_lba_size() >> 24);  //lba
-			state.scsi.dati.data[q2++] = (u8)(get_lba_size() >> 16);
-			state.scsi.dati.data[q2++] = (u8)(get_lba_size() >> 8);
-			state.scsi.dati.data[q2++] = (u8)get_lba_size();
-		}
-
-		state.scsi.dati.data[0] = (u8)(q2 >> 8);
-		state.scsi.dati.data[1] = (u8)q2;
+    //  Return data:
+    seek_block(ofs);
+    read_blocks(state.scsi.dati.data, retlen);
+    state.scsi.dati.read = 0;
+    state.scsi.dati.available = retlen * get_block_size();
 
 #if defined(DEBUG_SCSI)
-		printf("%s: Returning data: ", devid_string);
-		for (unsigned int x1 = 0; x1 < q2; x1++)
-			printf("%02x ", state.scsi.dati.data[x1]);
-		printf("\n");
+    printf("%s: READ  ofs=%d size=%d\n", devid_string, ofs, retlen);
 #endif
-		do_scsi_error(SCSI_OK);
-	}
-	break;
+    do_scsi_error(SCSI_OK);
+    break;
 
-	case SCSICDROM_MECHANISM_STATUS:
-	{
+  case SCSICMD_READ_LONG:
 #if defined(DEBUG_SCSI)
-		printf("%s: CDROM MECHANISM STATUS.\n", devid_string);
+    printf("%s: READ_LONG.\n", devid_string);
 #endif
-		const u16 alloc = (u16(state.scsi.cmd.data[8]) << 8) | state.scsi.cmd.data[9];
-		const u16 payload_len = 8;
 
-		// Report a simple non-changer drive, matching the QEMU ATAPI reply.
-		put_be16(state.scsi.dati.data + 0, 0);
-		state.scsi.dati.data[2] = 0;  // no current LBA / mechanism state info
-		state.scsi.dati.data[3] = 0;
-		state.scsi.dati.data[4] = 0;
-		state.scsi.dati.data[5] = 1;  // one slot present
-		put_be16(state.scsi.dati.data + 6, 0);
+    // The read long command is used to read one block of disk data, including
+    // ECC data. OpenVMS uses read long / write long to do host-based shadowing.
+    // During driver initialization, OpenVMS will check each disk to see if it
+    // supports host-based shadowing, by trying to find the right size for read
+    // long commands. The emulated scsi disk sets the size for read long / write
+    // long commands to 514 bytes (the first value OpenVMS tries).
+    //  cmd[2..5] hold the logical block address.
+    //  cmd[7..8] holds the number of bytes to transfer
+    ofs = (state.scsi.cmd.data[2] << 24) + (state.scsi.cmd.data[3] << 16) +
+          (state.scsi.cmd.data[4] << 8) + state.scsi.cmd.data[5];
+    retlen = (state.scsi.cmd.data[7] << 8) + state.scsi.cmd.data[8];
 
-		state.scsi.dati.read = 0;
-		state.scsi.dati.available = (alloc < payload_len) ? alloc : payload_len;
-		do_scsi_error(SCSI_OK);
-	}
-	break;
+    state.scsi.stat.available = 1;
+    state.scsi.stat.data[0] = 0;
+    state.scsi.stat.read = 0;
+    state.scsi.msgi.available = 1;
+    state.scsi.msgi.data[0] = 0;
+    state.scsi.msgi.read = 0;
 
-	case SCSICDRRW_FORMAT:
-	case SCSICDRRW_READ_DISC_INFO:
-	case SCSICDRRW_READ_TRACK_INFO:
-	case SCSICDRRW_RESERVE_TRACK:
-	case SCSICDRRW_SEND_OPC_INFO:
-	case SCSICDRRW_REPAIR_TRACK:
-	case SCSICDRRW_READ_MASTER_CUE:
-	case SCSICDRRW_CLOSE_TRACK:
-	case SCSICDRRW_READ_BUFFER_CAP:
-	case SCSICDRRW_SEND_CUE_SHEET:
-	case SCSICDRRW_BLANK:
-		// (0x1b 'unload' is START STOP UNIT, handled above with SCSI_OK)
+    // If the requested size is not 514 bytes, don't accept it.
+    if (retlen != 514) {
+      do_scsi_error(SCSI_ILL_CMD);
+      break;
+    }
 
-		// These are CD-R/RW specific commands; we pretend to be a simple
-		// CD-ROM player, so no support for these commands.
+    // Within bounds?
+    if ((ofs + 1) > get_lba_size()) {
+      do_scsi_error(SCSI_LBA_RANGE);
+      break;
+    }
+
+    // Would exceed buffer?
+    if (retlen > DATI_BUFSZ) {
+      printf("%s: read too big (%d)\n", devid_string, retlen);
+      do_scsi_error(SCSI_TOO_BIG);
+      break;
+    }
+
+    //  Return data:
+    seek_block(ofs);
+    read_blocks(state.scsi.dati.data, 1);
+    for (unsigned int x1 = get_block_size(); x1 < retlen; x1++)
+      state.scsi.dati.data[x1] = 0; // set ECC bytes to 0.
+    state.scsi.dati.read = 0;
+    state.scsi.dati.available = retlen;
+    do_scsi_error(SCSI_OK);
+    break;
+
+  case SCSICMD_WRITE:
+  case SCSICMD_WRITE_10:
+  case SCSICMD_WRITE_12:
 #if defined(DEBUG_SCSI)
-		printf("%s: CD-R/RW specific.\n", devid_string);
+    printf("%s: WRITE.\n", devid_string);
 #endif
-		do_scsi_error(SCSI_ILL_CMD);
-		break;
+    if (state.scsi.cmd.data[0] == SCSICMD_WRITE) {
 
-	default:
-		FAILURE_2(NotImplemented, "%s: Unknown SCSI command 0x%02x.\n",
-			devid_string, state.scsi.cmd.data[0]);
-	}
+      //  bits 4..0 of cmd[1], and cmd[2] and cmd[3]
+      //  hold the logical block address.
+      //
+      //  cmd[4] holds the number of logical blocks
+      //  to transfer. (Special case if the value is
+      //  0, actually means 256.)
+      ofs = ((state.scsi.cmd.data[1] & 0x1f) << 16) +
+            (state.scsi.cmd.data[2] << 8) + state.scsi.cmd.data[3];
+      retlen = state.scsi.cmd.data[4];
+      if (retlen == 0)
+        retlen = 256;
+    } else if (state.scsi.cmd.data[0] == SCSICMD_WRITE_10) {
 
-	return 0;
+      //  cmd[2..5] hold the logical block address.
+      //  cmd[7..8] holds the number of logical blocks
+      //  to transfer.
+      ofs = (state.scsi.cmd.data[2] << 24) + (state.scsi.cmd.data[3] << 16) +
+            (state.scsi.cmd.data[4] << 8) + state.scsi.cmd.data[5];
+      retlen = (state.scsi.cmd.data[7] << 8) + state.scsi.cmd.data[8];
+    } else {
+      //  WRITE_12:
+      //  cmd[2..5] hold the logical block address.
+      //  cmd[6..9] holds the number of logical blocks
+      //  to transfer.
+      ofs = (state.scsi.cmd.data[2] << 24) + (state.scsi.cmd.data[3] << 16) +
+            (state.scsi.cmd.data[4] << 8) + state.scsi.cmd.data[5];
+      retlen = (state.scsi.cmd.data[6] << 24) + (state.scsi.cmd.data[7] << 16) +
+               (state.scsi.cmd.data[8] << 8) + state.scsi.cmd.data[9];
+    }
+
+    // Within bounds?
+    if (((ofs + retlen)) > get_lba_size()) {
+      do_scsi_error(SCSI_LBA_RANGE);
+      break;
+    }
+
+    // Would exceed buffer?
+    if (retlen * get_block_size() > DATO_BUFSZ) {
+      printf("%s: write too big (%d)\n", devid_string,
+             (int)(retlen * get_block_size()));
+      do_scsi_error(SCSI_TOO_BIG);
+      break;
+    }
+
+    state.scsi.dato.expected = retlen * get_block_size();
+
+    if (state.scsi.dato.written < state.scsi.dato.expected)
+      return 2;
+
+    //  Write data
+    seek_block(ofs);
+    write_blocks(state.scsi.dato.data, retlen);
+
+#if defined(DEBUG_SCSI)
+    printf("%s: WRITE  ofs=%d size=%d\n", devid_string, ofs, retlen);
+#endif
+    do_scsi_error(SCSI_OK);
+    break;
+
+  case SCSICMD_SYNCHRONIZE_CACHE:
+#if defined(DEBUG_SCSI)
+    printf("%s: SYNCHRONIZE CACHE.\n", devid_string);
+#endif
+    flush();
+    do_scsi_error(SCSI_OK);
+    break;
+
+  case SCSICDROM_READ_TOC: {
+#if defined(DEBUG_SCSI)
+    printf("%s: CDROM READ TOC.\n", devid_string);
+#endif
+    if (state.scsi.cmd.data[2] & 0x0f) {
+      FAILURE_2(NotImplemented,
+                "%s: I don't understand READ TOC/PMA/ATIP with format %01x.\n",
+                devid_string, state.scsi.cmd.data[2] & 0x0f);
+    }
+
+    if (state.scsi.cmd.data[6] > 1 && state.scsi.cmd.data[6] != 0xAA) {
+      FAILURE_2(InvalidArgument, "%s: I don't know CD-ROM track 0x%02x.\n",
+                devid_string, state.scsi.cmd.data[6]);
+    }
+
+    retlen = state.scsi.cmd.data[7] * 256 + state.scsi.cmd.data[8];
+
+    state.scsi.dati.available = retlen;
+    state.scsi.dati.read = 0;
+
+    int q2 = 2;
+
+    /*Here's an actual response from a single-track pressed CD to the
+      command  0x43, 00, 00, 00, 00, 00, 00, 00, 0x0c, 0x40, 00, 00
+
+      0000 00 0a 01 01 00 14 01 00 00 00 00 00 00 00 00 00 ................
+      0010 00 43 d6 02 00 81 ff ff 19 00 00 00 00 00 00 00 .C..............
+      0020 01 00 00 00 00 00 00 00 01 00 00 00 01 00 01 00 ................
+      0030 00 00 00 00 00 10 00 00 00 10 00 00 01 00 00 00 ................
+    */
+    state.scsi.dati.data[q2++] = 1; // first track
+    state.scsi.dati.data[q2++] = 1; // last track
+    if (state.scsi.cmd.data[6] <= 1) {
+      state.scsi.dati.data[q2++] = 0;    // reserved
+      state.scsi.dati.data[q2++] = 0x14; // adr/control (Q-channel: current
+                                         // position, data track, no copy)
+      state.scsi.dati.data[q2++] = 1;    // track number
+      state.scsi.dati.data[q2++] = 0;    // reserved
+      if (state.scsi.cmd.data[1] & 0x02) {
+        u32 x = lba2msf(0);
+        state.scsi.dati.data[q2++] = 0;
+        state.scsi.dati.data[q2++] = (x & 0xff0000) >> 16;
+        state.scsi.dati.data[q2++] = (x & 0xff00) >> 8;
+        state.scsi.dati.data[q2++] = x & 0xff;
+      } else {
+        state.scsi.dati.data[q2++] = 0 >> 24; // lba
+        state.scsi.dati.data[q2++] = 0 >> 16;
+        state.scsi.dati.data[q2++] = 0 >> 8;
+        state.scsi.dati.data[q2++] = 0;
+      }
+    }
+
+    state.scsi.dati.data[q2++] = 0; // reserved
+    state.scsi.dati.data[q2++] =
+        0x16; // adr/control (Q-channel: current position, data track, copy)
+    state.scsi.dati.data[q2++] = 0xAA; // track number
+    state.scsi.dati.data[q2++] = 0;    // reserved
+    if (state.scsi.cmd.data[1] & 0x02) {
+      u32 x = lba2msf(get_lba_size());
+      state.scsi.dati.data[q2++] = 0;
+      state.scsi.dati.data[q2++] = (x & 0xff0000) >> 16;
+      state.scsi.dati.data[q2++] = (x & 0xff00) >> 8;
+      state.scsi.dati.data[q2++] = x & 0xff;
+    } else {
+      state.scsi.dati.data[q2++] = (u8)(get_lba_size() >> 24); // lba
+      state.scsi.dati.data[q2++] = (u8)(get_lba_size() >> 16);
+      state.scsi.dati.data[q2++] = (u8)(get_lba_size() >> 8);
+      state.scsi.dati.data[q2++] = (u8)get_lba_size();
+    }
+
+    state.scsi.dati.data[0] = (u8)(q2 >> 8);
+    state.scsi.dati.data[1] = (u8)q2;
+
+#if defined(DEBUG_SCSI)
+    printf("%s: Returning data: ", devid_string);
+    for (unsigned int x1 = 0; x1 < q2; x1++)
+      printf("%02x ", state.scsi.dati.data[x1]);
+    printf("\n");
+#endif
+    do_scsi_error(SCSI_OK);
+  } break;
+
+  case SCSICDROM_MECHANISM_STATUS: {
+#if defined(DEBUG_SCSI)
+    printf("%s: CDROM MECHANISM STATUS.\n", devid_string);
+#endif
+    const u16 alloc =
+        (u16(state.scsi.cmd.data[8]) << 8) | state.scsi.cmd.data[9];
+    const u16 payload_len = 8;
+
+    // Report a simple non-changer drive, matching the QEMU ATAPI reply.
+    put_be16(state.scsi.dati.data + 0, 0);
+    state.scsi.dati.data[2] = 0; // no current LBA / mechanism state info
+    state.scsi.dati.data[3] = 0;
+    state.scsi.dati.data[4] = 0;
+    state.scsi.dati.data[5] = 1; // one slot present
+    put_be16(state.scsi.dati.data + 6, 0);
+
+    state.scsi.dati.read = 0;
+    state.scsi.dati.available = (alloc < payload_len) ? alloc : payload_len;
+    do_scsi_error(SCSI_OK);
+  } break;
+
+  case SCSICDRRW_FORMAT:
+  case SCSICDRRW_READ_DISC_INFO:
+  case SCSICDRRW_READ_TRACK_INFO:
+  case SCSICDRRW_RESERVE_TRACK:
+  case SCSICDRRW_SEND_OPC_INFO:
+  case SCSICDRRW_REPAIR_TRACK:
+  case SCSICDRRW_READ_MASTER_CUE:
+  case SCSICDRRW_CLOSE_TRACK:
+  case SCSICDRRW_READ_BUFFER_CAP:
+  case SCSICDRRW_SEND_CUE_SHEET:
+  case SCSICDRRW_BLANK:
+    // (0x1b 'unload' is START STOP UNIT, handled above with SCSI_OK)
+
+    // These are CD-R/RW specific commands; we pretend to be a simple
+    // CD-ROM player, so no support for these commands.
+#if defined(DEBUG_SCSI)
+    printf("%s: CD-R/RW specific.\n", devid_string);
+#endif
+    do_scsi_error(SCSI_ILL_CMD);
+    break;
+
+  default:
+    FAILURE_2(NotImplemented, "%s: Unknown SCSI command 0x%02x.\n",
+              devid_string, state.scsi.cmd.data[0]);
+  }
+
+  return 0;
 }
 
 /**
@@ -2344,206 +2321,182 @@ int CDisk::do_scsi_command()
  * We parse the message(s) and return what the next SCSI bus
  * phase should be.
  **/
-int CDisk::do_scsi_message()
-{
-	unsigned int  msg;
-	unsigned int  msglen;
+int CDisk::do_scsi_message() {
+  unsigned int msg;
+  unsigned int msglen;
 
-	msg = 0;
-	while (msg < state.scsi.msgo.written)
-	{
-		if (state.scsi.msgo.data[msg] & 0x80)
-		{
+  msg = 0;
+  while (msg < state.scsi.msgo.written) {
+    if (state.scsi.msgo.data[msg] & 0x80) {
 
-			// identify
+      // identify
 #if defined(DEBUG_SCSI)
-			printf("%s: MSG: identify", devid_string);
+      printf("%s: MSG: identify", devid_string);
 #endif
-			if (state.scsi.msgo.data[msg] & 0x40)
-			{
+      if (state.scsi.msgo.data[msg] & 0x40) {
 #if defined(DEBUG_SCSI)
-				printf(" w/disconnect priv");
+        printf(" w/disconnect priv");
 #endif
 
-				//        state.scsi.disconnect_priv = true;
-			}
+        //        state.scsi.disconnect_priv = true;
+      }
 
-			if (state.scsi.msgo.data[msg] & 0x07)
-			{
+      if (state.scsi.msgo.data[msg] & 0x07) {
 
-				// LUN...
+        // LUN...
 #if defined(DEBUG_SCSI)
-				printf(" for lun %d%", state.scsi.msgo.data[msg] & 0x07);
+        printf(" for lun %d%", state.scsi.msgo.data[msg] & 0x07);
 #endif
-				state.scsi.lun_selected = true;
-			}
+        state.scsi.lun_selected = true;
+      }
 
 #if defined(DEBUG_SCSI)
-			printf("\n");
+      printf("\n");
 #endif
-			msg++;
-		}
-		else
-		{
-			switch (state.scsi.msgo.data[msg])
-			{
-			case 0x01:
+      msg++;
+    } else {
+      switch (state.scsi.msgo.data[msg]) {
+      case 0x01:
 #if defined(DEBUG_SCSI)
-				printf("%s: MSG: extended: ", devid_string);
+        printf("%s: MSG: extended: ", devid_string);
 #endif
-				msglen = state.scsi.msgo.data[msg + 1];
-				msg += 2;
-				switch (state.scsi.msgo.data[msg])
-				{
-				case 0x01:
-				{
+        msglen = state.scsi.msgo.data[msg + 1];
+        msg += 2;
+        switch (state.scsi.msgo.data[msg]) {
+        case 0x01: {
 #if defined(DEBUG_SCSI)
-					printf("SDTR.\n");
+          printf("SDTR.\n");
 #endif
-					state.scsi.msgi.available = msglen + 2;
-					state.scsi.msgi.data[0] = 0x01;
-					state.scsi.msgi.data[1] = msglen;
-					for (unsigned int x = 0; x < msglen; x++)
-						state.scsi.msgi.data[2 + x] = state.scsi.msgo.data[msg + x];
-				}
-				break;
+          state.scsi.msgi.available = msglen + 2;
+          state.scsi.msgi.data[0] = 0x01;
+          state.scsi.msgi.data[1] = msglen;
+          for (unsigned int x = 0; x < msglen; x++)
+            state.scsi.msgi.data[2 + x] = state.scsi.msgo.data[msg + x];
+        } break;
 
-				case 0x03:
-				{
+        case 0x03: {
 #if defined(DEBUG_SCSI)
-					printf("WDTR.\n");
+          printf("WDTR.\n");
 #endif
-					state.scsi.msgi.available = msglen + 2;
-					state.scsi.msgi.data[0] = 0x01;
-					state.scsi.msgi.data[1] = msglen;
-					for (unsigned int x = 0; x < msglen; x++)
-						state.scsi.msgi.data[2 + x] = state.scsi.msgo.data[msg + x];
-				}
-				break;
+          state.scsi.msgi.available = msglen + 2;
+          state.scsi.msgi.data[0] = 0x01;
+          state.scsi.msgi.data[1] = msglen;
+          for (unsigned int x = 0; x < msglen; x++)
+            state.scsi.msgi.data[2 + x] = state.scsi.msgo.data[msg + x];
+        } break;
 
-				default:
-					FAILURE_2(NotImplemented,
-						"%s: MSG: don't understand extended message %02x.\n", devid_string,
-						state.scsi.msgo.data[msg]);
-				}
+        default:
+          FAILURE_2(NotImplemented,
+                    "%s: MSG: don't understand extended message %02x.\n",
+                    devid_string, state.scsi.msgo.data[msg]);
+        }
 
-				msg += msglen;
-				break;
+        msg += msglen;
+        break;
 
-			default:
-				FAILURE_2(NotImplemented, "%s: MSG: don't understand message %02x.\n",
-					devid_string, state.scsi.msgo.data[msg]);
-			}
-		}
-	}
+      default:
+        FAILURE_2(NotImplemented, "%s: MSG: don't understand message %02x.\n",
+                  devid_string, state.scsi.msgo.data[msg]);
+      }
+    }
+  }
 
-	// return next phase
-	if (state.scsi.msgi.available)
-		return SCSI_PHASE_MSG_IN;
-	else
-		return SCSI_PHASE_COMMAND;
+  // return next phase
+  if (state.scsi.msgi.available)
+    return SCSI_PHASE_MSG_IN;
+  else
+    return SCSI_PHASE_COMMAND;
 }
 
-static int  primes_54[54] = { 2,  3,    5,   7,  11,  13,  17,  19,  23,  29,
-  31,  37,  41,  43,  47,  53,  59,  61,  67,  71,
-  73,  79,  83,  89,  97, 101, 103, 107, 109, 113,
-  127, 131, 137, 139, 149, 151, 157, 163, 167, 173,
-  179, 181, 191, 193, 197, 199, 211, 223, 227, 229,
-  233, 239, 241, 251 };
+static int primes_54[54] = {
+    2,   3,   5,   7,   11,  13,  17,  19,  23,  29,  31,  37,  41,  43,
+    47,  53,  59,  61,  67,  71,  73,  79,  83,  89,  97,  101, 103, 107,
+    109, 113, 127, 131, 137, 139, 149, 151, 157, 163, 167, 173, 179, 181,
+    191, 193, 197, 199, 211, 223, 227, 229, 233, 239, 241, 251};
 
 //  2 3 5 7 11 13
-static int  pri16[16][6] = { {4,0,0,0, 0, 0}, //16
-  {0,1,1,0, 0, 0},  //15
-  {1,0,0,1, 0, 0},  //14
-  {0,0,0,0, 0, 1},  //13
-  {2,1,0,0, 0, 0},  //12
-  {0,0,0,0, 1, 0},  //11
-  {1,0,1,0, 0, 0},  //10
-  {0,2,0,0, 0, 0},  //9
-  {3,0,0,0, 0, 0},  //8
-  {0,0,0,1, 0, 0},  //7
-  {1,1,0,0, 0, 0},  //6
-  {0,0,1,0, 0, 0},  //5
-  {2,0,0,0, 0, 0},  //4
-  {0,1,0,0, 0, 0},  //3
-  {1,0,0,0, 0, 0},  //2
-  {0,0,0,0, 0, 0} }; //1
-static off_t_large get_primes(off_t_large value, int pri[54])
-{
-	int i;
-	for (i = 0; i < 54; i++)
-	{
-		pri[i] = 0;
-		while (!(value % primes_54[i]))
-		{
-			pri[i]++;
-			value /= primes_54[i];
-		}
-	}
+static int pri16[16][6] = {{4, 0, 0, 0, 0, 0},  // 16
+                           {0, 1, 1, 0, 0, 0},  // 15
+                           {1, 0, 0, 1, 0, 0},  // 14
+                           {0, 0, 0, 0, 0, 1},  // 13
+                           {2, 1, 0, 0, 0, 0},  // 12
+                           {0, 0, 0, 0, 1, 0},  // 11
+                           {1, 0, 1, 0, 0, 0},  // 10
+                           {0, 2, 0, 0, 0, 0},  // 9
+                           {3, 0, 0, 0, 0, 0},  // 8
+                           {0, 0, 0, 1, 0, 0},  // 7
+                           {1, 1, 0, 0, 0, 0},  // 6
+                           {0, 0, 1, 0, 0, 0},  // 5
+                           {2, 0, 0, 0, 0, 0},  // 4
+                           {0, 1, 0, 0, 0, 0},  // 3
+                           {1, 0, 0, 0, 0, 0},  // 2
+                           {0, 0, 0, 0, 0, 0}}; // 1
+static off_t_large get_primes(off_t_large value, int pri[54]) {
+  int i;
+  for (i = 0; i < 54; i++) {
+    pri[i] = 0;
+    while (!(value % primes_54[i])) {
+      pri[i]++;
+      value /= primes_54[i];
+    }
+  }
 
-	return value;
+  return value;
 }
 
 /**
  * Calculate optimal disk layout...
  **/
-#define MAX_HD  16
+#define MAX_HD 16
 #define MAX_SEC 50
 
-void CDisk::determine_layout()
-{
-	int   disk_primes[54];
-	int   compare_primes[54];
+void CDisk::determine_layout() {
+  int disk_primes[54];
+  int compare_primes[54];
 
-	long  heads_sectors = 0;
-	long  c_heads = 0;
-	bool  b;
-	int   prime;
+  long heads_sectors = 0;
+  long c_heads = 0;
+  bool b;
+  int prime;
 
-	get_primes(get_lba_size(), disk_primes);
+  get_primes(get_lba_size(), disk_primes);
 
-	for (heads_sectors = MAX_SEC * MAX_HD; heads_sectors > 0; heads_sectors--)
-	{
-		if (get_primes(heads_sectors, compare_primes) > 1)
-			continue;
+  for (heads_sectors = MAX_SEC * MAX_HD; heads_sectors > 0; heads_sectors--) {
+    if (get_primes(heads_sectors, compare_primes) > 1)
+      continue;
 
-		for (c_heads = MAX_HD; c_heads > 0; c_heads--)
-		{
-			b = true;
-			for (prime = 0; prime < 6; prime++)
-			{
-				if (pri16[16 - c_heads][prime] > compare_primes[prime])
-				{
-					b = false;
-					break;
-				}
-			}
+    for (c_heads = MAX_HD; c_heads > 0; c_heads--) {
+      b = true;
+      for (prime = 0; prime < 6; prime++) {
+        if (pri16[16 - c_heads][prime] > compare_primes[prime]) {
+          b = false;
+          break;
+        }
+      }
 
-			if (b)
-				break;
-		}
+      if (b)
+        break;
+    }
 
-		if (heads_sectors / c_heads > MAX_SEC)
-			continue;
+    if (heads_sectors / c_heads > MAX_SEC)
+      continue;
 
-		b = true;
-		for (prime = 0; prime < 54; prime++)
-		{
-			if (compare_primes[prime] > disk_primes[prime])
-			{
-				b = false;
-				break;
-			}
-		}
+    b = true;
+    for (prime = 0; prime < 54; prime++) {
+      if (compare_primes[prime] > disk_primes[prime]) {
+        b = false;
+        break;
+      }
+    }
 
-		if (b)
-			break;
-	}
+    if (b)
+      break;
+  }
 
-	heads = c_heads;
-	sectors = heads_sectors / c_heads;
+  heads = c_heads;
+  sectors = heads_sectors / c_heads;
 
-	//  sectors = 32;
-	//  heads = 8;
-	cylinders = get_lba_size() / heads / sectors;
+  //  sectors = 32;
+  //  heads = 8;
+  cylinders = get_lba_size() / heads / sectors;
 }

@@ -180,8 +180,7 @@ public:
 
   // LDx_L: record locked range + loaded value
   void cpu_lock(int cpuid, u64 address, u64 value);
-  bool cpu_take_lock(int cpuid, u64 address, u64 *expected,
-                     bool *same_address);
+  bool cpu_take_lock(int cpuid, u64 address, u64 *expected, bool *same_address);
   // exception/interrupt: drop the lock
   void cpu_clear_lock(int cpuid);
 

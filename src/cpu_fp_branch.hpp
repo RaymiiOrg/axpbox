@@ -26,40 +26,46 @@
  * serve the general public.
  */
 
- /**
-  * \file
-  * Contains code macros for the processor floating-point branch instructions.
-  * Based on ARM chapter 4.9.
+/**
+ * \file
+ * Contains code macros for the processor floating-point branch instructions.
+ * Based on ARM chapter 4.9.
  **/
 #define FP_IS_ZERO(val) (((val) & ~FPR_SIGN) == 0)
-#define FP_IS_NEGATIVE(val) (((val) & FPR_SIGN) != 0)
+#define FP_IS_NEGATIVE(val) (((val)&FPR_SIGN) != 0)
 
 // Branch if equal to zero (+0 or -0)
-#define DO_FBEQ FPSTART; \
-  if(FP_IS_ZERO(state.f[FREG_1])) \
+#define DO_FBEQ                                                                \
+  FPSTART;                                                                     \
+  if (FP_IS_ZERO(state.f[FREG_1]))                                             \
     add_pc(DISP_21 * 4);
 
 // Branch if >= 0 (positive or zero, including -0)
-#define DO_FBGE FPSTART; \
-  if(!FP_IS_NEGATIVE(state.f[FREG_1]) || FP_IS_ZERO(state.f[FREG_1])) \
+#define DO_FBGE                                                                \
+  FPSTART;                                                                     \
+  if (!FP_IS_NEGATIVE(state.f[FREG_1]) || FP_IS_ZERO(state.f[FREG_1]))         \
     add_pc(DISP_21 * 4);
 
 // Branch if > 0 (positive and non-zero)
-#define DO_FBGT FPSTART; \
-  if(!FP_IS_NEGATIVE(state.f[FREG_1]) && !FP_IS_ZERO(state.f[FREG_1])) \
+#define DO_FBGT                                                                \
+  FPSTART;                                                                     \
+  if (!FP_IS_NEGATIVE(state.f[FREG_1]) && !FP_IS_ZERO(state.f[FREG_1]))        \
     add_pc(DISP_21 * 4);
 
 // Branch if <= 0 (negative or zero)
-#define DO_FBLE FPSTART; \
-  if(FP_IS_NEGATIVE(state.f[FREG_1]) || FP_IS_ZERO(state.f[FREG_1])) \
+#define DO_FBLE                                                                \
+  FPSTART;                                                                     \
+  if (FP_IS_NEGATIVE(state.f[FREG_1]) || FP_IS_ZERO(state.f[FREG_1]))          \
     add_pc(DISP_21 * 4);
 
 // Branch if < 0 (negative and non-zero)
-#define DO_FBLT FPSTART; \
-  if(FP_IS_NEGATIVE(state.f[FREG_1]) && !FP_IS_ZERO(state.f[FREG_1])) \
+#define DO_FBLT                                                                \
+  FPSTART;                                                                     \
+  if (FP_IS_NEGATIVE(state.f[FREG_1]) && !FP_IS_ZERO(state.f[FREG_1]))         \
     add_pc(DISP_21 * 4);
 
 // Branch if not equal to zero
-#define DO_FBNE FPSTART; \
-  if(!FP_IS_ZERO(state.f[FREG_1])) \
+#define DO_FBNE                                                                \
+  FPSTART;                                                                     \
+  if (!FP_IS_ZERO(state.f[FREG_1]))                                            \
     add_pc(DISP_21 * 4);

@@ -26,9 +26,9 @@
  * serve the general public.
  */
 
- /**
-  * \file
-  * Contains the definitions for the emulated Serial Port devices.
+/**
+ * \file
+ * Contains the definitions for the emulated Serial Port devices.
  **/
 #if !defined(INCLUDED_SERIAL_H)
 #define INCLUDED_SERIAL_H
@@ -38,82 +38,91 @@
 
 #define STAGE_SIZE 8192
 
-  /**
-   * \brief Emulated serial port.
-   *
-   * The serial port is translated to a telnet port.
-   **/
-class CSerial : public CSystemComponent
-{
+/**
+ * \brief Emulated serial port.
+ *
+ * The serial port is translated to a telnet port.
+ **/
+class CSerial : public CSystemComponent {
 public:
-  void          write(const char* s, int dsize);
-  void          write_cstr(const char* s);
-  virtual void  WriteMem(int index, u64 address, int dsize, u64 data);
-  virtual u64   ReadMem(int index, u64 address, int dsize);
-  CSerial(CConfigurator* cfg, CSystem* c, u16 number);
-  virtual       ~CSerial();
-  int           receive(const char* data, int dsize);
-  virtual void  check_state();
-  virtual int   SaveState(FILE* f);
-  virtual int   RestoreState(FILE* f);
-  void          eval_interrupts();
-  void          WaitForConnection();
-  virtual void  run();
-  void          execute();
+  void write(const char *s, int dsize);
+  void write_cstr(const char *s);
+  virtual void WriteMem(int index, u64 address, int dsize, u64 data);
+  virtual u64 ReadMem(int index, u64 address, int dsize);
+  CSerial(CConfigurator *cfg, CSystem *c, u16 number);
+  virtual ~CSerial();
+  int receive(const char *data, int dsize);
+  virtual void check_state();
+  virtual int SaveState(FILE *f);
+  virtual int RestoreState(FILE *f);
+  void eval_interrupts();
+  void WaitForConnection();
+  virtual void run();
+  void execute();
 
-  virtual void  init();
-  virtual void  start_threads();
-  virtual void  stop_threads();
+  virtual void init();
+  virtual void start_threads();
+  virtual void stop_threads();
+
 private:
-  void          serial_menu();
-  void          drain_staging();
+  void serial_menu();
+  void drain_staging();
 
   std::unique_ptr<std::thread> myThread;
   std::atomic_bool myThreadDead{false};
-  bool  StopThread = false;
-  bool  breakHit = false;
-  bool  acceptingSocket = false;
+  bool StopThread = false;
+  bool breakHit = false;
+  bool acceptingSocket = false;
   const char *listenAddress = nullptr;
 
-  unsigned char  iac_carry[8];          // Partial telnet sequence carried across recv() calls
-  int            iac_carry_len;         // Number of valid bytes in iac_carry
-  bool           in_subneg;             // Currently inside IAC SB ... IAC SE subnegotiation
+  unsigned char
+      iac_carry[8];  // Partial telnet sequence carried across recv() calls
+  int iac_carry_len; // Number of valid bytes in iac_carry
+  bool in_subneg;    // Currently inside IAC SB ... IAC SE subnegotiation
 
-  char           stageBuf[STAGE_SIZE];  // Cooked data waiting for baud-rate delivery
-  int            stageLen;              // Number of valid bytes in stageBuf
+  char stageBuf[STAGE_SIZE]; // Cooked data waiting for baud-rate delivery
+  int stageLen;              // Number of valid bytes in stageBuf
 
-  /// The state structure contains all elements that need to be saved to the statefile.
-  struct SSrl_state
-  {
-    u8    bTHR; /**< Transmit Hold Register */
-    u8    bRDR; /**< Received Data Register */
-    u8    bBRB_LSB;
-    u8    bBRB_MSB;
-    u8    bIER; /**< Interrupt Enable Register */
-    u8    bIIR; /**< Interrupt Identification Register */
-    u8    bFCR;
-    u8    bLCR; /**< Line Control Register (Data Format Register) */
-    u8    bMCR; /**< Modem Control Register */
-    u8    bLSR; /**< Line Status Register */
-    u8    bMSR; /**< Modem Status Register */
-    u8    bSPR; /**< Scratch Pad Register */
-    int   serial_cycles;
-    char  rcvBuffer[1024];
-    int   rcvW;
-    int   rcvR;
-    int   iNumber;
-    bool  thre_pending; /**< THRE interrupt latched (THR emptied, not yet acked by an IIR read) */
+  /// The state structure contains all elements that need to be saved to the
+  /// statefile.
+  struct SSrl_state {
+    u8 bTHR; /**< Transmit Hold Register */
+    u8 bRDR; /**< Received Data Register */
+    u8 bBRB_LSB;
+    u8 bBRB_MSB;
+    u8 bIER; /**< Interrupt Enable Register */
+    u8 bIIR; /**< Interrupt Identification Register */
+    u8 bFCR;
+    u8 bLCR; /**< Line Control Register (Data Format Register) */
+    u8 bMCR; /**< Modem Control Register */
+    u8 bLSR; /**< Line Status Register */
+    u8 bMSR; /**< Modem Status Register */
+    u8 bSPR; /**< Scratch Pad Register */
+    int serial_cycles;
+    char rcvBuffer[1024];
+    int rcvW;
+    int rcvR;
+    int iNumber;
+    bool thre_pending; /**< THRE interrupt latched (THR emptied, not yet acked
+                          by an IIR read) */
   } state;
   int listenPort;
   int64_t listenSocket;
   int64_t connectSocket;
-  bool disabled = false;     ///< If true, port is not exposed to guest; reads return 0xff, writes ignored. Used to skip KDCOM probe on AXP64 2210 etc.
-  bool raw_mode = false;     ///< If true, skip telnet IAC processing and connect banner. Use for windbg/kgdb where the byte stream must be 8-bit clean.
-  bool null_attach = false;  ///< If true, port exists on the bus but no socket is opened and no I/O thread runs.
-                             ///< Guest sees a healthy idle 16550 (THRE/TSRE, CTS/DSR); TX bytes are silently
-                             ///< dropped; RX FIFO is permanently empty. MCR.LOOP self-test still works (no
-                             ///< socket touched). Use when the guest expects a UART to exist but you don't
-                             ///< want a telnet listener — bit-bucket semantics, like QEMU's -serial null.
+  bool disabled =
+      false; ///< If true, port is not exposed to guest; reads return 0xff,
+             ///< writes ignored. Used to skip KDCOM probe on AXP64 2210 etc.
+  bool raw_mode =
+      false; ///< If true, skip telnet IAC processing and connect banner. Use
+             ///< for windbg/kgdb where the byte stream must be 8-bit clean.
+  bool null_attach =
+      false; ///< If true, port exists on the bus but no socket is opened and no
+             ///< I/O thread runs. Guest sees a healthy idle 16550 (THRE/TSRE,
+             ///< CTS/DSR); TX bytes are silently dropped; RX FIFO is
+             ///< permanently empty. MCR.LOOP self-test still works (no socket
+             ///< touched). Use when the guest expects a UART to exist but you
+             ///< don't want a telnet listener — bit-bucket semantics, like
+             ///< QEMU's -serial null.
 #if defined(IDB) && defined(LS_MASTER)
   int throughSocket;
 #endif

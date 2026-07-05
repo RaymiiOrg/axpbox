@@ -26,48 +26,49 @@
  * serve the general public.
  */
 
- /**
-  * \file
-  * Contains definitions for the SCSI device base class.
+/**
+ * \file
+ * Contains definitions for the SCSI device base class.
  **/
 #if !defined(__SCSIDEVICE__H__)
 #define __SCSIDEVICE__H__
 
 #include <cstddef>
 
-  /**
-   * \brief Base class for emulated SCSI devices.
-   *
-   * Connects to one or more SCSI busses (class CSCSIBus) together; derived
-   * SCSI devices are disks and controllers.
-   **/
-class CSCSIDevice
-{
+/**
+ * \brief Base class for emulated SCSI devices.
+ *
+ * Connects to one or more SCSI busses (class CSCSIBus) together; derived
+ * SCSI devices are disks and controllers.
+ **/
+class CSCSIDevice {
 public:
   CSCSIDevice(void);
-  virtual         ~CSCSIDevice(void);
+  virtual ~CSCSIDevice(void);
 
-  void            scsi_register(int busno, class CSCSIBus* with, int target);
+  void scsi_register(int busno, class CSCSIBus *with, int target);
 
-  bool            scsi_arbitrate(int bus);
-  bool            scsi_select(int bus, int target);
-  virtual void    scsi_select_me(int bus);
-  void            scsi_set_phase(int bus, int phase);
-  int             scsi_get_phase(int bus);
-  void            scsi_free(int bus);
+  bool scsi_arbitrate(int bus);
+  bool scsi_select(int bus, int target);
+  virtual void scsi_select_me(int bus);
+  void scsi_set_phase(int bus, int phase);
+  int scsi_get_phase(int bus);
+  void scsi_free(int bus);
 
-  virtual size_t  scsi_expected_xfer_me(int bus);
-  size_t          scsi_expected_xfer(int bus);
+  virtual size_t scsi_expected_xfer_me(int bus);
+  size_t scsi_expected_xfer(int bus);
 
-  virtual void* scsi_xfer_ptr_me(int bus, size_t bytes);
-  void* scsi_xfer_ptr(int bus, size_t bytes);
+  virtual void *scsi_xfer_ptr_me(int bus, size_t bytes);
+  void *scsi_xfer_ptr(int bus, size_t bytes);
 
-  virtual void    scsi_xfer_done_me(int bus);
-  void            scsi_xfer_done(int bus);
+  virtual void scsi_xfer_done_me(int bus);
+  void scsi_xfer_done(int bus);
+
 protected:
-  class CSCSIBus* scsi_bus[10];           /**< SCSI busses this device connects to. Disks
-                                    connect to 1 bus only, controllers can have
-                                    several SCSI busses. **/
-  int               scsi_initiator_id[10];  /**< Main SCSI id of this device on each of the busses. **/
+  class CSCSIBus *scsi_bus[10]; /**< SCSI busses this device connects to. Disks
+                          connect to 1 bus only, controllers can have
+                          several SCSI busses. **/
+  int scsi_initiator_id[10];    /**< Main SCSI id of this device on each of the
+                                   busses. **/
 };
 #endif
