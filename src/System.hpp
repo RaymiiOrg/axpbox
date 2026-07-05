@@ -31,6 +31,7 @@
 #include "TraceEngine.hpp"
 #include "i2c_spd.hpp"
 #include <atomic>
+#include <mutex>
 
 #if !defined(INCLUDED_SYSTEM_H)
 #define INCLUDED_SYSTEM_H
@@ -136,6 +137,8 @@ public:
   // IsSystemResetRequested() and parks until the main thread processes it.
   void RequestSystemReset();
   bool IsSystemResetRequested() const;
+  bool ProcessPendingReset();
+  void ResetChipsetState();
 
   // True while we are performing an in-process reset (stop/reset/start).
   // Devices (S3/SDL) use this to PAUSE instead of destroying the window.
@@ -168,14 +171,19 @@ public:
 #define PANIC_ASKSHUTDOWN 2
 #define PANIC_LISTING 4
   void clear_clock_int(int ProcNum);
+  // ack interprocessor interrupt: clear MISC<IPINTR>, drop b_irq<3>
+  void clear_ipi(int ProcNum);
   u64 get_c_misc();
   u64 get_c_dir(int ProcNum);
   u64 get_c_dim(int ProcNum);
   void set_c_dim(int ProcNum, u64 value);
 
-  void cpu_lock(int cpuid, u64 address);
-  bool cpu_unlock(int cpuid);
-  void cpu_break_lock(int cpuid, CSystemComponent *source);
+  // LDx_L: record locked range + loaded value
+  void cpu_lock(int cpuid, u64 address, u64 value);
+  bool cpu_take_lock(int cpuid, u64 address, u64 *expected,
+                     bool *same_address);
+  // exception/interrupt: drop the lock
+  void cpu_clear_lock(int cpuid);
 
 private:
   u64 cchip_csr_read(u32 address, CSystemComponent *source);
@@ -200,13 +208,17 @@ private:
   std::atomic<bool> m_reset_requested{false};
   std::atomic<bool> m_reset_in_progress{false};
 
+  // Serializes drir RMW + delivery in interrupt() across device threads. On
+  // CSystem (not in saved 'state'), so SaveState is unaffected.
+  std::mutex drir_lock;
+
   int iNumCPUs;
-  CFastMutex *cpu_lock_mutex;
+  u64 cpu_lock_value[4]; // per-CPU LDx_L value, for same-address STx_C
 
   /// The state structure contains all elements that need to be saved to the
   /// statefile.
   struct SSys_state {
-    int cpu_lock_flags;
+    std::atomic<int> cpu_lock_flags;
     u64 cpu_lock_address[4];
 
     /**

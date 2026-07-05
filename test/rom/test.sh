@@ -47,7 +47,12 @@ kill $NETCAT_PID
 kill $AXPBOX_PID
 
 echo -n -e '\033[1;31m'
-diff -c axp_correct.log axp.log && echo -e '\033[1;32mdiff clean\033[0m'
+# The CPU speed line is measured from host wall-clock performance since the
+# ES40-Emu timing port, so it varies per host; exclude it from the comparison
+# (after stripping the NUL padding the SRM console emits).
+normalize() { LC_ALL=C sed 's/\x00//g' "$1" | LC_ALL=C sed 's/CPU [0-9] speed is.*//'; }
+diff -c <(normalize axp_correct.log) <(normalize axp.log) \
+    && echo -e '\033[1;32mdiff clean\033[0m'
 result=$?
 echo -n -e '\033[0m'
 

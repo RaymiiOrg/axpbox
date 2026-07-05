@@ -26,85 +26,44 @@
  * serve the general public.
  */
 
-#if defined(HAVE_NEW_FP)
-#define DO_LDF                                                                 \
-  FPSTART;                                                                     \
-  if (FREG_1 != 31) {                                                          \
-    READ_VIRT_F(state.r[REG_2] + DISP_16, 32, state.f[FREG_1], vax_ldf);       \
+ /**
+  * \file
+  * Contains code macros for the processor floating-point load/store instructions.
+  * Based on ARM chapter 4.8.
+ **/
+
+#define DO_LDF  FPSTART;                                  \
+  if(FREG_1 != 31)                                        \
+  {                                                       \
+    READ_VIRT_F(state.r[REG_2] + DISP_16, 32, state.f[FREG_1], vax_ldf);          \
   }
 
-#define DO_LDG                                                                 \
-  FPSTART;                                                                     \
-  if (FREG_1 != 31) {                                                          \
-    READ_VIRT_F(state.r[REG_2] + DISP_16, 64, state.f[FREG_1], vax_ldg);       \
+#define DO_LDG  FPSTART;                                  \
+  if(FREG_1 != 31)                                        \
+  {                                                       \
+    READ_VIRT_F(state.r[REG_2] + DISP_16, 64, state.f[FREG_1], vax_ldg);          \
   }
 
-#define DO_LDS                                                                 \
-  FPSTART;                                                                     \
-  if (FREG_1 != 31) {                                                          \
-    READ_VIRT_F(state.r[REG_2] + DISP_16, 32, state.f[FREG_1], ieee_lds);      \
+#define DO_LDS  FPSTART;                                  \
+  if(FREG_1 != 31)                                        \
+  {                                                       \
+    READ_VIRT_F(state.r[REG_2] + DISP_16, 32, state.f[FREG_1], ieee_lds);          \
   }
 
-#define DO_LDT                                                                 \
-  FPSTART;                                                                     \
-  if (FREG_1 != 31) {                                                          \
-    READ_VIRT(state.r[REG_2] + DISP_16, 64, state.f[FREG_1]);                  \
+#define DO_LDT  FPSTART;                                      \
+  if(FREG_1 != 31)                                            \
+  {                                                           \
+    READ_VIRT(state.r[REG_2] + DISP_16, 64, state.f[FREG_1]); \
   }
 
-#define DO_STF                                                                 \
-  FPSTART;                                                                     \
+#define DO_STF  FPSTART;                                \
   WRITE_VIRT(state.r[REG_2] + DISP_16, 32, vax_stf(state.f[FREG_1]));
 
-#define DO_STG                                                                 \
-  FPSTART;                                                                     \
+#define DO_STG  FPSTART;                                \
   WRITE_VIRT(state.r[REG_2] + DISP_16, 64, vax_stg(state.f[FREG_1]));
 
-#define DO_STS                                                                 \
-  FPSTART;                                                                     \
+#define DO_STS  FPSTART;                                \
   WRITE_VIRT(state.r[REG_2] + DISP_16, 32, ieee_sts(state.f[FREG_1]));
 
-#define DO_STT                                                                 \
-  FPSTART;                                                                     \
+#define DO_STT  FPSTART;                                \
   WRITE_VIRT(state.r[REG_2] + DISP_16, 64, state.f[FREG_1]);
-
-#else
-#define DO_LDF                                                                 \
-  FPSTART;                                                                     \
-  if (FREG_1 != 31) {                                                          \
-    READ_VIRT_F(state.r[REG_2] + DISP_16, 32, state.f[FREG_1], load_f);        \
-  }
-
-#define DO_LDG                                                                 \
-  FPSTART;                                                                     \
-  if (FREG_1 != 31) {                                                          \
-    READ_VIRT_F(state.r[REG_2] + DISP_16, 64, state.f[FREG_1], load_g);        \
-  }
-
-#define DO_LDS                                                                 \
-  FPSTART;                                                                     \
-  if (FREG_1 != 31) {                                                          \
-    READ_VIRT_F(state.r[REG_2] + DISP_16, 32, state.f[FREG_1], load_s);        \
-  }
-
-#define DO_LDT                                                                 \
-  FPSTART;                                                                     \
-  if (FREG_1 != 31) {                                                          \
-    READ_VIRT(state.r[REG_2] + DISP_16, 64, state.f[FREG_1]);                  \
-  }
-
-#define DO_STF                                                                 \
-  FPSTART;                                                                     \
-  WRITE_VIRT(state.r[REG_2] + DISP_16, 32, store_f(state.f[FREG_1]));
-
-#define DO_STG                                                                 \
-  FPSTART;                                                                     \
-  WRITE_VIRT(state.r[REG_2] + DISP_16, 64, store_g(state.f[FREG_1]));
-
-#define DO_STS                                                                 \
-  FPSTART;                                                                     \
-  WRITE_VIRT(state.r[REG_2] + DISP_16, 32, store_s(state.f[FREG_1]));
-
-#define DO_STT                                                                 \
-  FPSTART;                                                                     \
-  WRITE_VIRT(state.r[REG_2] + DISP_16, 64, state.f[FREG_1]);
-#endif

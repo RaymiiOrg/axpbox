@@ -105,7 +105,6 @@ CSystem::CSystem(CConfigurator *cfg) {
   } else
     CHECK_ALLOCATION(memory = calloc(1 << iNumMemoryBits, 1));
 
-  cpu_lock_mutex = new CFastMutex("cpu-locking-lock");
 
   printf("%s(%s): $Id: System.cpp,v 1.79 2008/06/12 07:29:44 iamcamiel Exp $\n",
          cfg->get_myName(), cfg->get_myValue());
@@ -271,6 +270,10 @@ void CSystem::Run() {
   for (k = 0;; k++) {
     if (got_sigint)
       FAILURE(Graceful, "CTRL-C detected");
+
+    if (ProcessPendingReset())
+      continue;
+
     std::this_thread::sleep_for(std::chrono::milliseconds(100));
     for (i = 0; i < iNumComponents; i++)
       acComponents[i]->check_state();
@@ -331,29 +334,49 @@ int CSystem::SingleStep() {
 #if defined(DEBUG_PORTACCESS)
 u64 lastport;
 #endif // defined(DEBUG_PORTACCESS)
-void CSystem::cpu_lock(int cpuid, u64 address) {
-  SCOPED_FM_LOCK(cpu_lock_mutex);
+// EV6/EV68 Dcache blocks are 64 bytes; LDx_L/STx_C monitor that cache line.
+#define CPU_LOCK_MATCH_MASK U64(0x00000807ffffffc0)
+#define CPU_LOCK_IO_MASK U64(0x0000080000000000)
 
-  //  printf("cpu%d: lock %" PRIx64 ".   \n",cpuid,address);
-  state.cpu_lock_flags |= (1 << cpuid);
+static inline bool cpu_lock_matches(u64 locked_address, u64 address) {
+  return !((locked_address ^ address) & CPU_LOCK_MATCH_MASK);
+}
+
+// --- Load-locked / store-conditional (HRM 4.2) -----------------------------
+// Keep the original CAS-backed model for same-address LL/SC sequences, because
+// it provides the emulator's MP atomicity. Some Alpha code stores
+// conditionally to a different quadword in the same locked cache line; those
+// must not compare against the value loaded from the LDx_L address.
+
+void CSystem::cpu_lock(int cpuid, u64 address, u64 value) {
   state.cpu_lock_address[cpuid] = address;
+  cpu_lock_value[cpuid] = value;
+  state.cpu_lock_flags |= (1 << cpuid); // atomic fetch_or
 }
 
-bool CSystem::cpu_unlock(int cpuid) {
-  SCOPED_FM_LOCK(cpu_lock_mutex);
+bool CSystem::cpu_take_lock(int cpuid, u64 address, u64 *expected,
+                            bool *same_address) {
+  // I/O-space conditional stores have no cache line to watch; treat as held.
+  bool held = (address & CPU_LOCK_IO_MASK) ||
+              ((state.cpu_lock_flags.load() & (1 << cpuid)) &&
+               cpu_lock_matches(state.cpu_lock_address[cpuid], address));
 
-  bool retval;
-  retval = state.cpu_lock_flags & (1 << cpuid);
-
-  //  printf("cpu%d: unlock (%s).   \n",cpuid,retval?"ok":"failed");
-  state.cpu_lock_flags &= ~(1 << cpuid);
-  return retval;
+  // STx_C always consumes this CPU's lock, success or fail.
+  state.cpu_lock_flags &= ~(1 << cpuid); // atomic fetch_and
+  if (held) {
+    *expected = cpu_lock_value[cpuid];
+    *same_address = (state.cpu_lock_address[cpuid] == address);
+  }
+  return held;
 }
 
-void CSystem::cpu_break_lock(int cpuid, CSystemComponent *source) {
-  SCOPED_FM_LOCK(cpu_lock_mutex);
-  printf("cpu%d: lock broken by %s.   \n", cpuid, source->devid_string);
-  state.cpu_lock_flags &= ~(1 << cpuid);
+/**
+ * Drop one CPU's load lock. Called when that CPU takes an exception or
+ * interrupt (HRM 4.2.4: a pending STx_C must fail if an exception/interrupt
+ * intervened).
+ **/
+void CSystem::cpu_clear_lock(int cpuid) {
+  state.cpu_lock_flags &= ~(1 << cpuid); // atomic fetch_and
 }
 
 /**
@@ -462,16 +485,8 @@ void CSystem::WriteMem(u64 address, int dsize, u64 data,
   u32 t32;
   u16 t16;
 #endif // defined(ALIGN_MEM_ACCESS)
-  if (state.cpu_lock_flags) {
-    for (i = 0; i < iNumCPUs; i++) {
-      if ((state.cpu_lock_flags & (1 << i)) &&
-          (!((state.cpu_lock_address[i] ^ address) &
-             U64(0x00000807ffffff00))) &&
-          (source != acCPUs[i]))
-        cpu_break_lock(i, source);
-    }
-  }
-
+  // No device-write lock breaking here: the CAS-backed STx_C model detects
+  // any intervening store to the locked location by value comparison.
   a = address & U64(0x00000807ffffffff);
 
   if (a >> iNumMemoryBits) // non-memory
@@ -1345,7 +1360,12 @@ u64 CSystem::cchip_csr_read(u32 a, CSystemComponent *source) {
     //    printf("MISC: %016" PRIx64 " from CPU %d (@%" PRIx64 ") (other @ %" LL
     //    "x).\n",state.cchip.misc | cpu->get_cpuid(),cpu->get_cpuid(),
     //    cpu->get_pc()-4, acCPUs[1-cpu->get_cpuid()]->get_pc());
-    return state.cchip.misc | cpu->get_cpuid();
+    {
+      // Consistent read of MISC against the concurrent RMW in
+      // cchip_csr_write()/clear_clock_int().
+      std::lock_guard<std::mutex> g(drir_lock);
+      return state.cchip.misc | cpu->get_cpuid();
+    }
 
   case 0x0c0: { // MPD: bit3=DR (SDA read), bit2=CKR (SCL read), bits1:0 read
                 // as 0
@@ -1863,6 +1883,10 @@ int CSystem::LoadROM() {
 void CSystem::interrupt(int number, bool assert) {
   int i;
 
+  // Serialize drir RMW + delivery against other device threads; irq_h() is
+  // lock-free and never re-enters here, so this is deadlock-free.
+  std::lock_guard<std::mutex> drirGuard(drir_lock);
+
   if (number == -1) {
 
     // timer int...
@@ -2229,6 +2253,67 @@ bool CSystem::IsSystemResetRequested() const {
   return m_reset_requested.load(std::memory_order_acquire);
 }
 
+bool CSystem::ProcessPendingReset() {
+  if (!m_reset_requested.exchange(false, std::memory_order_acq_rel))
+    return false;
+
+  struct ResetInProgressGuard {
+    CSystem *sys;
+    explicit ResetInProgressGuard(CSystem *s) : sys(s) {
+      sys->SetResetInProgress(true);
+    }
+    ~ResetInProgressGuard() { sys->SetResetInProgress(false); }
+  };
+
+  printf("\n%%SYS-I-RESET: System reset requested by firmware.\n");
+  if (theSROM)
+    theSROM->FlushIfDirty();
+
+  ResetInProgressGuard rip(this);
+  stop_threads();
+  ResetChipsetState();
+  for (int dev = 0; dev < iNumComponents; dev++)
+    acComponents[dev]->ResetPCI();
+  for (int cpu = 0; cpu < iNumCPUs; cpu++)
+    acCPUs[cpu]->ResetForSystemReset();
+  LoadROM();
+  start_threads();
+  return true;
+}
+
+void CSystem::ResetChipsetState() {
+  // Re-establish the same power-on defaults used in the constructor.
+  state.cpu_lock_flags = 0;
+  memset(state.cpu_lock_address, 0, sizeof(state.cpu_lock_address));
+  memset(cpu_lock_value, 0, sizeof(cpu_lock_value));
+
+  for (int i = 0; i < 4; i++)
+    state.cchip.dim[i] = 0;
+  state.cchip.drir = 0;
+  state.cchip.misc = U64(0x0000000800000000);
+  state.cchip.csc = U64(0x3142444014157803);
+
+  state.dchip.drev = 0x01;
+  state.dchip.dsc = 0x43;
+  state.dchip.dsc2 = 0x03;
+  state.dchip.str = 0x25;
+
+  for (int i = 0; i < 2; i++) {
+    memset(&state.pchip[i], 0, sizeof(struct SSys_state::SSys_pchip));
+    state.pchip[i].wsba[3] = 2;
+  }
+
+  state.pchip[0].pctl = U64(0x0000104401440081);
+  state.pchip[1].pctl = U64(0x0000504401440081);
+
+  state.tig.FwWrite = 0;
+  state.tig.HaltA = 0;
+  state.tig.HaltB = 0;
+  state.tig.ModInfo = 0;
+
+  memset(state.cf8_address, 0, sizeof(state.cf8_address));
+}
+
 /**
  * Save system state to a state file.
  **/
@@ -2460,8 +2545,22 @@ void CSystem::panic(char *message, int flags) {
  *the interrupt.
  **/
 void CSystem::clear_clock_int(int ProcNum) {
+  std::lock_guard<std::mutex> g(drir_lock);
   state.cchip.misc &= ~(U64(0x10) << ProcNum);
   acCPUs[ProcNum]->irq_h(2, false, 0);
+}
+
+/**
+ * Acknowledge an interprocessor interrupt: clear MISC<IPINTR>, drop b_irq<3>.
+ **/
+void CSystem::clear_ipi(int ProcNum) {
+  std::lock_guard<std::mutex> g(drir_lock);
+  state.cchip.misc &= ~(U64(0x100) << ProcNum);
+  acCPUs[ProcNum]->irq_h(3, false, 0);
+#ifdef DEBUG_IPI
+  printf("*** IP interrupt cleared for CPU %d (PALcode dispatch ack).\n",
+         ProcNum);
+#endif
 }
 
 /* ---------------- SPD generation + init ---------------- */
