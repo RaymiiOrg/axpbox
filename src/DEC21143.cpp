@@ -30,660 +30,982 @@
  * Anders Gavare.  All rights reserved.
  */
 
+ /**
+  * \file
+  * Contains the code for the emulated DEC 21143 NIC device.
+ **/
 #include "StdAfx.hpp"
 
 #if defined(HAVE_PCAP)
 #include "DEC21143.hpp"
 #include "System.hpp"
+#include <string.h>
 
 #if defined(DEBUG_NIC)
 #define DEBUG_NIC_FILTER
 #define DEBUG_NIC_SROM
 #endif
 
-/*  Internal states during MII data stream decode:  */
-#define MII_STATE_RESET 0
-#define MII_STATE_START_WAIT 1
-#define MII_STATE_READ_OP 2
-#define MII_STATE_READ_PHYADDR_REGADDR 3
-#define MII_STATE_A 4
-#define MII_STATE_D 5
-#define MII_STATE_IDLE 6
+//#define DEBUG_NIC_IRQ
+
+static u16 pkt_be16(const u8* p)
+{
+	return (u16)(((u16)p[0] << 8) | p[1]);
+}
+
+static void pkt_format_mac(char* out, const u8* mac)
+{
+	sprintf(out, "%02x:%02x:%02x:%02x:%02x:%02x",
+		mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+}
+
+static void pkt_format_ip(char* out, const u8* ip)
+{
+	sprintf(out, "%u.%u.%u.%u", ip[0], ip[1], ip[2], ip[3]);
+}
+
+static const char* dhcp_type_name(int msg_type)
+{
+	switch (msg_type)
+	{
+	case 1: return "discover";
+	case 2: return "offer";
+	case 3: return "request";
+	case 4: return "decline";
+	case 5: return "ack";
+	case 6: return "nak";
+	case 7: return "release";
+	case 8: return "inform";
+	default: return "unknown";
+	}
+}
+
+static void append_text(char* out, int out_len, int* pos, const char* text)
+{
+	if (*pos >= out_len - 1)
+		return;
+	int left = out_len - *pos;
+	int wrote = snprintf(out + *pos, left, "%s", text);
+	if (wrote < 0)
+		return;
+	if (wrote >= left)
+		*pos = out_len - 1;
+	else
+		*pos += wrote;
+}
+
+static void append_dhcp_ip(char* out, int out_len, int* pos, const char* name,
+	const u8* ip)
+{
+	char addr[16];
+	char text[40];
+
+	pkt_format_ip(addr, ip);
+	snprintf(text, sizeof(text), " %s=%s", name, addr);
+	append_text(out, out_len, pos, text);
+}
+
+static void describe_dhcp(const u8* bootp, int len, char* out, int out_len)
+{
+	int pos = 0;
+	int msg_type = -1;
+	const u8* subnet = NULL;
+	const u8* router = NULL;
+	const u8* server = NULL;
+	const u8* requested = NULL;
+	char text[48];
+	char yiaddr[16];
+
+	out[0] = '\0';
+	if (len < 240)
+		return;
+	if (bootp[236] != 0x63 || bootp[237] != 0x82 ||
+		bootp[238] != 0x53 || bootp[239] != 0x63)
+		return;
+
+	for (int off = 240; off < len;)
+	{
+		int opt = bootp[off++];
+		if (opt == 0)
+			continue;
+		if (opt == 255)
+			break;
+		if (off >= len)
+			break;
+
+		int opt_len = bootp[off++];
+		if (opt_len < 0 || off + opt_len > len)
+			break;
+
+		switch (opt)
+		{
+		case 1:
+			if (opt_len >= 4)
+				subnet = &bootp[off];
+			break;
+		case 3:
+			if (opt_len >= 4)
+				router = &bootp[off];
+			break;
+		case 50:
+			if (opt_len >= 4)
+				requested = &bootp[off];
+			break;
+		case 53:
+			if (opt_len >= 1)
+				msg_type = bootp[off];
+			break;
+		case 54:
+			if (opt_len >= 4)
+				server = &bootp[off];
+			break;
+		default:
+			break;
+		}
+		off += opt_len;
+	}
+
+	if (msg_type >= 0)
+	{
+		snprintf(text, sizeof(text), " DHCP=%s(%d)",
+			dhcp_type_name(msg_type), msg_type);
+		append_text(out, out_len, &pos, text);
+	}
+	else
+		append_text(out, out_len, &pos, " DHCP");
+
+	if (bootp[16] || bootp[17] || bootp[18] || bootp[19])
+	{
+		pkt_format_ip(yiaddr, &bootp[16]);
+		snprintf(text, sizeof(text), " yiaddr=%s", yiaddr);
+		append_text(out, out_len, &pos, text);
+	}
+	if (subnet)
+		append_dhcp_ip(out, out_len, &pos, "subnet", subnet);
+	if (router)
+		append_dhcp_ip(out, out_len, &pos, "router", router);
+	if (server)
+		append_dhcp_ip(out, out_len, &pos, "server", server);
+	if (requested)
+		append_dhcp_ip(out, out_len, &pos, "request", requested);
+}
+
+  /*  Internal states during MII data stream decode:  */
+#define MII_STATE_RESET                 0
+#define MII_STATE_START_WAIT            1
+#define MII_STATE_READ_OP               2
+#define MII_STATE_READ_PHYADDR_REGADDR  3
+#define MII_STATE_A                     4
+#define MII_STATE_D                     5
+#define MII_STATE_IDLE                  6
 
 /**
  * Thread entry point.
  **/
-void CDEC21143::run() {
-  try {
-    for (;;) {
-      if (StopThread)
-        return;
-      receive_process();
+void CDEC21143::run()
+{
+	try
+	{
+		for (;;)
+		{
+			if (StopThread)
+				return;
+			receive_process();
 
-      bool asserted;
+			bool  asserted;
 
-      if ((state.reg[CSR_OPMODE / 8] & OPMODE_ST))
-        while (dec21143_tx())
-          ;
+			if ((state.reg[CSR_OPMODE / 8] & OPMODE_ST))
+				while (dec21143_tx());
 
-      /*  Normal and Abnormal interrupt summary:  */
-      state.reg[CSR_STATUS / 8] &= ~(STATUS_NIS | STATUS_AIS);
-      if (state.reg[CSR_STATUS / 8] & state.reg[CSR_INTEN / 8] & 0x00004845)
-        state.reg[CSR_STATUS / 8] |= STATUS_NIS;
-      if (state.reg[CSR_STATUS / 8] & state.reg[CSR_INTEN / 8] & 0x0c0037ba)
-        state.reg[CSR_STATUS / 8] |= STATUS_AIS;
+			/* Normal and Abnormal interrupt summary (align with 21143/QEMU). */
+			{
+				u32 ie = state.reg[CSR_STATUS / 8] & state.reg[CSR_INTEN / 8];
+				state.reg[CSR_STATUS / 8] &= ~(STATUS_NIS | STATUS_AIS);
+				/* NIS if any normal event is enabled + set */
+				if (ie & (STATUS_TI | STATUS_TU | STATUS_RI | STATUS_TM | STATUS_ER))
+					state.reg[CSR_STATUS / 8] |= STATUS_NIS;
+				/* AIS if any abnormal event is enabled + set */
+				if (ie & (STATUS_LC | STATUS_GPPI | STATUS_SE | STATUS_LNF | STATUS_ETI |
+					STATUS_RWT | STATUS_RPS | STATUS_RU | STATUS_UNF | STATUS_LNPANC |
+					STATUS_TJT | STATUS_TPS))
+					state.reg[CSR_STATUS / 8] |= STATUS_AIS;
+				asserted = (state.reg[CSR_STATUS / 8] & state.reg[CSR_INTEN / 8] &
+					(STATUS_AIS | STATUS_NIS)) != 0;
+			}
 
-      asserted = (state.reg[CSR_STATUS / 8] & state.reg[CSR_INTEN / 8] &
-                  0x0c01ffff) != 0;
+			if (asserted != state.irq_was_asserted)
+			{
+				if (do_pci_interrupt(0, asserted))
+					state.irq_was_asserted = asserted;
+			}
 
-      if (asserted != state.irq_was_asserted) {
-        if (do_pci_interrupt(0, asserted))
-          state.irq_was_asserted = asserted;
-      }
+			mySemaphore.tryWait(10);
+		}
+	}
 
-      std::this_thread::sleep_for(std::chrono::milliseconds(20));
-    }
-  }
+	catch (CException& e)
+	{
+		printf("Exception in NIC thread: %s.\n", e.displayText().c_str());
+		myThreadDead.store(true);
 
-  catch (CException &e) {
-    printf("Exception in NIC thread: %s.\n", e.displayText().c_str());
-    myThreadDead.store(true);
-    // Let the thread die...
-  }
+		// Let the thread die...
+	}
 }
 
-u32 dec21143_cfg_data[64] = {
-    /*00*/ 0x00191011, // CFID: vendor + device
-    /*04*/ 0x02800000, // CFCS: command + status
-    /*08*/ 0x02000030, // CFRV: class + revision   //dth:was 41
-    /*0c*/ 0x00000000, // CFLT: latency timer + cache line size
-    /*10*/ 0x00000001, // BAR0: CBIO
-    /*14*/ 0x00000000, // BAR1: CBMA
-    /*18*/ 0x00000000, // BAR2:
-    /*1c*/ 0x00000000, // BAR3:
-    /*20*/ 0x00000000, // BAR4:
-    /*24*/ 0x00000000, // BAR5:
-    /*28*/ 0x00000000, // CCIC: CardBus
-    /*2c*/ 0x500b1011, // CSID: subsystem + vendor
-    /*30*/ 0x00000000, // BAR6: expansion rom base
-    /*34*/ 0x00000000, // CCAP: capabilities pointer
-    /*38*/ 0x00000000,
-    /*3c*/ 0x281401ff, // CFIT: interrupt configuration
-    0,
-    0,
-    0,
-    0,
-    0,
-    0,
-    0,
-    0,
-    0,
-    0,
-    0,
-    0,
-    0,
-    0,
-    0,
-    0,
-    0,
-    0,
-    0,
-    0,
-    0,
-    0,
-    0,
-    0,
-    0,
-    0,
-    0,
-    0,
-    0,
-    0,
-    0,
-    0,
-    0,
-    0,
-    0,
-    0,
-    0,
-    0,
-    0,
-    0,
-    0,
-    0,
-    0,
-    0,
-    0,
-    0,
-    0,
-    0};
+u32             dec21143_cfg_data[64] = {
+	/*00*/ 0x00191011,  // CFID: vendor + device
+	/*04*/ 0x02800000,  // CFCS: command + status
+	/*08*/ 0x02000030,  // CFRV: class + revision   //dth:was 41
+	/*0c*/ 0x00000000,  // CFLT: latency timer + cache line size
+	/*10*/ 0x00000001,  // BAR0: CBIO
+	/*14*/ 0x00000000,  // BAR1: CBMA
+	/*18*/ 0x00000000,  // BAR2:
+	/*1c*/ 0x00000000,  // BAR3:
+	/*20*/ 0x00000000,  // BAR4:
+	/*24*/ 0x00000000,  // BAR5:
+	/*28*/ 0x00000000,  // CCIC: CardBus
+	/*2c*/ 0x500b1011,  // CSID: subsystem + vendor
+	/*30*/ 0x00000000,  // BAR6: expansion rom base
+	/*34*/ 0x00000000,  // CCAP: capabilities pointer
+	/*38*/ 0x00000000,
+	/*3c*/ 0x281401ff,  // CFIT: interrupt configuration
+	0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+	0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+	0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
+};
 
-u32 dec21143_cfg_mask[64] = {
-    /*00*/ 0x00000000, // CFID: vendor + device
-    /*04*/ 0x0000ffff, // CFCS: command + status
-    /*08*/ 0x00000000, // CFRV: class + revision
-    /*0c*/ 0x0000ffff, // CFLT: latency timer + cache line size
-    /*10*/ 0xffffff00, // BAR0
-    /*14*/ 0xffffff00, // BAR1: CBMA
-    /*18*/ 0x00000000, // BAR2:
-    /*1c*/ 0x00000000, // BAR3:
-    /*20*/ 0x00000000, // BAR4:
-    /*24*/ 0x00000000, // BAR5:
-    /*28*/ 0x00000000, // CCIC: CardBus
-    /*2c*/ 0x00000000, // CSID: subsystem + vendor
-    /*30*/ 0x00000000, // BAR6: expansion rom base
-    /*34*/ 0x00000000, // CCAP: capabilities pointer
-    /*38*/ 0x00000000,
-    /*3c*/ 0x000000ff, // CFIT: interrupt configuration
-    0,
-    0,
-    0,
-    0,
-    0,
-    0,
-    0,
-    0,
-    0,
-    0,
-    0,
-    0,
-    0,
-    0,
-    0,
-    0,
-    0,
-    0,
-    0,
-    0,
-    0,
-    0,
-    0,
-    0,
-    0,
-    0,
-    0,
-    0,
-    0,
-    0,
-    0,
-    0,
-    0,
-    0,
-    0,
-    0,
-    0,
-    0,
-    0,
-    0,
-    0,
-    0,
-    0,
-    0,
-    0,
-    0,
-    0,
-    0};
+u32             dec21143_cfg_mask[64] = {
+	/*00*/ 0x00000000,  // CFID: vendor + device
+	/*04*/ 0x0000ffff,  // CFCS: command + status
+	/*08*/ 0x00000000,  // CFRV: class + revision
+	/*0c*/ 0x0000ffff,  // CFLT: latency timer + cache line size
+	/*10*/ 0xffffff00,  // BAR0
+	/*14*/ 0xffffff00,  // BAR1: CBMA
+	/*18*/ 0x00000000,  // BAR2:
+	/*1c*/ 0x00000000,  // BAR3:
+	/*20*/ 0x00000000,  // BAR4:
+	/*24*/ 0x00000000,  // BAR5:
+	/*28*/ 0x00000000,  // CCIC: CardBus
+	/*2c*/ 0x00000000,  // CSID: subsystem + vendor
+	/*30*/ 0x00000000,  // BAR6: expansion rom base
+	/*34*/ 0x00000000,  // CCAP: capabilities pointer
+	/*38*/ 0x00000000,
+	/*3c*/ 0x000000ff,  // CFIT: interrupt configuration
+	0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+	0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+	0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
+};
 
 int CDEC21143::nic_num = 0;
+
+#ifdef _WIN32
+/* Pointers to the real functions. */
+static const char *(*f_pcap_lib_version)(void);
+static int (*f_pcap_findalldevs)(pcap_if_t **, char *);
+static void (*f_pcap_freealldevs)(void *);
+static pcap_t* (*f_pcap_open_live)(const char *, int, int, int, char *);
+static int (*f_pcap_compile)(void *, void *, const char *, int, bpf_u_int32);
+static int (*f_pcap_setfilter)(void *, void *);
+static const unsigned char
+    *(*f_pcap_next)(void *, void *);
+static int (*f_pcap_sendpacket)(void *, const unsigned char *, int);
+static void (*f_pcap_close)(void *);
+static int (*f_pcap_setnonblock)(void *, int, char *);
+static int (*f_pcap_set_immediate_mode)(void *, int);
+static int (*f_pcap_set_promisc)(void *, int);
+static int (*f_pcap_set_snaplen)(void *, int);
+static int (*f_pcap_dispatch)(void *, int, pcap_handler callback, unsigned char *user);
+static void *(*f_pcap_create)(const char *, char *);
+static int (*f_pcap_activate)(void *);
+static char *(*f_pcap_geterr)(void *);
+static pcap_t* (*f_pcap_open)(const char *source, int snaplen, int flags, int read_timeout, struct pcap_rmtauth *auth, char *errbuf);
+static int (*f_pcap_next_ex)(pcap_t *, struct pcap_pkthdr **, const unsigned char **);
+#endif
 
 /**
  * Constructor.
  **/
-CDEC21143::CDEC21143(CConfigurator *confg, CSystem *c, int pcibus, int pcidev)
-    : CPCIDevice(confg, c, pcibus, pcidev) {}
+CDEC21143::CDEC21143(CConfigurator* confg, CSystem* c, int pcibus, int pcidev) : CPCIDevice(confg, c, pcibus, pcidev), mySemaphore(0, 1)
+{
+#ifdef _WIN32
+	{
+	    char npcap_dir[512];
+    	GetSystemDirectoryA(npcap_dir, 480);
+    	strcat(npcap_dir, "\\Npcap");
+    	SetDllDirectoryA(npcap_dir);	
+		auto libhandle = LoadLibraryA("wpcap.dll");
+    	SetDllDirectoryA(NULL); /* reset the DLL search path */
+		if (!libhandle) {
+			FAILURE(Runtime, "Failed to load wpcap.dll");
+		}
+		f_pcap_lib_version = (const char *(*)())GetProcAddress(libhandle, "pcap_lib_version");
+		f_pcap_findalldevs = (int (*)(pcap_if_t **, char *))GetProcAddress(libhandle, "pcap_findalldevs");
+		f_pcap_freealldevs = (void (*)(void *))GetProcAddress(libhandle, "pcap_freealldevs");
+		f_pcap_open_live   = (pcap_t *(*)(const char *, int, int, int, char *))GetProcAddress(libhandle, "pcap_open_live");
+		f_pcap_open   = (pcap_t* (*)(const char *, int , int , int , pcap_rmtauth *, char *))GetProcAddress(libhandle, "pcap_open");
+		f_pcap_compile = (int (*)(void *, void *, const char *, int, bpf_u_int32))GetProcAddress(libhandle, "pcap_compile");
+		f_pcap_setfilter = (int (*)(void *, void *))GetProcAddress(libhandle, "pcap_setfilter");
+		f_pcap_next = (const unsigned char *(*)(void *, void *))GetProcAddress(libhandle, "pcap_next");
+		f_pcap_sendpacket = (int (*)(void *, const unsigned char *, int))GetProcAddress(libhandle, "pcap_sendpacket");
+		f_pcap_close = (void (*)(void *))GetProcAddress(libhandle, "pcap_close");
+		f_pcap_setnonblock = (int (*)(void *, int, char *))GetProcAddress(libhandle, "pcap_setnonblock");
+		f_pcap_set_immediate_mode = (int (*)(void *, int))GetProcAddress(libhandle, "pcap_set_immediate_mode");
+		f_pcap_set_promisc = (int (*)(void *, int))GetProcAddress(libhandle, "pcap_set_promisc");
+		f_pcap_set_snaplen = (int (*)(void *, int))GetProcAddress(libhandle, "pcap_set_snaplen");
+		f_pcap_dispatch = (int (*)(void *, int, pcap_handler callback, unsigned char *user))GetProcAddress(libhandle, "pcap_dispatch");
+		f_pcap_create = (void * (*)(const char *, char *))GetProcAddress(libhandle, "pcap_create");
+		f_pcap_geterr = (char *(*)(void *))GetProcAddress(libhandle, "pcap_geterr");
+		f_pcap_next_ex = (int (*)(pcap *, pcap_pkthdr **, const unsigned char **))GetProcAddress(libhandle, "pcap_next_ex");
+
+		#define pcap_findalldevs f_pcap_findalldevs
+		#define pcap_open f_pcap_open
+		#define pcap_sendpacket f_pcap_sendpacket
+		#define pcap_close f_pcap_close
+		#define pcap_setnonblock f_pcap_setnonblock
+		#define pcap_setfilter f_pcap_setfilter
+		#define pcap_compile f_pcap_compile
+		#define pcap_geterr f_pcap_geterr
+		#define pcap_next_ex f_pcap_next_ex
+
+		#define PCAP_ERROR -1
+		#define PCAP_OPENFLAG_PROMISCUOUS 0x00000001
+		#define PCAP_OPENFLAG_NOCAPTURE_LOCAL 0x00000008
+	}
+#endif
+}
 
 /**
  * Initialize the network device.
  **/
-void CDEC21143::init() {
-  pcap_if_t *alldevs;
+void CDEC21143::init()
+{
+	pcap_if_t* alldevs;
 
-  pcap_if_t *d;
-  u_int inum;
-  u_int i = 0;
-  char errbuf[PCAP_ERRBUF_SIZE];
-  char *cfg;
+	pcap_if_t* d;
+	unsigned int inum;
+	unsigned int i = 0;
+	char        errbuf[PCAP_ERRBUF_SIZE];
+	char* cfg;
 
-  add_function(0, dec21143_cfg_data, dec21143_cfg_mask);
+	add_function(0, dec21143_cfg_data, dec21143_cfg_mask);
 
-  cfg = myCfg->get_text_value("adapter");
-  if (!cfg) {
-    printf("\n%s: Choose a network adapter to connect to:\n", devid_string);
-    if (pcap_findalldevs(&alldevs, errbuf) == -1) {
-      FAILURE_1(Runtime, "Error in pcap_findalldevs_ex: %s", errbuf);
-    }
+	cfg = myCfg->get_text_value("adapter");
+	if (!cfg)
+	{
+		printf("\n%s: Choose a network adapter to connect to:\n", devid_string);
+		if (pcap_findalldevs(&alldevs, errbuf) == -1)
+		{
+			FAILURE_1(Runtime, "Error in pcap_findalldevs_ex: %s", errbuf);
+		}
 
-    /* Print the list */
-    for (d = alldevs; d; d = d->next) {
-      printf("%d. %s\n    ", ++i, d->name);
-      if (d->description)
-        printf(" (%s)\n", d->description);
-      else
-        printf(" (No description available)\n");
-    }
+		/* Print the list */
+		for (d = alldevs; d; d = d->next)
+		{
+			printf("%d. %s\n    ", ++i, d->name);
+			if (d->description)
+				printf(" (%s)\n", d->description);
+			else
+				printf(" (No description available)\n");
+		}
 
-    if (i == 0)
-      FAILURE(Runtime, "No network interfaces found");
+		if (i == 0)
+			FAILURE(Runtime, "No network interfaces found");
 
-    if (i == 1)
-      inum = 1;
-    else {
-      inum = 0;
-      while (inum < 1 || inum > i) {
-        printf("%%NIC-Q-NICNO: Enter the interface number (1-%d):", i);
-        (void)!scanf("%d", &inum);
-      }
-    }
+		if (i == 1)
+			inum = 1;
+		else
+		{
+			for (;;)
+			{
+				char input_buf[64];
+				int  parsed;
 
-    /* Jump to the selected adapter */
-    for (d = alldevs, i = 0; i < inum - 1; d = d->next, i++)
-      ;
+				printf("%%NIC-Q-NICNO: Enter the interface number (1-%d): ", i);
+				fflush(stdout);
 
-    cfg = d->name;
-  }
+				if (fgets(input_buf, sizeof(input_buf), stdin) == NULL)
+					FAILURE(Runtime, "Unexpected end of input while selecting network interface");
+
+				if (sscanf(input_buf, "%d", &parsed) != 1 || parsed < 1 || (unsigned int)parsed > i)
+				{
+					printf("%%NIC-W-BADSEL: Invalid selection. Please enter a number between 1 and %d.\n", i);
+					continue;
+				}
+
+				inum = (unsigned int)parsed;
+				break;
+			}
+		}
+
+		/* Jump to the selected adapter */
+		for (d = alldevs, i = 0; i < inum - 1; d = d->next, i++);
+
+		cfg = d->name;
+	}
 
 #if defined(WIN32)
 
-  // Opening with pcap_open on Windows allows specification of
-  // PCAP_OPENFLAG_NOCAPTURE_LOCAL, which stops the pcap device from seeing it's
-  // own transmitted packets.
-  //
-  // This is important because:
-  //    1. Real ethernet cards don't reflect packets except while in loopback
-  //    mode(s).
-  //    2. Reflecting all packets increases inbound packet processing and host
-  //    load.
-  //    3. DECNET Phase IV will think a reflected packet is from another node
-  //            that has the same DECNET Phase IV address (AA-xx-xx-xx-xx-xx),
-  //            and will panic on startup and abort.
-  //    4. Libpcap doesn't reflect packets, and we want winpcap/libpcap
-  //    processing to be identical.
-  // Loopback packets are handled via direct entry in the receive queue.
-  if ((fp = pcap_open(cfg, 65536 /*snaplen: capture entire packets */,
-                      PCAP_OPENFLAG_PROMISCUOUS |
-                          PCAP_OPENFLAG_NOCAPTURE_LOCAL /*promiscuous */,
-                      10 /*read timeout: 10ms. */, 0 /* auth structure */,
-                      errbuf)) == NULL) // connect to pcap...
+	// Opening with pcap_open on Windows allows specification of PCAP_OPENFLAG_NOCAPTURE_LOCAL,
+	// which stops the pcap device from seeing it's own transmitted packets.
+	//
+	// This is important because:
+	//    1. Real ethernet cards don't reflect packets except while in loopback mode(s).
+	//    2. Reflecting all packets increases inbound packet processing and host load.
+	//    3. DECNET Phase IV will think a reflected packet is from another node
+	//            that has the same DECNET Phase IV address (AA-xx-xx-xx-xx-xx),
+	//            and will panic on startup and abort.
+	//    4. Libpcap doesn't reflect packets, and we want winpcap/libpcap processing to be identical.
+	// Loopback packets are handled via direct entry in the receive queue.
+	if ((fp = (pcap_t*)pcap_open(cfg, 65536 /*snaplen: capture entire packets */,
+		PCAP_OPENFLAG_PROMISCUOUS | PCAP_OPENFLAG_NOCAPTURE_LOCAL /*promiscuous */,
+		10 /*packet buffer timeout: [ms] */, 0 /* auth structure */, errbuf)) == NULL) // connect to pcap...
 #else
-  if ((fp = pcap_open_live(cfg, 65536 /*snaplen: capture entire packets */,
-                           1 /*promiscuous */, 1 /*read timeout: 1ms. */,
-                           errbuf)) == nullptr) // connect to pcap...
+	if ((fp = pcap_open_live(cfg, 65536 /*snaplen: capture entire packets */,
+		1 /*promiscuous */, 10 /*packet buffer timeout: [ms] */, errbuf)) == NULL) // connect to pcap...
 #endif
-    FAILURE_2(Runtime, "Error opening adapter %s:\n %s", cfg, errbuf);
+		FAILURE_2(Runtime, "Error opening adapter %s:\n %s", cfg, errbuf);
 
-  if (pcap_setnonblock(fp, 1, errbuf) == PCAP_ERROR)
-    FAILURE_2(Runtime, "Error setting adapter %s non-blocking:\n %s", cfg,
-              errbuf);
+	if (pcap_setnonblock(fp, 1, errbuf) == PCAP_ERROR)
+		FAILURE_2(Runtime, "Error setting adapter %s non-blocking:\n %s", cfg, errbuf);
 
-  // set default mac = Digital ethernet prefix: 08-00-2B + hexified "ES40" + nic
-  // number
-  state.mac[0] = 0x08;
-  state.mac[1] = 0x00;
-  state.mac[2] = 0x2B;
-  state.mac[3] = 0xE5;
-  state.mac[4] = 0x40;
-  state.mac[5] = nic_num++;
+	// set default mac = Digital ethernet prefix: 08-00-2B + hexified "ES40" + nic number
+	state.mac[0] = 0x08;
+	state.mac[1] = 0x00;
+	state.mac[2] = 0x2B;
+	state.mac[3] = 0xE5;
+	state.mac[4] = 0x40;
+	state.mac[5] = nic_num++;
 
-  // set assigned mac
-  cfg = myCfg->get_text_value("mac");
-  if (cfg) {
-    const char *mac_chars = "0123456789abcdefABCDEF-.:";
-    const char *hex_chars = "0123456789abcdefABCDEF";
-    const char *hex_scanf = "%hx";
-    bool mac_replaced = false;
-    if ((strlen(cfg) == 17) && (strspn(cfg, mac_chars) == 17)) {
-      char newmac[18];
-      strcpy(newmac, cfg);
-      newmac[2] = newmac[5] = newmac[8] = newmac[11] = newmac[14] = 0;
-      if ((strspn(&newmac[0], hex_chars) == 2) &&
-          (strspn(&newmac[3], hex_chars) == 2) &&
-          (strspn(&newmac[6], hex_chars) == 2) &&
-          (strspn(&newmac[9], hex_chars) == 2) &&
-          (strspn(&newmac[12], hex_chars) == 2) &&
-          (strspn(&newmac[15], hex_chars) == 2)) {
-        short unsigned int num;
-        sscanf(&newmac[0], hex_scanf, &num);
-        state.mac[0] = num & 0xff;
-        sscanf(&newmac[3], hex_scanf, &num);
-        state.mac[1] = num & 0xff;
-        sscanf(&newmac[6], hex_scanf, &num);
-        state.mac[2] = num & 0xff;
-        sscanf(&newmac[9], hex_scanf, &num);
-        state.mac[3] = num & 0xff;
-        sscanf(&newmac[12], hex_scanf, &num);
-        state.mac[4] = num & 0xff;
-        sscanf(&newmac[15], hex_scanf, &num);
-        state.mac[5] = num & 0xff;
-        mac_replaced = true;
-      }
-    }
+	// set assigned mac
+	cfg = myCfg->get_text_value("mac");
+	if (cfg)
+	{
+		const char* mac_chars = "0123456789abcdefABCDEF-.:";
+		const char* hex_chars = "0123456789abcdefABCDEF";
+		const char* hex_scanf = "%hx";
+		bool          mac_replaced = false;
+		if ((strlen(cfg) == 17) && (strspn(cfg, mac_chars) == 17))
+		{
+			char  newmac[18];
+			strcpy(newmac, cfg);
+			newmac[2] = newmac[5] = newmac[8] = newmac[11] = newmac[14] = 0;
+			if ((strspn(&newmac[0], hex_chars) == 2)
+				&& (strspn(&newmac[3], hex_chars) == 2)
+				&& (strspn(&newmac[6], hex_chars) == 2)
+				&& (strspn(&newmac[9], hex_chars) == 2)
+				&& (strspn(&newmac[12], hex_chars) == 2)
+				&& (strspn(&newmac[15], hex_chars) == 2))
+			{
+				short unsigned int  num;
+				sscanf(&newmac[0], hex_scanf, &num);
+				state.mac[0] = num & 0xff;
+				sscanf(&newmac[3], hex_scanf, &num);
+				state.mac[1] = num & 0xff;
+				sscanf(&newmac[6], hex_scanf, &num);
+				state.mac[2] = num & 0xff;
+				sscanf(&newmac[9], hex_scanf, &num);
+				state.mac[3] = num & 0xff;
+				sscanf(&newmac[12], hex_scanf, &num);
+				state.mac[4] = num & 0xff;
+				sscanf(&newmac[15], hex_scanf, &num);
+				state.mac[5] = num & 0xff;
+				mac_replaced = true;
+			}
+		}
 
-    if (mac_replaced) {
-      printf("%s: MAC set to %s\n", devid_string, cfg);
-    } else {
-      FAILURE_1(Configuration,
-                "MAC address (%s) should have xx-xx-xx-xx-xx-xx format", cfg);
-    }
-  } else {
-    char mac[18];
-    sprintf(mac, "%02X-%02X-%02X-%02X-%02X-%02X", state.mac[0], state.mac[1],
-            state.mac[2], state.mac[3], state.mac[4], state.mac[5]);
-    printf("%s: MAC defaulted to %s\n", devid_string, mac);
-  }
+		if (mac_replaced)
+		{
+			printf("%s: MAC set to %s\n", devid_string, cfg);
+		}
+		else
+		{
+			FAILURE_1(Configuration,
+				"MAC address (%s) should have xx-xx-xx-xx-xx-xx format", cfg);
+		}
+	}
+	else
+	{
+		char  mac[18];
+		sprintf(mac, "%02X-%02X-%02X-%02X-%02X-%02X", state.mac[0], state.mac[1],
+			state.mac[2], state.mac[3], state.mac[4], state.mac[5]);
+		printf("%s: MAC defaulted to %s\n", devid_string, mac);
+	}
 
-  rx_queue = new CPacketQueue("rx_queue",
-                              (int)myCfg->get_num_value("queue", false, 100));
-  calc_crc = myCfg->get_bool_value("crc", false);
+	rx_queue = new CPacketQueue("rx_queue",
+		(int)myCfg->get_num_value("queue", false, 100));
+	calc_crc = myCfg->get_bool_value("crc", false);
+	trace_packets = myCfg->get_bool_value("trace_packets", false);
 
-  state.rx.cur_buf = NULL;
-  state.tx.cur_buf = (unsigned char *)malloc(1514);
-  state.irq_was_asserted = false;
-  state.tx.idling = 0;
+	state.rx.cur_buf = NULL;
+	/* Use a 2KB TX scratch buffer like QEMU's tulip (tx_frame[2048]) to avoid overflows. */
+	state.tx.cur_buf = (unsigned char*)malloc(2048);
+	state.irq_was_asserted = false;
 
-  ResetPCI();
+	ResetPCI();
+	ResetNIC();   // explicit one-shot internal reset; previously implicit via ResetPCI
 
-  printf("%s: $Id: DEC21143.cpp,v 1.36 2008/05/31 15:47:09 iamcamiel Exp $\n",
-         devid_string);
+	myThread = nullptr;
+
+	printf("%s: $Id$\n",
+		devid_string);
 }
 
-void CDEC21143::start_threads() {
-  if (!myThread) {
-    printf(" nic");
-    StopThread = false;
-    myThread = std::make_unique<std::thread>([this](){ this->run(); });
-  }
+void CDEC21143::start_threads()
+{
+	if (!myThread)
+	{
+		printf(" nic");
+		StopThread = false;
+		myThread = std::make_unique<std::thread>([this]() { this->run(); });
+	}
 }
 
-void CDEC21143::stop_threads() {
-  StopThread = true;
-  if (myThread) {
-    printf(" nic");
-    myThread->join();
-    myThread = nullptr;
-  }
+void CDEC21143::stop_threads()
+{
+	StopThread = true;
+	if (myThread)
+	{
+		mySemaphore.tryWait(0);
+		mySemaphore.set();
+		printf(" nic");
+		myThread->join();
+		myThread = nullptr;
+	}
 }
 
 /**
  * Destructor.
  **/
-CDEC21143::~CDEC21143() {
-  stop_threads();
+CDEC21143::~CDEC21143()
+{
+	stop_threads();
 
-  pcap_close(fp);
-  delete rx_queue;
+	if (fp != nullptr) {
+		pcap_close(fp);
+	}
+	delete rx_queue;
+	/* Free TX scratch on device teardown (not on ResetNIC, which expects it alive). */
+	if (state.tx.cur_buf) {
+		free(state.tx.cur_buf);
+		state.tx.cur_buf = nullptr;
+	}
 }
 
-u32 CDEC21143::ReadMem_Bar(int func, int bar, u32 address, int dsize) {
-  switch (bar) {
-  case 0: // CBIO
-  case 1: // CBMA
-    return nic_read(address, dsize);
-  }
+u32 CDEC21143::ReadMem_Bar(int func, int bar, u32 address, int dsize)
+{
+	switch (bar)
+	{
+	case 0: // CBIO
+	case 1: // CBMA
+		return nic_read(address, dsize);
+	}
 
-  printf("21143: ReadMem_Bar: unsupported bar %d\n", bar);
-  return 0;
+	printf("21143: ReadMem_Bar: unsupported bar %d\n", bar);
+	return 0;
 }
 
-void CDEC21143::WriteMem_Bar(int func, int bar, u32 address, int dsize,
-                             u32 data) {
-  switch (bar) {
-  case 0: // CBIO
-  case 1: // CBMA
-    nic_write(address, dsize, (u32)endian_bits(data, dsize));
-    return;
-  }
+void CDEC21143::WriteMem_Bar(int func, int bar, u32 address, int dsize, u32 data)
+{
+	switch (bar)
+	{
+	case 0: // CBIO
+	case 1: // CBMA
+		nic_write(address, dsize, (u32)endian_bits(data, dsize));
+		return;
+	}
 
-  printf("21143: WriteMem_Bar: unsupported bar %d\n", bar);
+	printf("21143: WriteMem_Bar: unsupported bar %d\n", bar);
 }
 
 /**
  * Check if threads are still running.
  **/
-void CDEC21143::check_state() {
-  if (myThreadDead.load())
-    FAILURE(Thread, "NIC thread has died");
+void CDEC21143::check_state()
+{
+	if (myThreadDead.load())
+		FAILURE(Thread, "NIC thread has died");
 }
 
-void CDEC21143::receive_process() {
-  struct pcap_pkthdr *packet_header;
-  const u_char *packet_data = NULL;
+void CDEC21143::receive_process()
+{
+	struct pcap_pkthdr* packet_header;
+	const unsigned char* packet_data = NULL;
 
-  // if receive process active
-  if (state.reg[CSR_OPMODE / 8] & OPMODE_SR) {
+	// if receive process active
+	if (state.reg[CSR_OPMODE / 8] & OPMODE_SR)
+	{
 
-    // get packets from host nic if not in internal loopback mode
-    if (!(state.reg[CSR_OPMODE / 8] & OPMODE_OM_INTLOOP)) {
-      while (pcap_next_ex(fp, &packet_header, &packet_data) > 0) {
-        rx_queue->add_tail(packet_data, packet_header->caplen, calc_crc, true);
-        state.reg[CSR_SIASTAT / 8] |= SIASTAT_TRA; // set 10bT activity
-      }
-    }
+		// get packets from host nic if not in internal loopback mode
+		if (!(state.reg[CSR_OPMODE / 8] & OPMODE_OM_INTLOOP))
+		{
+			while (pcap_next_ex(fp, &packet_header, &packet_data) > 0)
+			{
+				if (trace_packets)
+					trace_packet("RX", packet_data, packet_header->caplen);
+				bool  resl = rx_queue->add_tail(packet_data, packet_header->caplen,
+					calc_crc, true);
+				state.reg[CSR_SIASTAT / 8] |= SIASTAT_TRA;  //set 10bT activity
+			}
+		}
 
-    // process a receive descriptor until we run out of
-    // descriptors or packets to process
-    while (dec21143_rx())
-      ;
-  }
+		// process a receive descriptor until we run out of
+		// descriptors or packets to process
+		while (dec21143_rx());
+	}
+}
+
+void CDEC21143::trace_packet(const char* dir, const u8* frame, int len)
+{
+	char dst[18];
+	char src[18];
+	u16 ether_type;
+
+	if (len < 14)
+	{
+		printf("%s: %s len=%d short ethernet frame\n", devid_string, dir, len);
+		return;
+	}
+
+	pkt_format_mac(dst, &frame[0]);
+	pkt_format_mac(src, &frame[6]);
+	ether_type = pkt_be16(&frame[12]);
+
+	if (ether_type == 0x0806 && len >= 42)
+	{
+		char sha[18];
+		char tha[18];
+		char spa[16];
+		char tpa[16];
+		u16 op = pkt_be16(&frame[20]);
+
+		pkt_format_mac(sha, &frame[22]);
+		pkt_format_ip(spa, &frame[28]);
+		pkt_format_mac(tha, &frame[32]);
+		pkt_format_ip(tpa, &frame[38]);
+		printf("%s: %s len=%d %s -> %s ARP op=%u sha=%s spa=%s tha=%s tpa=%s\n",
+			devid_string, dir, len, src, dst, op, sha, spa, tha, tpa);
+		return;
+	}
+
+	if (ether_type == 0x0800 && len >= 34)
+	{
+		const u8* ip = &frame[14];
+		int ihl = (ip[0] & 0x0f) * 4;
+		char src_ip[16];
+		char dst_ip[16];
+		u8 proto;
+
+		if (ihl < 20 || len < 14 + ihl)
+		{
+			printf("%s: %s len=%d %s -> %s IPv4 malformed\n",
+				devid_string, dir, len, src, dst);
+			return;
+		}
+
+		proto = ip[9];
+		pkt_format_ip(src_ip, &ip[12]);
+		pkt_format_ip(dst_ip, &ip[16]);
+
+		if (proto == 17 && len >= 14 + ihl + 8)
+		{
+			const u8* udp = ip + ihl;
+			int udp_payload_len = len - 14 - ihl - 8;
+			u16 sport = pkt_be16(&udp[0]);
+			u16 dport = pkt_be16(&udp[2]);
+			char dhcp[220];
+
+			dhcp[0] = '\0';
+			if ((sport == 67 || sport == 68 || dport == 67 || dport == 68) &&
+				udp_payload_len > 0)
+				describe_dhcp(udp + 8, udp_payload_len, dhcp, sizeof(dhcp));
+
+			printf("%s: %s len=%d %s -> %s IPv4 %s:%u -> %s:%u UDP%s\n",
+				devid_string, dir, len, src, dst, src_ip, sport,
+				dst_ip, dport, dhcp);
+			return;
+		}
+
+		if (proto == 1 && len >= 14 + ihl + 2)
+		{
+			const u8* icmp = ip + ihl;
+			printf("%s: %s len=%d %s -> %s IPv4 %s -> %s ICMP type=%u code=%u\n",
+				devid_string, dir, len, src, dst, src_ip, dst_ip,
+				icmp[0], icmp[1]);
+			return;
+		}
+
+		printf("%s: %s len=%d %s -> %s IPv4 %s -> %s proto=%u\n",
+			devid_string, dir, len, src, dst, src_ip, dst_ip, proto);
+		return;
+	}
+
+	printf("%s: %s len=%d %s -> %s ethertype=0x%04x\n",
+		devid_string, dir, len, src, dst, ether_type);
 }
 
 /**
  * Read from the NIC registers.
  **/
-u32 CDEC21143::nic_read(u32 address, int dsize) {
-  u32 data = 0;
+u32 CDEC21143::nic_read(u32 address, int dsize)
+{
+	u32 data = 0;
 
-  int regnr = (int)(address >> 3);
+	u32 oldreg = 0;
+	int regnr = (int)(address >> 3);
 
-  if ((address & 7) == 0 && regnr < 32) {
-    data = state.reg[regnr];
-  } else
-    printf("dec21143: WARNING! unaligned access (0x%x) \n", (int)address);
+	if ((address & 7) == 0 && regnr < 32)
+	{
+		data = state.reg[regnr];
+	}
+	else
+		printf("dec21143: WARNING! unaligned access (0x%x) \n", (int)address);
 #if defined(DEBUG_NIC)
-  printf("21143: nic_read - CSR(%d), value: %08x\n", regnr, data);
+	printf("21143: nic_read - CSR(%d), value: %08x\n", regnr, data);
 #endif
-  return data;
+	return data;
 }
 
 /**
  * Write to the NIC registers.
  **/
-void CDEC21143::nic_write(u32 address, int dsize, u32 data) {
-  uint32_t oldreg = 0;
+void CDEC21143::nic_write(u32 address, int dsize, u32 data)
+{
+	uint32_t  oldreg = 0;
 
-  int regnr = (int)(address >> 3);
+	int       regnr = (int)(address >> 3);
 
 #if defined(DEBUG_NIC)
-  printf("21143: nic_write - CSR(%d), value: %08x\n", regnr, data);
+	printf("21143: nic_write - CSR(%d), value: %08x\n", regnr, data);
 #endif
 
-  // printf("21143: rx_queue->name= %s\n", rx_queue->name);
-  if ((address & 7) == 0 && regnr < 32) {
-    oldreg = state.reg[regnr];
-    switch (regnr) {
-    case CSR_STATUS / 8: /*  Zero-on-write  */
-      state.reg[regnr] &= ~((u32)data & 0x0c01ffff);
-      break;
+	//printf("21143: rx_queue->name= %s\n", rx_queue->name);
+	if ((address & 7) == 0 && regnr < 32)
+	{
+		oldreg = state.reg[regnr];
+		switch (regnr)
+		{
+		case CSR_STATUS / 8:  /*  CSR5: Write-1-to-clear */
+			/* Clear all write-1-to-clear events like QEMU. */
+			state.reg[regnr] &=
+				~((u32)data & (STATUS_TI | STATUS_TPS | STATUS_TU | STATUS_TJT |
+					STATUS_LNPANC | STATUS_UNF | STATUS_RI | STATUS_RU |
+					STATUS_RPS | STATUS_RWT | STATUS_ETI | STATUS_LNF |
+					STATUS_SE | STATUS_ER | STATUS_AIS | STATUS_NIS |
+					STATUS_GPPI | STATUS_LC));
+#if defined(DEBUG_NIC_IRQ)
+			printf("21143: CSR5 W1C=%08x -> CSR5=%08x CSR7=%08x\n", data, state.reg[CSR_STATUS / 8], state.reg[CSR_INTEN / 8]);
+#endif
+			/* Drop INTx immediately if that cleared the cause(s). */
+			update_irq();
+			break;
 
-    case CSR_MISSED / 8: /*  Read only  */
-      break;
+		case CSR_MISSED / 8:  /*  Read only  */
+			break;
 
-    default:
-      state.reg[regnr] = (u32)data;
-    }
-  } else
-    printf("[ dec21143: WARNING! unaligned access (0x%x) ]\n", (int)address);
+		default:
+			state.reg[regnr] = (u32)data;
+		}
+	}
+	else
+		printf("[ dec21143: WARNING! unaligned access (0x%x) ]\n", (int)address);
 
-  switch (address) {
-  case CSR_BUSMODE: /*  csr0  */
-    if (data & BUSMODE_SWR) {
-      ResetNIC();
-      data &= ~BUSMODE_SWR;
-    }
+	switch (address)
+	{
+	case CSR_BUSMODE:       /*  csr0  */
+		if (data & BUSMODE_SWR)
+		{
+			ResetNIC();
+			data &= ~BUSMODE_SWR;
+		}
 
-    // calculate descriptor skip length in bytes
-    state.descr_skip = ((data & BUSMODE_DSL) >> 2) * 4;
-    break;
+		// calculate descriptor skip length in bytes
+		state.descr_skip = ((data & BUSMODE_DSL) >> 2) * 4;
+		break;
 
-  case CSR_TXPOLL: /*  csr1  */
-    /* CaVa interpretation... */
-    state.reg[CSR_STATUS / 8] &= ~STATUS_TU;
-    state.tx.suspend = false;
-    state.tx.idling = state.tx.idling_threshold;
+	case CSR_TXPOLL:        /*  csr1  */
+		/* CaVa interpretation... */
+		state.reg[CSR_STATUS / 8] &= ~STATUS_TU;
+		state.tx.suspend = false;
+		mySemaphore.tryWait(0);
+		mySemaphore.set();
+		break;
 
-    //        DoClock();
-    break;
+	case CSR_RXPOLL:        /*  csr2  */
+		mySemaphore.tryWait(0);
+		mySemaphore.set();
+		break;
 
-  case CSR_RXPOLL: /*  csr2  */
-    //        DoClock();
-    break;
+	case CSR_RXLIST:        /*  csr3  */
+		/* debug("[ dec21143: setting RXLIST to 0x%x ]\n", (int)data); */
+		if (data & 0x3)
+			printf("[ dec21143: WARNING! RXLIST not aligned? (0x%x) ]\n", data);
+		data &= ~0x3;
+		state.rx.cur_addr = data;
+		break;
 
-  case CSR_RXLIST: /*  csr3  */
-    /* debug("[ dec21143: setting RXLIST to 0x%x ]\n", (int)data); */
-    if (data & 0x3)
-      printf("[ dec21143: WARNING! RXLIST not aligned? (0x%x) ]\n", data);
-    data &= ~0x3;
-    state.rx.cur_addr = data;
-    break;
+	case CSR_TXLIST:        /*  csr4  */
+		/* debug("[ dec21143: setting TXLIST to 0x%x ]\n", (int)data); */
+		if (data & 0x3)
+			printf("[ dec21143: WARNING! TXLIST not aligned? (0x%x) ]\n", data);
+		data &= ~0x3;
+		state.tx.cur_addr = data;
+		break;
 
-  case CSR_TXLIST: /*  csr4  */
-    /* debug("[ dec21143: setting TXLIST to 0x%x ]\n", (int)data); */
-    if (data & 0x3)
-      printf("[ dec21143: WARNING! TXLIST not aligned? (0x%x) ]\n", data);
-    data &= ~0x3;
-    state.tx.cur_addr = data;
-    break;
+	case CSR_STATUS:        /* csr5: handled above; just ensure IRQ is updated */
+		update_irq();
+		break;
 
-  case CSR_STATUS: /*  csr5  */
-  case CSR_INTEN:  /*  csr7  */
-    /*  Recalculate interrupt assertion.  */
+	case CSR_INTEN:         /* csr7: interrupt mask */
+		/* NOTE: state.reg[CSR_INTEN/8] was already written via default case above.
+				 We just need to update the line level right now. */
+#if defined(DEBUG_NIC_IRQ)
+		printf("21143: CSR7 write %08x (mask)\n", state.reg[CSR_INTEN / 8]);
+#endif
+		update_irq();
+		break;
 
-    //              DoClock();
-    break;
+	case CSR_OPMODE:        /*  csr6:  */
+		/* MBO (bit 25) is hardware-driven on real silicon and always reads
+		 * back as 1, regardless of what the driver wrote (HRM 3.2.2.6,
+		 * Table 3-42). Force it set in the stored value so a write/read-back
+		 * verify by the driver (e.g. AlphaBIOS adapter self-test) succeeds
+		 * even when the write omitted MBO. */
+		state.reg[regnr] |= 0x02000000;
+		if (data & 0x02000000)
+		{
 
-  case CSR_OPMODE: /*  csr6:  */
-    if (data & 0x02000000) {
+			/*  A must-be-one bit.  */
+			data &= ~0x02000000;
+		}
 
-      /*  A must-be-one bit.  */
-      data &= ~0x02000000;
-    }
+		if (data & OPMODE_ST)
+		{
 
-    if (data & OPMODE_ST) {
+			//data &= ~OPMODE_ST;
+		}
+		else
+		{
 
-      // data &= ~OPMODE_ST;
-    } else {
+			/*  Turned off TX? Then idle:  */
 
-      /*  Turned off TX? Then idle:  */
+			//      state.reg[CSR_STATUS/8] |= STATUS_TPS;
+		}
 
-      //      state.reg[CSR_STATUS/8] |= STATUS_TPS;
-    }
+		if (data & OPMODE_SR)
+		{
 
-    if (data & OPMODE_SR) {
+			//data &= ~OPMODE_SR;
+		}
+		else
+		{
 
-      // data &= ~OPMODE_SR;
-    } else {
+			/*  Turned off RX? Then go to stopped state:  */
 
-      /*  Turned off RX? Then go to stopped state:  */
+			//state.reg[CSR_STATUS/8] &= ~STATUS_RS;
+		}
 
-      // state.reg[CSR_STATUS/8] &= ~STATUS_RS;
-    }
+		// Did Start/Stop Transmission change state ?
+		if ((data ^ oldreg) & OPMODE_ST)
+		{
+			if (data & OPMODE_ST)
+			{ // ST went high
+				set_tx_state(STATUS_TS_SUSPENDED);
+				/* transmitter running -> clear 'process stopped' */
+				state.reg[CSR_STATUS / 8] &= ~STATUS_TPS;
+				mySemaphore.tryWait(0);
+				mySemaphore.set();
+			}
+			else
+			{ // ST went low
+				set_tx_state(STATUS_TS_STOPPED);
+				/* transmitter stopped -> advertise idle */
+				state.reg[CSR_STATUS / 8] |= STATUS_TPS;
+			}
+		}
 
-    // Did Start/Stop Transmission change state ?
-    if ((data ^ oldreg) & OPMODE_ST) {
-      if (data & OPMODE_ST) { // ST went high
-        set_tx_state(STATUS_TS_SUSPENDED);
-      } else { // ST went low
-        set_tx_state(STATUS_TS_STOPPED);
-      }
-    }
+		// Did Start/Stop Receive change state ?
+		if ((data ^ oldreg) & OPMODE_SR)
+		{
+			if (data & OPMODE_SR)
+			{ // SR went high
+				set_rx_state(STATUS_RS_WAIT);
+				state.reg[CSR_STATUS / 8] &= ~STATUS_RPS;
+				mySemaphore.tryWait(0);
+				mySemaphore.set();
+			}
+			else
+			{ // SR went low
+				/* BUGFIX: this must change the RX state, not TX */
+				set_rx_state(STATUS_RS_STOPPED);
+				state.reg[CSR_STATUS / 8] |= STATUS_RPS;
+				/* When receiver is stopped, drop any queued frames to avoid growth while SR=0. */
+				if (rx_queue) {
+					rx_queue->flush();
+				}
+			}
+			/* Mode & status changed → recompute IRQ level now. */
+			update_irq();
+		}
 
-    // Did Start/Stop Receive change state ?
-    if ((data ^ oldreg) & OPMODE_SR) {
-      if (data & OPMODE_SR) { // SR went high
-        set_rx_state(STATUS_RS_WAIT);
-      } else { // SR went low
-        set_tx_state(STATUS_RS_STOPPED);
-      }
-    }
+		/* If mode bits affecting reception/filtering changed, rebuild BPF. */
+		if ((data ^ oldreg) & (OPMODE_PR | OPMODE_IF | OPMODE_PM | OPMODE_RA)) {
+			SetupFilter();
+		}
+		break;
 
-    data &= ~(OPMODE_HBD | OPMODE_SCR | OPMODE_PCS | OPMODE_PS | OPMODE_SF |
-              OPMODE_TTM | OPMODE_FD | OPMODE_TR | OPMODE_OM);
+	case CSR_MISSED:  /*  csr8  */
+		break;
 
-    //              if (data & OPMODE_PNIC_IT) {
-    //                      data &= ~OPMODE_PNIC_IT;
-    //                  state.tx.idling = state.tx.idling_threshold;
-    //              }
-    //              if (data != 0) {
-    //                      printf("[ dec21143: UNIMPLEMENTED OPMODE bits:
-    //                      0x%08x ]\n", (int)data);
-    //              }
-    //              DoClock();
-    break;
+	case CSR_MIIROM:  /*  csr9  */
+		if (data & MIIROM_MDC)
+			mii_access(oldreg, (u32)data);
+		else
+			srom_access(oldreg, (u32)data);
+		break;
 
-  case CSR_MISSED: /*  csr8  */
-    break;
+	case CSR_SIASTAT: /*  csr12  */
+		if (((data & SIASTAT_ANS) == SIASTAT_ANS_START)
+			&& (state.reg[CSR_SIATXRX / 8] & SIATXRX_ANE))
+		{
+			complete_sia_autoneg();
+		}
+		else
+		{
+			state.reg[CSR_SIASTAT / 8] = oldreg;
+		}
+		break;
 
-  case CSR_MIIROM: /*  csr9  */
-    if (data & MIIROM_MDC)
-      mii_access(oldreg, (u32)data);
-    else
-      srom_access(oldreg, (u32)data);
-    break;
+	case CSR_SIATXRX: /*  csr14  */
+		if ((data & SIATXRX_ANE) && (state.reg[CSR_SIACONN / 8] & SIACONN_SRL))
+			complete_sia_autoneg();
+		break;
 
-  case CSR_SIASTAT: /*  csr12  */
-    if (((data & SIASTAT_ANS) == SIASTAT_ANS_START) &&
-        (state.reg[CSR_SIATXRX / 8] & SIATXRX_ANE)) {
+	case CSR_SIACONN: /*  csr13  */
+		if ((data & SIACONN_SRL) && (state.reg[CSR_SIATXRX / 8] & SIATXRX_ANE))
+		{
+			complete_sia_autoneg();
+		}
+		break;
 
-      // autonegotiation restart... completes immediately in our emulated
-      // environment.
-      state.reg[CSR_SIASTAT / 8] &= ~SIASTAT_ANS;
-      state.reg[CSR_SIASTAT / 8] |=
-          (SIASTAT_ANS_FLPGOOD | SIASTAT_LPN | SIASTAT_LPC);
-      state.reg[CSR_STATUS / 8] |= STATUS_LNPANC;
-      state.reg[CSR_SIATXRX / 8] &= ~(SIATXRX_TH | SIATXRX_THX | SIATXRX_T4);
-      state.reg[CSR_SIATXRX / 8] |= SIATXRX_TXF;
+	case CSR_SIAGEN:  /*  csr15  */
+		break;
 
-      //          DoClock();
-    } else {
-      state.reg[CSR_SIASTAT / 8] = oldreg;
-    }
-    break;
-
-  case CSR_SIATXRX: /*  csr14  */
-    break;
-
-  case CSR_SIACONN: /*  csr13  */
-    if ((data & SIACONN_SRL) && (state.reg[CSR_SIATXRX / 8] & SIATXRX_ANE)) {
-
-      // SIA started with autonegotiation... completes immediately in our
-      // emulated environment.
-      state.reg[CSR_SIASTAT / 8] &= ~SIASTAT_ANS;
-      state.reg[CSR_SIASTAT / 8] |=
-          (SIASTAT_ANS_FLPGOOD | SIASTAT_LPN | SIASTAT_LPC);
-      state.reg[CSR_STATUS / 8] |= STATUS_LNPANC;
-      state.reg[CSR_SIATXRX / 8] &= ~(SIATXRX_TH | SIATXRX_THX | SIATXRX_T4);
-      state.reg[CSR_SIATXRX / 8] |= SIATXRX_TXF;
-
-      //          DoClock();
-    }
-    break;
-
-  case CSR_SIAGEN: /*  csr15  */
-    break;
-
-  default:
-    printf("[ dec21143: write to unimplemented 0x%02x: 0x%02x ]\n",
-           (int)address, (int)data);
-  }
+	default:
+		printf("[ dec21143: write to unimplemented 0x%02x: 0x%02x ]\n", (int)address,
+			(int)data);
+	}
 }
 
-void CDEC21143::set_tx_state(int tx_state) {
-  state.reg[CSR_STATUS / 8] &= ~STATUS_TS;
-  state.reg[CSR_STATUS / 8] |= (tx_state & STATUS_TS);
+void CDEC21143::set_tx_state(int tx_state)
+{
+	state.reg[CSR_STATUS / 8] &= ~STATUS_TS;
+	state.reg[CSR_STATUS / 8] |= (tx_state & STATUS_TS);
 }
 
-void CDEC21143::set_rx_state(int rx_state) {
-  state.reg[CSR_STATUS / 8] &= ~STATUS_RS;
-  state.reg[CSR_STATUS / 8] |= (rx_state & STATUS_RS);
+void CDEC21143::set_rx_state(int rx_state)
+{
+	state.reg[CSR_STATUS / 8] &= ~STATUS_RS;
+	state.reg[CSR_STATUS / 8] |= (rx_state & STATUS_RS);
 }
 
 /**
@@ -701,164 +1023,197 @@ void CDEC21143::set_rx_state(int rx_state) {
  *            on Writes: _TWO_ dummy bits (10)
  *        d = 16 bits of data (MSB first)
  **/
-void CDEC21143::mii_access(uint32_t oldreg, uint32_t idata) {
-  int obit;
+void CDEC21143::mii_access(uint32_t oldreg, uint32_t idata)
+{
+	int       obit;
 
-  int ibit = 0;
-  uint16_t tmp;
+	int       ibit = 0;
+	uint16_t  tmp;
 
-  /*  Only care about data during clock cycles:  */
-  if (!(idata & MIIROM_MDC))
-    return;
+	/*  Only care about data during clock cycles:  */
+	if (!(idata & MIIROM_MDC))
+		return;
 
-  if (idata & MIIROM_MDC && oldreg & MIIROM_MDC)
-    return;
+	if (idata & MIIROM_MDC && oldreg & MIIROM_MDC)
+		return;
 
-  /*  printf("[ mii_access(): 0x%08x ]\n", (int)idata);  */
-  if (idata & MIIROM_BR) {
-    printf("[ mii_access(): MIIROM_BR: TODO ]\n");
-    return;
-  }
+	/*  printf("[ mii_access(): 0x%08x ]\n", (int)idata);  */
+	if (idata & MIIROM_BR)
+	{
+		printf("[ mii_access(): MIIROM_BR: TODO ]\n");
+		return;
+	}
 
-  obit = idata & MIIROM_MDO ? 1 : 0;
+	obit = idata & MIIROM_MDO ? 1 : 0;
 
-  if (state.mii.state >= MII_STATE_START_WAIT &&
-      state.mii.state <= MII_STATE_READ_PHYADDR_REGADDR &&
-      idata & MIIROM_MIIDIR)
-    printf("[ mii_access(): bad dir? ]\n");
+	if (state.mii.state >= MII_STATE_START_WAIT
+		&& state.mii.state <= MII_STATE_READ_PHYADDR_REGADDR && idata & MIIROM_MIIDIR) printf("[ mii_access(): bad dir? ]\n");
 
-  switch (state.mii.state) {
-  case MII_STATE_RESET:
+	switch (state.mii.state)
+	{
+	case MII_STATE_RESET:
 
-    /*  Wait for a starting delimiter (0 followed by 1).  */
-    if (obit)
-      return;
-    if (idata & MIIROM_MIIDIR)
-      return;
+		/*  Wait for a starting delimiter (0 followed by 1).  */
+		if (obit)
+			return;
+		if (idata & MIIROM_MIIDIR)
+			return;
 
-    /*  printf("[ mii_access(): got a 0 delimiter ]\n");  */
-    state.mii.state = MII_STATE_START_WAIT;
-    state.mii.opcode = 0;
-    state.mii.phyaddr = 0;
-    state.mii.regaddr = 0;
-    break;
+		/*  printf("[ mii_access(): got a 0 delimiter ]\n");  */
+		state.mii.state = MII_STATE_START_WAIT;
+		state.mii.opcode = 0;
+		state.mii.phyaddr = 0;
+		state.mii.regaddr = 0;
+		break;
 
-  case MII_STATE_START_WAIT:
+	case MII_STATE_START_WAIT:
 
-    /*  Wait for a starting delimiter (0 followed by 1).  */
-    if (!obit)
-      return;
-    if (idata & MIIROM_MIIDIR) {
-      state.mii.state = MII_STATE_RESET;
-      return;
-    }
+		/*  Wait for a starting delimiter (0 followed by 1).  */
+		if (!obit)
+			return;
+		if (idata & MIIROM_MIIDIR)
+		{
+			state.mii.state = MII_STATE_RESET;
+			return;
+		}
 
-    /*  printf("[ mii_access(): got a 1 delimiter ]\n");  */
-    state.mii.state = MII_STATE_READ_OP;
-    state.mii.bit = 0;
-    break;
+		/*  printf("[ mii_access(): got a 1 delimiter ]\n");  */
+		state.mii.state = MII_STATE_READ_OP;
+		state.mii.bit = 0;
+		break;
 
-  case MII_STATE_READ_OP:
-    if (state.mii.bit == 0) {
-      state.mii.opcode = obit << 1;
+	case MII_STATE_READ_OP:
+		if (state.mii.bit == 0)
+		{
+			state.mii.opcode = obit << 1;
 
-      /*  printf("[ mii_access(): got first opcode bit (%i) ]\n", obit);  */
-    } else {
-      state.mii.opcode |= obit;
+			/*  printf("[ mii_access(): got first opcode bit (%i) ]\n", obit);  */
+		}
+		else
+		{
+			state.mii.opcode |= obit;
 
-      /*  printf("[ mii_access(): got opcode = %i ]\n", state.mii.opcode);  */
-      state.mii.state = MII_STATE_READ_PHYADDR_REGADDR;
-    }
+			/*  printf("[ mii_access(): got opcode = %i ]\n", state.mii.opcode);  */
+			state.mii.state = MII_STATE_READ_PHYADDR_REGADDR;
+		}
 
-    state.mii.bit++;
-    break;
+		state.mii.bit++;
+		break;
 
-  case MII_STATE_READ_PHYADDR_REGADDR:
+	case MII_STATE_READ_PHYADDR_REGADDR:
 
-    /*  printf("[ mii_access(): got phy/reg addr bit nr %i (%i)"
-       " ]\n", state.mii.bit - 2, obit);  */
-    if (state.mii.bit <= 6)
-      state.mii.phyaddr |= obit << (6 - state.mii.bit);
-    else
-      state.mii.regaddr |= obit << (11 - state.mii.bit);
-    state.mii.bit++;
-    if (state.mii.bit >= 12) {
+		/*  printf("[ mii_access(): got phy/reg addr bit nr %i (%i)"
+		   " ]\n", state.mii.bit - 2, obit);  */
+		if (state.mii.bit <= 6)
+			state.mii.phyaddr |= obit << (6 - state.mii.bit);
+		else
+			state.mii.regaddr |= obit << (11 - state.mii.bit);
+		state.mii.bit++;
+		if (state.mii.bit >= 12)
+		{
 
-      /*  printf("[ mii_access(): phyaddr=0x%x regaddr=0x"
-         "%x ]\n", state.mii.phyaddr, state.mii.regaddr);  */
-      state.mii.state = MII_STATE_A;
-    }
-    break;
+			/*  printf("[ mii_access(): phyaddr=0x%x regaddr=0x"
+			   "%x ]\n", state.mii.phyaddr, state.mii.regaddr);  */
+			state.mii.state = MII_STATE_A;
+		}
+		break;
 
-  case MII_STATE_A:
-    switch (state.mii.opcode) {
-    case MII_COMMAND_WRITE:
-      if (state.mii.bit >= 13)
-        state.mii.state = MII_STATE_D;
-      break;
+	case MII_STATE_A:
+		switch (state.mii.opcode)
+		{
+		case MII_COMMAND_WRITE:
+			if (state.mii.bit >= 13)
+				state.mii.state = MII_STATE_D;
+			break;
 
-    case MII_COMMAND_READ:
-      ibit = 0;
-      state.mii.state = MII_STATE_D;
-      break;
+		case MII_COMMAND_READ:
+			ibit = 0;
+			state.mii.state = MII_STATE_D;
+			break;
 
-    default:
-      printf("[ mii_access(): UNIMPLEMENTED MII opcode %i (probably just a bug "
-             "in GXemul's MII data stream handling) ]\n",
-             state.mii.opcode);
-      state.mii.state = MII_STATE_RESET;
-    }
+		case 3: /* Some stacks tickle the line so we see '11b' treat as READ */
+			ibit = 0;
+			state.mii.state = MII_STATE_D;
+			state.mii.opcode = MII_COMMAND_READ;
+			break;
 
-    state.mii.bit++;
-    break;
+		default:
+			printf("[ mii_access(): UNIMPLEMENTED MII opcode %i (probably just a bug in GXemul's MII data stream handling) ]\n",
+				state.mii.opcode);
+			state.mii.state = MII_STATE_RESET;
+		}
 
-  case MII_STATE_D:
-    switch (state.mii.opcode) {
-    case MII_COMMAND_WRITE:
-      if (idata & MIIROM_MIIDIR)
-        printf("[ mii_access(): write: bad dir? ]\n");
-      obit = obit ? (0x8000 >> (state.mii.bit - 14)) : 0;
-      tmp = state.mii.phy_reg[(state.mii.phyaddr << 5) + state.mii.regaddr] |
-            obit;
-      if (state.mii.bit >= 29) {
-        state.mii.state = MII_STATE_IDLE;
+		state.mii.bit++;
+		break;
 
-        //                              debug("[ mii_access(): WRITE to
-        //                              phyaddr=0x%x regaddr=0x%x: 0x%04x ]\n",
-        //                              state.mii.phyaddr, state.mii.regaddr,
-        //                              tmp);
-      }
-      break;
+	case MII_STATE_D:
+		switch (state.mii.opcode)
+		{
+		case MII_COMMAND_WRITE:
+			if (idata & MIIROM_MIIDIR)
+				printf("[ mii_access(): write: bad dir? ]\n");
+			obit = obit ? (0x8000 >> (state.mii.bit - 14)) : 0;
+			tmp = state.mii.phy_reg[(state.mii.phyaddr << 5) + state.mii.regaddr] | obit;
+			if (state.mii.bit >= 29)
+			{
+				state.mii.state = MII_STATE_IDLE;
 
-    case MII_COMMAND_READ:
-      if (!(idata & MIIROM_MIIDIR))
-        break;
-      tmp = state.mii.phy_reg[(state.mii.phyaddr << 5) + state.mii.regaddr];
+				//                              debug("[ mii_access(): WRITE to phyaddr=0x%x regaddr=0x%x: 0x%04x ]\n", state.mii.phyaddr, state.mii.regaddr, tmp);
+			}
+			break;
 
-      //                      if (state.mii.bit == 13)
-      //                              debug("[ mii_access(): READ phyaddr=0x%x
-      //                              regaddr=0x%x: 0x%04x ]\n",
-      //                              state.mii.phyaddr, state.mii.regaddr,
-      //                              tmp);
-      ibit = tmp & (0x8000 >> (state.mii.bit - 13));
-      if (state.mii.bit >= 28)
-        state.mii.state = MII_STATE_IDLE;
-      break;
-    }
+		case MII_COMMAND_READ:
+			if (!(idata & MIIROM_MIIDIR))
+				break;
+			tmp = state.mii.phy_reg[(state.mii.phyaddr << 5) + state.mii.regaddr];
 
-    state.mii.bit++;
-    break;
+			//                      if (state.mii.bit == 13)
+			//                              debug("[ mii_access(): READ phyaddr=0x%x regaddr=0x%x: 0x%04x ]\n", state.mii.phyaddr, state.mii.regaddr, tmp);
+			ibit = tmp & (0x8000 >> (state.mii.bit - 13));
+			if (state.mii.bit >= 28)
+				state.mii.state = MII_STATE_IDLE;
+			break;
+		}
 
-  case MII_STATE_IDLE:
-    state.mii.bit++;
-    if (state.mii.bit >= 31)
-      state.mii.state = MII_STATE_RESET;
-    break;
-  }
+		state.mii.bit++;
+		break;
 
-  state.reg[CSR_MIIROM / 8] &= ~MIIROM_MDI;
-  if (ibit)
-    state.reg[CSR_MIIROM / 8] |= MIIROM_MDI;
+	case MII_STATE_IDLE:
+		state.mii.bit++;
+		if (state.mii.bit >= 31)
+			state.mii.state = MII_STATE_RESET;
+		break;
+	}
+
+	state.reg[CSR_MIIROM / 8] &= ~MIIROM_MDI;
+	if (ibit)
+		state.reg[CSR_MIIROM / 8] |= MIIROM_MDI;
+}
+
+void CDEC21143::complete_sia_autoneg()
+{
+	const u32 link_partner =
+		((u32)(ANLPAR_ACK | ANLPAR_TX_FD | ANLPAR_TX |
+			ANLPAR_10_FD | ANLPAR_10 | ANLPAR_CSMA) << 16);
+
+	/* Autonegotiation completes immediately against the emulated link partner.
+	   Report a stable 100baseTX full-duplex link without remote-fault bits. */
+	state.reg[CSR_SIASTAT / 8] &= ~(SIASTAT_ANS | SIASTAT_LPC |
+		SIASTAT_LS100 | SIASTAT_LS10 | SIASTAT_NSN | SIASTAT_TRF);
+	state.reg[CSR_SIASTAT / 8] |= SIASTAT_ANS_FLPGOOD |
+		SIASTAT_LPN | link_partner;
+
+	state.reg[CSR_STATUS / 8] &= ~STATUS_LNF;
+	state.reg[CSR_STATUS / 8] |= STATUS_LNPANC;
+
+	state.reg[CSR_OPMODE / 8] &= ~OPMODE_TTM;
+	state.reg[CSR_OPMODE / 8] |= OPMODE_PS | OPMODE_PCS |
+		OPMODE_SCR | OPMODE_FD | OPMODE_HBD;
+
+	state.reg[CSR_SIATXRX / 8] &= ~(SIATXRX_TH | SIATXRX_THX | SIATXRX_T4);
+	state.reg[CSR_SIATXRX / 8] |= SIATXRX_TXF;
+
+	update_irq();
 }
 
 /**
@@ -878,110 +1233,118 @@ void CDEC21143::mii_access(uint32_t oldreg, uint32_t idata) {
  *  operating system to sense the number of bits in y (when reading, all y bits
  *  are 1 except the last one).
  **/
-void CDEC21143::srom_access(uint32_t oldreg, uint32_t idata) {
-  int obit;
+void CDEC21143::srom_access(uint32_t oldreg, uint32_t idata)
+{
+	int obit;
 
-  int ibit;
+	int ibit;
 
-  /*  debug("CSR9 WRITE! 0x%08x\n", (int)idata);  */
+	/*  debug("CSR9 WRITE! 0x%08x\n", (int)idata);  */
 
-  /*  New selection? Then reset internal state.  */
-  if (idata & MIIROM_SR && !(oldreg & MIIROM_SR)) {
-    state.srom.curbit = 0;
-    state.srom.opcode = 0;
-    state.srom.opcode_has_started = 0;
-    state.srom.addr = 0;
-  }
+	/*  New selection? Then reset internal state.  */
+	if (idata & MIIROM_SR && !(oldreg & MIIROM_SR))
+	{
+		state.srom.curbit = 0;
+		state.srom.opcode = 0;
+		state.srom.opcode_has_started = 0;
+		state.srom.addr = 0;
+	}
 
-  /*  Only care about data during clock cycles:  */
-  if (!(idata & MIIROM_SROMSK))
-    return;
+	/*  Only care about data during clock cycles:  */
+	if (!(idata & MIIROM_SROMSK))
+		return;
 
-  obit = 0;
-  ibit = idata & MIIROM_SROMDI ? 1 : 0;
+	obit = 0;
+	ibit = idata & MIIROM_SROMDI ? 1 : 0;
 
-  /*  debug("CLOCK CYCLE! (bit %i): ", state.srom.curbit);  */
+	/*  debug("CLOCK CYCLE! (bit %i): ", state.srom.curbit);  */
 
-  /*
-   *  Linux sends more zeroes before starting the actual opcode, than
-   *  OpenBSD and NetBSD. Hopefully this is correct. (I'm just guessing
-   *  that all opcodes should start with a 1, perhaps that's not really
-   *  the case.)
-   */
-  if (!ibit && !state.srom.opcode_has_started)
-    return;
+	/*
+	 *  Linux sends more zeroes before starting the actual opcode, than
+	 *  OpenBSD and NetBSD. Hopefully this is correct. (I'm just guessing
+	 *  that all opcodes should start with a 1, perhaps that's not really
+	 *  the case.)
+	 */
+	if (!ibit && !state.srom.opcode_has_started)
+		return;
 
-  if (state.srom.curbit < 3) {
-    state.srom.opcode_has_started = 1;
-    state.srom.opcode <<= 1;
-    state.srom.opcode |= ibit;
+	if (state.srom.curbit < 3)
+	{
+		state.srom.opcode_has_started = 1;
+		state.srom.opcode <<= 1;
+		state.srom.opcode |= ibit;
 
-    /*  debug("opcode input '%i'\n", ibit);  */
-  } else {
-    switch (state.srom.opcode) {
-    case TULIP_SROM_OPC_READ:
-      if (state.srom.curbit < 6 + 3) {
-        obit = state.srom.curbit < 6 + 2;
-        state.srom.addr <<= 1;
-        state.srom.addr |= ibit;
-      } else {
-        uint16_t romword = state.srom.data[state.srom.addr * 2] +
-                           (state.srom.data[state.srom.addr * 2 + 1] << 8);
+		/*  debug("opcode input '%i'\n", ibit);  */
+	}
+	else
+	{
+		switch (state.srom.opcode)
+		{
+		case TULIP_SROM_OPC_READ:
+			if (state.srom.curbit < 6 + 3)
+			{
+				obit = state.srom.curbit < 6 + 2;
+				state.srom.addr <<= 1;
+				state.srom.addr |= ibit;
+			}
+			else
+			{
+				uint16_t  romword = state.srom.data[state.srom.addr * 2] +
+					(state.srom.data[state.srom.addr * 2 + 1] << 8);
 
-        //                              if (state.srom.curbit == 6 + 3)
-        //                                      debug("[ dec21143: ROM read from
-        //                                      offset 0x%03x: 0x%04x ]\n",
-        //                                      state.srom.addr, romword);
-        obit = romword & (0x8000 >> (state.srom.curbit - 6 - 3)) ? 1 : 0;
+				//                              if (state.srom.curbit == 6 + 3)
+				//                                      debug("[ dec21143: ROM read from offset 0x%03x: 0x%04x ]\n", state.srom.addr, romword);
+				obit = romword & (0x8000 >> (state.srom.curbit - 6 - 3)) ? 1 : 0;
 #if defined(DEBUG_NIC_SROM)
-        printf("%%NIC-I-SROMREAD: Read %04x from %04x\n", romword,
-               state.srom.addr);
+				printf("%%NIC-I-SROMREAD: Read %04x from %04x\n", romword,
+					state.srom.addr);
 #endif
-      }
-      break;
+			}
+			break;
 
-    default:
-      printf("[ dec21243: unimplemented SROM/EEPROM opcode %i ]\n",
-             state.srom.opcode);
-    }
+		default:
+			printf("[ dec21243: unimplemented SROM/EEPROM opcode %i ]\n",
+				state.srom.opcode);
+		}
 
-    state.reg[CSR_MIIROM / 8] &= ~MIIROM_SROMDO;
-    if (obit)
-      state.reg[CSR_MIIROM / 8] |= MIIROM_SROMDO;
+		state.reg[CSR_MIIROM / 8] &= ~MIIROM_SROMDO;
+		if (obit)
+			state.reg[CSR_MIIROM / 8] |= MIIROM_SROMDO;
 
-    /*  debug("input '%i', output '%i'\n", ibit, obit);  */
-  }
+		/*  debug("input '%i', output '%i'\n", ibit, obit);  */
+	}
 
-  state.srom.curbit++;
+	state.srom.curbit++;
 
-  /*
-   *  Done opcode + addr + data? Then restart. (At least NetBSD does
-   *  sequential reads without turning selection off and then on.)
-   */
-  if (state.srom.curbit >= 3 + 6 + 16) {
-    state.srom.curbit = 0;
-    state.srom.opcode = 0;
-    state.srom.opcode_has_started = 0;
-    state.srom.addr = 0;
-  }
+	/*
+	 *  Done opcode + addr + data? Then restart. (At least NetBSD does
+	 *  sequential reads without turning selection off and then on.)
+	 */
+	if (state.srom.curbit >= 3 + 6 + 16)
+	{
+		state.srom.curbit = 0;
+		state.srom.opcode = 0;
+		state.srom.opcode_has_started = 0;
+		state.srom.addr = 0;
+	}
 }
 
 /*
 bool CDEC21143:acquire_rx_descriptor(u32 status_true, u32 status_false) {
-        // get current receive descriptor
-    do_pci_read(state.rx.cur_addr, descr, 4, 4);
+	// get current receive descriptor
+	do_pci_read(state.rx.cur_addr, descr, 4, 4);
 
-        if (rdes0 & TDSTAT_OWN) {	// 21143 owns descriptor
-                state.reg[CSR_STATUS/8] &= ~STATUS_RU;	// clear buffers
-unavailable if (state.reg[CSR_OPMODE/8] & OPMODE_SR) {	// if receive start
-                        state.reg[CSR_STATUS/8] = (state.reg[CSR_STATUS/8] &
-~STATUS_RS) | STATUS_RS_WAIT; } else {
-                }
-                return true;		// indicate nothing was processed
-        } else {
-                state.reg[CSR_STATUS/8] = (state.reg[CSR_STATUS/8] & ~(STATUS_RS
-| STATUS_RU)) | STATUS_R return true;
-        }
+	if (rdes0 & TDSTAT_OWN) {	// 21143 owns descriptor
+		state.reg[CSR_STATUS/8] &= ~STATUS_RU;	// clear buffers unavailable
+		if (state.reg[CSR_OPMODE/8] & OPMODE_SR) {	// if receive start
+			state.reg[CSR_STATUS/8] = (state.reg[CSR_STATUS/8] & ~STATUS_RS) | STATUS_RS_WAIT;
+		} else {
+		}
+		return true;		// indicate nothing was processed
+	} else {
+		state.reg[CSR_STATUS/8] = (state.reg[CSR_STATUS/8] & ~(STATUS_RS | STATUS_RU)) | STATUS_R
+		return true;
+	}
 }
 */
 
@@ -990,451 +1353,602 @@ unavailable if (state.reg[CSR_OPMODE/8] & OPMODE_SR) {	// if receive start
  *  arrived ones. If the current packet couldn't be fully transfered the
  *  last time, then continue on that packet.)
  **/
-int CDEC21143::dec21143_rx() {
-  static u32 descr[4];
-  static u32 &rdes0 = descr[0];
-  static u32 &rdes1 = descr[1];
-  static u32 &rdes2 = descr[2];
-  static u32 &rdes3 = descr[3];
+int CDEC21143::dec21143_rx()
+{
+	static u32    descr[4];
+	static u32& rdes0 = descr[0];
+	static u32& rdes1 = descr[1];
+	static u32& rdes2 = descr[2];
+	static u32& rdes3 = descr[3];
 
-  u32 bufaddr;
-  int bufsize;
-  int buf1_size;
-  int buf2_size;
-  int to_xfer;
+	u32           addr = state.rx.cur_addr;
+	u32           bufaddr;
 
-  /*  Is current packet finished? Then check for new ones.  */
-  if (state.rx.current.used >= state.rx.current.len) {
+	//unsigned char descr[16];
+	//u32 rdes0, rdes1, rdes2, rdes3;
+	int           bufsize;
 
-    /*  Nothing available? Then abort.  */
-    if (rx_queue->count() == 0)
-      return 0; // indicate nothing was processed
+	//unsigned char descr[16];
+	int           buf1_size;
 
-    //      printf("pcap recv: %d bytes (%d captured) for
-    //      %02x:%02x:%02x:%02x:%02x:%02x  \n",packet_header->len,
-    //      packet_header->caplen,packet_data[0],packet_data[1],packet_data[2],packet_data[3],packet_data[4],packet_data[5]);
-    // get next packet from receive queue
-    rx_queue->get_head(state.rx.current);
+	//unsigned char descr[16];
+	int           buf2_size;
 
-    /*  Append a 4 byte CRC:  */
+	//unsigned char descr[16];
+	//int           writeback_len = 4;
 
-    // state.rx.cur_buf_len += 4;
-    // CHECK_REALLOCATION(state.rx.cur_buf, realloc(state.rx.cur_buf,
-    // state.rx.cur_buf_len), unsigned char);
+	//unsigned char descr[16];
+	int           to_xfer;
 
-    /*  Get the next packet into our buffer:  */
+	//struct pcap_pkthdr * packet_header;
+	//const u_char * packet_data = NULL;
 
-    // memcpy(state.rx.cur_buf, packet_data, state.rx.cur_buf_len);
+	/*  Is current packet finished? Then check for new ones.  */
+	if (state.rx.current.used >= state.rx.current.len)
+	{
 
-    /*  Well... the CRC is just zeros, for now.  */
+		/*  Nothing available? Then abort.  */
+		if (rx_queue->count() == 0)
+			return 0;           // indicate nothing was processed
 
-    // memset(state.rx.cur_buf + state.rx.cur_buf_len - 4, 0, 4);
-    // state.rx.cur_offset = 0;
-  }
+		//      printf("pcap recv: %d bytes (%d captured) for %02x:%02x:%02x:%02x:%02x:%02x  \n",packet_header->len, packet_header->caplen,packet_data[0],packet_data[1],packet_data[2],packet_data[3],packet_data[4],packet_data[5]);
+		// get next packet from receive queue
+		rx_queue->get_head(state.rx.current);
 
-  // read current descriptor
-  do_pci_read(state.rx.cur_addr, descr, 4, 4);
+		/*  Append a 4 byte CRC:  */
 
-  // rdes0 = descr[0] + (descr[1]<<8) + (descr[2]<<16) + (descr[3]<<24);
-  // rdes1 = descr[4] + (descr[5]<<8) + (descr[6]<<16) + (descr[7]<<24);
-  // rdes2 = descr[8] + (descr[9]<<8) + (descr[10]<<16) + (descr[11]<<24);
-  // rdes3 = descr[12] + (descr[13]<<8) + (descr[14]<<16) + (descr[15]<<24);
+		//state.rx.cur_buf_len += 4;
+		//CHECK_REALLOCATION(state.rx.cur_buf, realloc(state.rx.cur_buf, state.rx.cur_buf_len), unsigned char);
 
-  /*  Only use descriptors owned by the 21143:  */
-  if (!(rdes0 & TDSTAT_OWN)) {
+		/*  Get the next packet into our buffer:  */
 
-    // set recive buffers unavailable and receive state to suspended
-    state.reg[CSR_STATUS / 8] = (state.reg[CSR_STATUS / 8] & ~STATUS_RS) |
-                                STATUS_RU | STATUS_RS_SUSPENDED;
-    return 0; // indicate nothing was processed
-  }
+		//memcpy(state.rx.cur_buf, packet_data, state.rx.cur_buf_len);
 
-  buf1_size = rdes1 & TDCTL_SIZE1;
-  buf2_size = (rdes1 & TDCTL_SIZE2) >> TDCTL_SIZE2_SHIFT;
-  bufaddr = buf1_size ? rdes2 : rdes3;
-  bufsize = buf1_size ? buf1_size : buf2_size;
+		/*  Well... the CRC is just zeros, for now.  */
 
-  // state.reg[CSR_STATUS/8] &= ~STATUS_RS; // dth: wrong, this is receive state
-  // stopped
-  //  printf("{ dec21143_rx: base = 0x%08x }\n", (int)addr);
-  //      debug("{ RX (%llx): 0x%08x 0x%08x 0x%x 0x%x: buf %i bytes at 0x%x
-  //      }\n",
-  //          (long long)addr, rdes0, rdes1, rdes2, rdes3, bufsize,
-  //          (int)bufaddr);
-  // Turn off all status bits, and give up ownership
-  rdes0 = 0x00000000;
+		//memset(state.rx.cur_buf + state.rx.cur_buf_len - 4, 0, 4);
+		//state.rx.cur_offset = 0;
+	}
 
-  //  Is this the first buffer of the frame?
-  if (state.rx.current.used == 0)
-    rdes0 |= TDSTAT_Rx_FS;
+	// read current descriptor
+	do_pci_read(state.rx.cur_addr, descr, 4, 4);
+	// respect DBO bit - swap descriptor byte order if needed
+	if (state.reg[CSR_BUSMODE / 8] & BUSMODE_DBO) {
+		for (int i = 0; i < 4; i++) descr[i] = bswap32_local(descr[i]);
+	}
 
-  // use buffer 1, if length is non-zero
-  if (buf1_size > 0) {
-    to_xfer = state.rx.current.len - state.rx.current.used;
-    if (to_xfer > buf1_size)
-      to_xfer = buf1_size;
+	rdes0 = descr[0];
+	rdes1 = descr[1];
+	rdes2 = descr[2];
+	rdes3 = descr[3];
 
-    // DMA bytes from the packet into buffer 1
-    do_pci_write(rdes2, &state.rx.current.frame[state.rx.current.used], 1,
-                 to_xfer);
+	/*  Only use descriptors owned by the 21143:  */
+	if (!(rdes0 & TDSTAT_OWN))
+	{
 
-    // update used
-    state.rx.current.used += to_xfer;
-  }
+		// set recive buffers unavailable and receive state to suspended
+		state.reg[CSR_STATUS / 8] = (state.reg[CSR_STATUS / 8] & ~STATUS_RS) |
+			STATUS_RU |
+			STATUS_RS_SUSPENDED;
+		return 0;             // indicate nothing was processed
+	}
 
-  // use buffer 2, if length is non-zero and not a chain buffer
-  if ((buf2_size > 0) && (!(rdes1 & TDCTL_CH))) {
-    to_xfer = state.rx.current.len - state.rx.current.used;
-    if (to_xfer > buf2_size)
-      to_xfer = buf2_size;
+	buf1_size = rdes1 & TDCTL_SIZE1;
+	buf2_size = (rdes1 & TDCTL_SIZE2) >> TDCTL_SIZE2_SHIFT;
+	bufaddr = buf1_size ? rdes2 : rdes3;
+	bufsize = buf1_size ? buf1_size : buf2_size;
 
-    // DMA bytes from the packet into buffer 2
-    do_pci_write(rdes3, state.rx.current.frame + state.rx.current.used, 1,
-                 to_xfer);
+	//state.reg[CSR_STATUS/8] &= ~STATUS_RS; // dth: wrong, this is receive state stopped
+	//  printf("{ dec21143_rx: base = 0x%08x }\n", addr);
+	//      debug("{ RX (%08x): 0x%08x 0x%08x 0x%x 0x%x: buf %d bytes at 0x%x }\n",
+	//          addr, rdes0, rdes1, rdes2, rdes3, bufsize, (int)bufaddr);
+	// Turn off all status bits, and give up ownership
+	rdes0 = 0x00000000;
 
-    // update used
-    state.rx.current.used += to_xfer;
-  }
+	//  Is this the first buffer of the frame?
+	if (state.rx.current.used == 0)
+		rdes0 |= TDSTAT_Rx_FS;
 
-  //  Frame completed?
-  if (state.rx.current.used >= state.rx.current.len) {
+	// use buffer 1, if length is non-zero
+	if (buf1_size > 0)
+	{
+		to_xfer = state.rx.current.len - state.rx.current.used;
+		if (to_xfer > buf1_size)
+			to_xfer = buf1_size;
 
-    //        debug("frame complete.\n");
-    rdes0 |= TDSTAT_Rx_LS;
+		// DMA bytes from the packet into buffer 1
+		do_pci_write(rdes2, &state.rx.current.frame[state.rx.current.used], 1,
+			to_xfer);
 
-    /*  Set the frame length:  */
-    rdes0 |= (state.rx.current.len << 16) & TDSTAT_Rx_FL;
+		// update used
+		state.rx.current.used += to_xfer;
+	}
 
-    /*  Frame too long? (1518 is max ethernet frame length)  */
-    if (state.rx.current.len > 1518)
-      rdes0 |= TDSTAT_Rx_TL;
+	// use buffer 2, if length is non-zero and not a chain buffer
+	if ((buf2_size > 0) && (!(rdes1 & TDCTL_CH)))
+	{
+		to_xfer = state.rx.current.len - state.rx.current.used;
+		if (to_xfer > buf2_size)
+			to_xfer = buf2_size;
 
-    // set receive interrupt and receive state to waiting-for-packet
-    state.reg[CSR_STATUS / 8] =
-        (state.reg[CSR_STATUS / 8] & ~STATUS_RS) | STATUS_RI | STATUS_RS_WAIT;
-  }
+		// DMA bytes from the packet into buffer 2
+		do_pci_write(rdes3, state.rx.current.frame + state.rx.current.used, 1,
+			to_xfer);
 
-  // Writeback rdes0, others are read-only
-  state.reg[CSR_STATUS / 8] =
-      (state.reg[CSR_STATUS / 8] & ~STATUS_RS) | STATUS_RS_CLOSE;
-  do_pci_write(state.rx.cur_addr, descr, 4, 1);
+		// update used
+		state.rx.current.used += to_xfer;
+	}
 
-  // move to next descriptor
-  if (rdes1 & TDCTL_ER) // end-of-ring, return to base
-    state.rx.cur_addr = state.reg[CSR_RXLIST / 8];
-  else {
-    if (rdes1 & TDCTL_CH) // explicit chain, use chain address
-      state.rx.cur_addr = rdes3;
-    else
-      // implicit chain
-      state.rx.cur_addr += sizeof(descr) + state.descr_skip;
-  }
+	//  Frame completed?
+	if (state.rx.current.used >= state.rx.current.len)
+	{
 
-  return 1; // indicate processing has occurred
+		//        debug("frame complete.\n");
+		rdes0 |= TDSTAT_Rx_LS;
+
+		/*  Set the frame length: */
+		rdes0 |= ((state.rx.current.len) << 16) & TDSTAT_Rx_FL; /* include CRC like HW/QEMU */
+
+		/* Set multicast / filter-fail flags. */
+		const u8* dst = state.rx.current.frame;
+		bool is_multicast = (dst[0] & 1) != 0;
+		if (is_multicast) {
+			rdes0 |= TDSTAT_Rx_MF;
+
+		}
+		/* Check perfect filter list programmed by setup-frame; fall back to our MAC. */
+		bool perfect = false;
+		for (int k = 0; k < 16; k++) {
+			u8* ent = &state.setup_filter[k * 12];
+			u8 pa[6] = { ent[0], ent[1], ent[4], ent[5], ent[8], ent[9] };
+			if ((pa[0] | pa[1] | pa[2] | pa[3] | pa[4] | pa[5]) == 0)
+				continue;
+			if (memcmp(dst, pa, 6) == 0) { perfect = true; break; }
+		}
+		if (!perfect && memcmp(dst, state.mac, 6) == 0) {
+			perfect = true;
+
+		}
+		if (!perfect) {
+			if (state.reg[CSR_OPMODE / 8] & (OPMODE_PR | OPMODE_RA)) {
+				rdes0 |= TDSTAT_Rx_FF;
+
+			}
+		}
+
+		/* Data type per OM (normal / internal / external loopback). */
+		if (state.reg[CSR_OPMODE / 8] & OPMODE_OM_INTLOOP) {
+			rdes0 |= TDSTAT_Rx_DT_IL;
+		}
+		else if (state.reg[CSR_OPMODE / 8] & OPMODE_OM_EXTLOOP) {
+			rdes0 |= TDSTAT_Rx_DT_EL;
+		}
+		else {
+			rdes0 |= TDSTAT_Rx_DT_SR;
+		}
+
+		/*  Frame too long? (1518 is max ethernet frame length)  */
+		if (state.rx.current.len > 1518)
+			rdes0 |= TDSTAT_Rx_TL;
+		// ^^ this is quite not possible in current code path...?
+
+		// set receive interrupt and receive state to waiting-for-packet
+		state.reg[CSR_STATUS / 8] = (state.reg[CSR_STATUS / 8] & ~STATUS_RS) |
+			STATUS_RI |
+			STATUS_RS_WAIT;
+	}
+
+	// Writeback rdes0, others are read-only
+	state.reg[CSR_STATUS / 8] = (state.reg[CSR_STATUS / 8] & ~STATUS_RS) | STATUS_RS_CLOSE;
+	// respect DBO bit - swap descriptor byte order if needed
+	{
+		u32 w0 = rdes0;
+		if (state.reg[CSR_BUSMODE / 8] & BUSMODE_DBO) w0 = bswap32_local(w0);
+		do_pci_write(state.rx.cur_addr, &w0, 4, 1);
+	}
+
+	// move to next descriptor
+	if (rdes1 & TDCTL_ER)    // end-of-ring, return to base
+		state.rx.cur_addr = state.reg[CSR_RXLIST / 8];
+	else
+	{
+		if (rdes1 & TDCTL_CH)  // explicit chain, use chain address
+			state.rx.cur_addr = rdes3;
+		else
+			// implicit chain
+			state.rx.cur_addr += (4 * sizeof(uint32_t)) + state.descr_skip;
+	}
+
+	return 1; // indicate processing has occurred
 }
 
 /**
  *  Transmit a packet, if the guest OS has marked a descriptor as containing
  *  data to transmit.
  **/
-int CDEC21143::dec21143_tx() {
-  u32 addr = state.tx.cur_addr;
+int CDEC21143::dec21143_tx()
+{
+	u32           addr = state.tx.cur_addr;
 
-  u32 bufaddr;
-  unsigned char descr[16];
-  u32 tdes0;
-  u32 tdes1;
-  u32 tdes2;
-  u32 tdes3;
-  int bufsize;
-  int buf1_size;
-  int buf2_size;
+	u32           bufaddr;
+	u32			  descr[4];
+	u32           tdes0;
+	u32           tdes1;
+	u32           tdes2;
+	u32           tdes3;
+	int           bufsize;
+	int           buf1_size;
+	int           buf2_size;
 
-  if (state.tx.suspend)
-    return 0;
+	if (state.tx.suspend)
+		return 0;
 
-  do_pci_read(addr, descr, 1, 16);
+	set_tx_state(STATUS_TS_FETCH);
+	do_pci_read(addr, descr, 4, 4);
 
-  tdes0 = descr[0] + (descr[1] << 8) + (descr[2] << 16) + (descr[3] << 24);
-  tdes1 = descr[4] + (descr[5] << 8) + (descr[6] << 16) + (descr[7] << 24);
-  tdes2 = descr[8] + (descr[9] << 8) + (descr[10] << 16) + (descr[11] << 24);
-  tdes3 = descr[12] + (descr[13] << 8) + (descr[14] << 16) + (descr[15] << 24);
+	if (state.reg[CSR_BUSMODE / 8] & BUSMODE_DBO) {
+		for (int i = 0; i < 4; i++) descr[i] = bswap32_local(descr[i]);
+	}
+	tdes0 = descr[0];
+	tdes1 = descr[1];
+	tdes2 = descr[2];
+	tdes3 = descr[3];
 
-  /*  printf("{ dec21143_tx: base=0x%08x, tdes0=0x%08x }\n", (int)addr,
-   * (int)tdes0);  */
+	/*  printf("{ dec21143_tx: base=0x%08x, tdes0=0x%08x }\n", (int)addr, (int)tdes0);  */
 
-  /*  Only process packets owned by the 21143:  */
-  if (!(tdes0 & TDSTAT_OWN)) {
-    if (state.tx.idling > state.tx.idling_threshold) {
-      state.reg[CSR_STATUS / 8] |= STATUS_TU;
-      state.tx.suspend = true;
-      state.tx.idling = 0;
-    } else
-      state.tx.idling++;
-    return 0;
-  }
+	/*  Only process packets owned by the 21143:  */
+	if (!(tdes0 & TDSTAT_OWN))
+	{
+		/* HRM 4.3.7.1: on fetching an unowned descriptor, the chip raises
+		 * STATUS_TU and moves to suspended state. Do this immediately, no
+		 * idle threshold. */
+		state.reg[CSR_STATUS / 8] |= STATUS_TU;
+		set_tx_state(STATUS_TS_SUSPENDED);
+		state.tx.suspend = true;
+		update_irq();
+		return 0;
+	}
 
-  buf1_size = tdes1 & TDCTL_SIZE1;
-  buf2_size = (tdes1 & TDCTL_SIZE2) >> TDCTL_SIZE2_SHIFT;
-  bufaddr = buf1_size ? tdes2 : tdes3;
-  bufsize = buf1_size ? buf1_size : buf2_size;
+	buf1_size = tdes1 & TDCTL_SIZE1;
+	buf2_size = (tdes1 & TDCTL_SIZE2) >> TDCTL_SIZE2_SHIFT;
+	bufaddr = buf1_size ? tdes2 : tdes3;
+	bufsize = buf1_size ? buf1_size : buf2_size;
 
-  // state.reg[CSR_STATUS/8] &= ~STATUS_TS;
-  if (tdes1 & TDCTL_ER) // end-of-ring, return to base
-    state.tx.cur_addr = state.reg[CSR_TXLIST / 8];
-  else {
-    if (tdes1 & TDCTL_CH) // explicit chain, use chain address
-      state.tx.cur_addr = tdes3;
-    else
-      // implicit chain
-      state.tx.cur_addr += (4 * sizeof(uint32_t)) + state.descr_skip;
-  }
+	if (tdes1 & TDCTL_ER)    // end-of-ring, return to base
+		state.tx.cur_addr = state.reg[CSR_TXLIST / 8];
+	else
+	{
+		if (tdes1 & TDCTL_CH)  // explicit chain, use chain address
+			state.tx.cur_addr = tdes3;
+		else
+			// implicit chain
+			state.tx.cur_addr += (4 * sizeof(uint32_t)) + state.descr_skip;
+	}
 
-  /*
-     printf("{ TX (%llx): 0x%08x 0x%08x 0x%x 0x%x: buf %i bytes at 0x%x }\n",
-     (long long)addr, tdes0, tdes1, tdes2, tdes3, bufsize, (int)bufaddr);
-   */
+	/*
+	   printf("{ TX (%llx): 0x%08x 0x%08x 0x%x 0x%x: buf %i bytes at 0x%x }\n",
+	   (long long)addr, tdes0, tdes1, tdes2, tdes3, bufsize, (int)bufaddr);
+	 */
 
-  /*  Assume no error:  */
-  tdes0 &= ~(TDSTAT_Tx_UF | TDSTAT_Tx_EC | TDSTAT_Tx_LC | TDSTAT_Tx_NC |
-             TDSTAT_Tx_LO | TDSTAT_Tx_TO | TDSTAT_ES);
+	 /*  Assume no error:  */
+	tdes0 &= ~
+		(
+			TDSTAT_Tx_UF |
+			TDSTAT_Tx_EC |
+			TDSTAT_Tx_LC |
+			TDSTAT_Tx_NC |
+			TDSTAT_Tx_LO |
+			TDSTAT_Tx_TO |
+			TDSTAT_ES
+			);
 
-  if (tdes1 & TDCTL_Tx_SET) {
+	if (tdes1 & TDCTL_Tx_SET)
+	{
+		set_tx_state(STATUS_TS_SETUP);
 
-    /*
-     *  Setup Packet.
-     *
-     *  TODO. For now, just ignore it, and pretend it worked.
-     */
+		/*
+		 *  Setup Packet.
+		 *
+		 *  TODO. For now, just ignore it, and pretend it worked.
+		 */
 
-    //              printf("{ TX: setup packet }\n");
-    if (bufsize != 192)
-      printf("[ dec21143: setup packet len = %i, should be 192! ]\n",
-             (int)bufsize);
-    do_pci_read(bufaddr, state.setup_filter, 1, 192);
-    SetupFilter();
+		 //              printf("{ TX: setup packet }\n");
+		if (bufsize != 192)
+			printf("[ dec21143: setup packet len = %i, should be 192! ]\n",
+				(int)bufsize);
+		do_pci_read(bufaddr, state.setup_filter, 1, 192);
+		SetupFilter();
 
-    if (tdes1 & TDCTL_Tx_IC)
-      state.reg[CSR_STATUS / 8] |= STATUS_TI;
+		if (tdes1 & TDCTL_Tx_IC)
+			state.reg[CSR_STATUS / 8] |= STATUS_TI;
 
-    /*  New descriptor values, according to the docs:  */
-    tdes0 = 0x7fffffff;
-    tdes1 = 0xffffffff;
-    tdes2 = 0xffffffff;
-    tdes3 = 0xffffffff;
-  } else {
+		/*  Setup frame complete (HRM 4.2.3): clear OWN, set all other
+		    TDES0 bits to 1. TDES1/2/3 are driver-owned -- do not touch
+		    (matches QEMU tulip.c and 86Box net_tulip.c). */
+		tdes0 = 0x7fffffff;
+	}
+	else
+	{
+		set_tx_state(STATUS_TS_READING);
 
-    /*
-     *  Data Packet.
-     */
+		/*
+		 *  Data Packet.
+		 */
 
-    //              printf("{ TX: data packet: ");
-    if (tdes1 & TDCTL_Tx_FS) {
+		 //              printf("{ TX: data packet: ");
+		if (tdes1 & TDCTL_Tx_FS)
+		{
 
-      /*  First segment. Let's allocate a new buffer:  */
+			/*  First segment. Let's allocate a new buffer:  */
 
-      /*  printf("new frame }\n");  */
+			/*  printf("new frame }\n");  */
 
-      // CHECK_ALLOCATION(state.tx.cur_buf = (unsigned char *)malloc(bufsize));
-      state.tx.cur_buf_len = 0;
-    } else {
+			//CHECK_ALLOCATION(state.tx.cur_buf = (unsigned char *)malloc(bufsize));
+			state.tx.cur_buf_len = 0;
+		}
+		else
+		{
 
-      /*  Not first segment. Increase the length of the current buffer:  */
+			/*  Not first segment. Increase the length of the current buffer:  */
 
-      /*  printf("continuing last frame }\n");  */
-      if (state.tx.cur_buf == NULL)
-        printf("[ dec21143: WARNING! tx: middle segment, but no first "
-               "segment?! ]\n");
+			/*  printf("continuing last frame }\n");  */
+			if (state.tx.cur_buf == NULL)
+				printf("[ dec21143: WARNING! tx: middle segment, but no first segment?! ]\n");
 
-      // CHECK_REALLOCATION(state.tx.cur_buf, realloc(state.tx.cur_buf,
-      // state.tx.cur_buf_len + bufsize), unsigned char);
-    }
+			//CHECK_REALLOCATION(state.tx.cur_buf, realloc(state.tx.cur_buf, state.tx.cur_buf_len + bufsize), unsigned char);
+		}
 
-    /*  "DMA" data from emulated physical memory into the buf:  */
-    do_pci_read(bufaddr, state.tx.cur_buf + state.tx.cur_buf_len, 1, bufsize);
+		/* Safely DMA data from guest memory, without exceeding TX scratch capacity. */
+		{
+			/* 2KB scratch (matches allocation in init()), large enough for legal ethernet frames */
+			const int tx_cap = 2048; /* aligned with QEMU tulip's 2KB frame buffers */
+			/* If guest tried to exceed scratch capacity, we will mark error at LS. */
 
-    state.tx.cur_buf_len += bufsize;
+			/* Buffer 1 */
+			if (buf1_size > 0)
+			{
+				int avail = tx_cap - state.tx.cur_buf_len;
+				int copy = (buf1_size < avail) ? buf1_size : (avail > 0 ? avail : 0);
+				if (copy > 0)
+				{
+					do_pci_read(tdes2, state.tx.cur_buf + state.tx.cur_buf_len, 1, copy);
+					state.tx.cur_buf_len += copy;
+				}
+			}
 
-/* only partial frames were written to the pcap filter, because the second
- * buffer was not considered when collecting the ethernet frames in dec21143_tx.
- * It can happen that both buffers to which tdes2 and tdes3 point contain data.
- * When this happens the data of both buffers have to be combined to get a valid
- * ethernet frame and hence IP packet. The patch simply checks if buf2_size is
- * greater 0 and if that's true append the data from the buffer pointed to by
- * tdes3 to the current frame.
- */
-    if ((buf2_size > 0) && (!(tdes1 & TDCTL_CH))) {
-      do_pci_read(tdes3, state.tx.cur_buf + state.tx.cur_buf_len, 1, buf2_size);
-      state.tx.cur_buf_len += buf2_size;
-    }
+			/* Buffer 2 is valid unless the second address is chained.
+			   TER only controls descriptor wraparound after this descriptor. */
+			if (buf2_size > 0 && !(tdes1 & TDCTL_CH))
+			{
+				int avail = tx_cap - state.tx.cur_buf_len;
+				int copy = (buf2_size < avail) ? buf2_size : (avail > 0 ? avail : 0);
+				if (copy > 0)
+				{
+					do_pci_read(tdes3, state.tx.cur_buf + state.tx.cur_buf_len, 1, copy);
+					state.tx.cur_buf_len += copy;
+				}
+			}
+		}
 
-    /*  Last segment? Then actually transmit it:  */
-    if (tdes1 & TDCTL_Tx_LS) {
+		/*  Last segment? Then actually transmit it:  */
+		if (tdes1 & TDCTL_Tx_LS)
+		{
 
-      /*  printf("{ TX: data frame complete. }\n");  */
+			/*  printf("{ TX: data frame complete. }\n");  */
 
-      // if not in internal loopback mode, transmit packet to wire
-      if (!(state.reg[CSR_OPMODE / 8] & OPMODE_OM_INTLOOP)) {
+			/* Enforce ethernet max frame length for delivery (without CRC = 1514 bytes). */
+			bool frame_too_long = (state.tx.cur_buf_len > ETH_MAX_PACKET_RAW);
 
-        // printf("pcap send: %d bytes   \n", state.tx.cur_buf_len);
-        if (pcap_sendpacket(fp, state.tx.cur_buf, state.tx.cur_buf_len))
-          printf("Error sending the packet: %s\n", pcap_geterr(fp));
-      }
+			/* Only transmit to wire if no loopback is active and frame size is legal. */
+			if (!frame_too_long && !(state.reg[CSR_OPMODE / 8] & OPMODE_OM))
+			{
+				// printf("pcap send: %d bytes   \n", state.tx.cur_buf_len);
+				if (trace_packets)
+					trace_packet("TX", state.tx.cur_buf, state.tx.cur_buf_len);
+				if (pcap_sendpacket(fp, state.tx.cur_buf, state.tx.cur_buf_len))
+					printf("Error sending the packet: %s\n", pcap_geterr(fp));
+			}
 
-      // if in internal or external loopback mode, add packet to read queue
-      if (state.reg[CSR_OPMODE / 8] & OPMODE_OM) {
-        bool crc = !(tdes1 & TDCTL_Tx_AC);
+			/* In internal or external loopback, inject into RX queue iff RX is running and size ok. */
+			if (!frame_too_long && (state.reg[CSR_OPMODE / 8] & OPMODE_OM) && (state.reg[CSR_OPMODE / 8] & OPMODE_SR))
+			{
+				bool  crc = !(tdes1 & TDCTL_Tx_AC);
 
-        // printf("21143: %s packet, AC: %d\n", (state.reg[CSR_OPMODE / 8] &
-        // OPMODE_OM_INTLOOP) ? "IL" : "EL", !crc); printf("21143: TX enabled:
-        // %d, RX enabled: %d\n", state.reg[CSR_OPMODE /8] & OPMODE_ST,
-        // state.reg[CSR_OPMODE /8] & OPMODE_SR); printf("21143: tx(), len=%d,
-        // addr=%08x, mode=%s\n", state.tx.cur_buf_len, (int) state.tx.cur_buf,
-        // (state.reg[CSR_OPMODE / 8] & OPMODE_OM_INTLOOP) ? "IL" : "EL");
-        // printf("21143: tx(), data=|");
-        // unsigned char* aptr = state.tx.cur_buf;
-        // for(int i=0; i<state.tx.cur_buf_len; i++) {
-        //      printf("%02x-",*aptr++);
-        //}
-        // printf("|\n");
-        rx_queue->add_tail(state.tx.cur_buf, state.tx.cur_buf_len, calc_crc,
-                           crc);
-      }
+				//printf("21143: %s packet, AC: %d\n", (state.reg[CSR_OPMODE / 8] & OPMODE_OM_INTLOOP) ? "IL" : "EL", !crc);
+				//printf("21143: TX enabled: %d, RX enabled: %d\n", state.reg[CSR_OPMODE /8] & OPMODE_ST, state.reg[CSR_OPMODE /8] & OPMODE_SR);
+				//printf("21143: tx(), len=%d, addr=%08x, mode=%s\n", state.tx.cur_buf_len, (int) state.tx.cur_buf, (state.reg[CSR_OPMODE / 8] & OPMODE_OM_INTLOOP) ? "IL" : "EL");
+				//printf("21143: tx(), data=|");
+				//unsigned char* aptr = state.tx.cur_buf;
+				//for(int i=0; i<state.tx.cur_buf_len; i++) {
+				//      printf("%02x-",*aptr++);
+				//}
+				//printf("|\n");
+				(void)rx_queue->add_tail(state.tx.cur_buf, state.tx.cur_buf_len, calc_crc, crc);
+			}
 
-      // free(state.tx.cur_buf);
-      // state.tx.cur_buf = NULL;
-      state.tx.cur_buf_len = 0;
+			/* Oversize frames: signal jabber and error summary, and do not deliver. */
+			if (frame_too_long) {
+				tdes0 |= TDSTAT_Tx_TO;   /* transmit jabber timeout */
+				tdes0 |= TDSTAT_ES;      /* error summary */
+			}
 
-      /*  Interrupt, if Tx_IC is set:  */
-      if (tdes1 & TDCTL_Tx_IC)
-        state.reg[CSR_STATUS / 8] |= STATUS_TI;
-    }
+			//free(state.tx.cur_buf);
+			//state.tx.cur_buf = NULL;
+			state.tx.cur_buf_len = 0;
 
-    /*  We are done with this segment.  */
-    tdes0 &= ~TDSTAT_OWN;
-  }
+			/*  Interrupt, if Tx_IC is set:  */
+			if (tdes1 & TDCTL_Tx_IC)
+				state.reg[CSR_STATUS / 8] |= STATUS_TI;
+		}
 
-  /*  Error summary:  */
-  if (tdes0 & (TDSTAT_Tx_UF | TDSTAT_Tx_EC | TDSTAT_Tx_LC | TDSTAT_Tx_NC |
-               TDSTAT_Tx_LO | TDSTAT_Tx_TO))
-    tdes0 |= TDSTAT_ES;
+		/*  We are done with this segment.  */
+		tdes0 &= ~TDSTAT_OWN;
+	}
 
-  /*  Descriptor writeback:  */
-  descr[0] = (u8)tdes0;
-  descr[1] = (u8)(tdes0 >> 8);
-  descr[2] = (u8)(tdes0 >> 16);
-  descr[3] = (u8)(tdes0 >> 24);
-  descr[4] = (u8)tdes1;
-  descr[5] = (u8)(tdes1 >> 8);
-  descr[6] = (u8)(tdes1 >> 16);
-  descr[7] = (u8)(tdes1 >> 24);
-  descr[8] = (u8)tdes2;
-  descr[9] = (u8)(tdes2 >> 8);
-  descr[10] = (u8)(tdes2 >> 16);
-  descr[11] = (u8)(tdes2 >> 24);
-  descr[12] = (u8)tdes3;
-  descr[13] = (u8)(tdes3 >> 8);
-  descr[14] = (u8)(tdes3 >> 16);
-  descr[15] = (u8)(tdes3 >> 24);
+	/*  Error summary:  */
+	if (tdes0 & (TDSTAT_Tx_UF | TDSTAT_Tx_EC | TDSTAT_Tx_LC | TDSTAT_Tx_NC |
+		TDSTAT_Tx_LO | TDSTAT_Tx_TO))
+		tdes0 |= TDSTAT_ES;
 
-  do_pci_write(addr, descr, 1, 16);
+	set_tx_state(STATUS_TS_CLOSE);
 
-  return 1;
+	/*  Descriptor writeback:
+	    only write back tdes0 - the status word
+	    tdes1/tdes2/tdes3 are read-only from NIC's perspective */
+
+	descr[0] = tdes0;
+	if (state.reg[CSR_BUSMODE / 8] & BUSMODE_DBO)
+	    descr[0] = bswap32_local(descr[0]);
+	do_pci_write(addr, descr, 1, 4);
+
+	return 1;
 }
 
-void CDEC21143::SetupFilter() {
-  u8 mac[16][6];
-  char mac_txt[16][20];
-  char filter[1000];
-  int i;
-  int j;
-  int numUnique;
-  int unique[16];
-  bool u;
+void CDEC21143::SetupFilter()
+{
+	u8    mac[16][6];
+	char  mac_txt[16][20];
+	char  filter[1000];
+	int   i;
+	int   j;
+	int   numUnique;
+	int   unique[16];
+	bool  u;
 #if defined(DEBUG_NIC_FILTER)
-  printf("Building a filter...\n");
+	printf("Building a filter...\n");
 #endif
-  for (i = 0; i < 16; i++) {
-    mac[i][0] = state.setup_filter[i * 12];
-    mac[i][1] = state.setup_filter[i * 12 + 1];
-    mac[i][2] = state.setup_filter[i * 12 + 4];
-    mac[i][3] = state.setup_filter[i * 12 + 5];
-    mac[i][4] = state.setup_filter[i * 12 + 8];
-    mac[i][5] = state.setup_filter[i * 12 + 9];
-    sprintf(mac_txt[i], "%02x:%02x:%02x:%02x:%02x:%02x", mac[i][0], mac[i][1],
-            mac[i][2], mac[i][3], mac[i][4], mac[i][5]);
+	for (i = 0; i < 16; i++)
+	{
+		mac[i][0] = state.setup_filter[i * 12];
+		mac[i][1] = state.setup_filter[i * 12 + 1];
+		mac[i][2] = state.setup_filter[i * 12 + 4];
+		mac[i][3] = state.setup_filter[i * 12 + 5];
+		mac[i][4] = state.setup_filter[i * 12 + 8];
+		mac[i][5] = state.setup_filter[i * 12 + 9];
+		sprintf(mac_txt[i], "%02x:%02x:%02x:%02x:%02x:%02x", mac[i][0], mac[i][1],
+			mac[i][2], mac[i][3], mac[i][4], mac[i][5]);
 #if defined(DEBUG_NIC_FILTER)
-    printf("MAC[%d] = %s. \n", i, mac_txt[i]);
+		printf("MAC[%d] = %s. \n", i, mac_txt[i]);
 #endif
-  }
-
-#if defined(DEBUG_NIC_FILTER)
-  printf("Filter mode: ");
-  if (state.reg[CSR_OPMODE / 8] & OPMODE_PR)
-    printf("promiscuous.\n");
-  else {
-    if (state.reg[CSR_OPMODE / 8] & OPMODE_IF)
-      printf("inverse ");
-    if (state.reg[CSR_OPMODE / 8] & OPMODE_HP) {
-      printf("hash ");
-      if (state.reg[CSR_OPMODE / 8] & OPMODE_HO)
-        printf("only ");
-    } else
-      printf("perfect ");
-    printf("filtering.\n");
-  }
-#endif
-  numUnique = 0;
-  for (i = 0; i < 16; i++) {
-    u = true;
-    for (j = 0; j < numUnique; j++) {
-      if (mac[i][0] == mac[unique[j]][0] && mac[i][1] == mac[unique[j]][1] &&
-          mac[i][2] == mac[unique[j]][2] && mac[i][3] == mac[unique[j]][3] &&
-          mac[i][4] == mac[unique[j]][4] && mac[i][5] == mac[unique[j]][5]) {
-        u = false;
-        break;
-      }
-    }
-
-    if (u) {
-      unique[numUnique] = i;
-      numUnique++;
-    }
-  }
+	}
 
 #if defined(DEBUG_NIC_FILTER)
-  for (i = 0; i < numUnique; i++)
-    printf("Unique MAC[%d] = %s. \n", i, mac_txt[unique[i]]);
+	printf("Filter mode: ");
+	if (state.reg[CSR_OPMODE / 8] & OPMODE_PR)
+		printf("promiscuous.\n");
+	else
+	{
+		if (state.reg[CSR_OPMODE / 8] & OPMODE_IF)
+			printf("inverse ");
+		if (state.reg[CSR_OPMODE / 8] & OPMODE_HP)
+		{
+			printf("hash ");
+			if (state.reg[CSR_OPMODE / 8] & OPMODE_HO)
+				printf("only ");
+		}
+		else
+			printf("perfect ");
+		printf("filtering.\n");
+	}
 #endif
-  filter[0] = '\0';
+	numUnique = 0;
+	for (i = 0; i < 16; i++)
+	{
+		if ((mac[i][0] | mac[i][1] | mac[i][2] | mac[i][3] | mac[i][4] | mac[i][5]) == 0)
+			continue;
 
-  // strcat(filter,"ether broadcast");
-  // There must be at least one unique item; at least the mac of the card
-  strcat(filter, "ether dst ");
-  strcat(filter, mac_txt[unique[0]]);
-  for (i = 1; i < numUnique; i++) {
-    strcat(filter, " or ether dst ");
-    strcat(filter, mac_txt[unique[i]]);
-  }
+		u = true;
+		for (j = 0; j < numUnique; j++)
+		{
+			if (mac[i][0] == mac[unique[j]][0] && mac[i][1] == mac[unique[j]][1]
+				&& mac[i][2] == mac[unique[j]][2] && mac[i][3] == mac[unique[j]][3]
+				&& mac[i][4] == mac[unique[j]][4] && mac[i][5] == mac[unique[j]][5])
+			{
+				u = false;
+				break;
+			}
+		}
+
+		if (u)
+		{
+			unique[numUnique] = i;
+			numUnique++;
+		}
+	}
 
 #if defined(DEBUG_NIC_FILTER)
-  printf("FILTER = %s.   \n", filter);
+	for (i = 0; i < numUnique; i++)
+		printf("Unique MAC[%d] = %s. \n", i, mac_txt[unique[i]]);
 #endif
-  if (pcap_compile(fp, &fcode, filter, 1, 0xffffffff) < 0)
-    FAILURE_1(Logic, "Unable to compile the packet filter (%s)", filter);
+	filter[0] = '\0';
 
-  if (pcap_setfilter(fp, &fcode) < 0)
-    FAILURE(Runtime, "Error setting the filter.");
+	/* Build BPF per CSR6[PR,PM,IF,RA]; always allow broadcasts. */
+	bool promisc = (state.reg[CSR_OPMODE / 8] & OPMODE_PR) != 0;
+	bool receive_all = (state.reg[CSR_OPMODE / 8] & OPMODE_RA) != 0;
+	bool pass_multi = (state.reg[CSR_OPMODE / 8] & OPMODE_PM) != 0;
+	bool inverse = (state.reg[CSR_OPMODE / 8] & OPMODE_IF) != 0;
+
+	strcpy(filter, "ether broadcast");
+
+	if (!(promisc || receive_all)) {
+		if (pass_multi) {
+			strcat(filter, " or ether multicast");
+		}
+		char list[800]; list[0] = 0;
+		if (numUnique == 0) {
+			/* Fallback to our own MAC if no setup-frame yet. */
+			char self[20];
+			sprintf(self, "%02x:%02x:%02x:%02x:%02x:%02x",
+				state.mac[0], state.mac[1], state.mac[2],
+				state.mac[3], state.mac[4], state.mac[5]);
+			strcat(list, "ether dst "); strcat(list, self);
+		}
+		else {
+			for (i = 0; i < numUnique; i++) {
+				strcat(list, (i == 0) ? "ether dst " : " or ether dst ");
+				strcat(list, mac_txt[unique[i]]);
+			}
+		}
+		if (inverse) {
+			strcat(filter, " or (not ("); strcat(filter, list); strcat(filter, "))");
+		}
+		else {
+			strcat(filter, " or ("); strcat(filter, list); strcat(filter, ")");
+		}
+	} /* else PR/RA: leave filter as match-all broadcasts + everything (no extra terms) */
+
+
+#if defined(DEBUG_NIC_FILTER)
+	printf("FILTER = %s.   \n", filter);
+#endif
+	/* In promiscuous/receive-all we still compile an empty/very permissive filter. */
+	if (promisc || receive_all) {
+		/* Let the OS accept everything: empty expr compiles to "match all". */
+		filter[0] = '\0';
+	}
+
+	if (pcap_compile(fp, &fcode, filter, 1, 0xffffffff) < 0)
+		FAILURE_1(Logic, "Unable to compile the packet filter (%s)", filter);
+
+	if (pcap_setfilter(fp, &fcode) < 0)
+		FAILURE(Runtime, "Error setting the filter.");
 }
 
 /**
  * Reset the network interface internals to their condition immediately
  * after power-up, including the PCI configuration.
  **/
-void CDEC21143::ResetPCI() {
-  CPCIDevice::ResetPCI();
+void CDEC21143::ResetPCI()
+{
+	CPCIDevice::ResetPCI();
 
-  ResetNIC();
+	// Do NOT call ResetNIC() here. PCI bus reset (pchip 0x800, fired by LFU)
+	// must preserve the chip's internal CSRs to match qemu's tulip behavior.
+	// SRM does a partial NIC config (CSR0/13/6/7) immediately before triggering
+	// the LFU self-IPI and expects that config to survive the bus reset, so it
+	// skips re-init on the LFU restart path. Internal reset still happens via:
+	//   - explicit ResetNIC() in init() (one-shot at construction)
+	//   - BUSMODE_SWR (CSR0=1), which calls ResetNIC() inline in nic_write()
 }
 
 /**
@@ -1443,194 +1957,325 @@ void CDEC21143::ResetPCI() {
  *
  * Code for computing the SROM checksum is taken from [T64].
  **/
-void CDEC21143::ResetNIC() {
-  int leaf;
+void CDEC21143::ResetNIC()
+{
+	int leaf;
 
-  if (state.rx.cur_buf != NULL)
-    free(state.rx.cur_buf);
+	// Drop any queued inbound frames; a real 21143 loses its RX FIFO on reset.
+	if (rx_queue)
+		rx_queue->flush();
 
-  //  if (state.tx.cur_buf != NULL)
-  //        free(state.tx.cur_buf);
-  state.rx.cur_buf = /*state.tx.cur_buf = */ NULL;
+	// Clear any previously programmed perfect-filter setup frame.
+	memset(state.setup_filter, 0, sizeof(state.setup_filter));
 
-  memset(state.reg, 0, sizeof(uint32_t) * 32);
-  memset(state.srom.data, 0, sizeof(state.srom.data));
-  memset(state.mii.phy_reg, 0, sizeof(state.mii.phy_reg));
+	// Reset derived/internal soft state that is not covered by the CSR array.
+	state.descr_skip = 0;
+	state.rx.current.len = 0;
+	state.rx.current.used = 0;
+	state.rx.cur_offset = 0;
+	state.rx.cur_buf_len = 0;
+	state.tx.cur_buf_len = 0;
+	state.tx.suspend = false;
 
-  /*  Register values at reset, according to the manual:  */
-  state.reg[CSR_BUSMODE / 8] = 0xfe000000; /*  csr0   */
-  state.reg[CSR_MIIROM / 8] = 0xfff483ff;  /*  csr9   */
-  state.reg[CSR_SIACONN / 8] = 0xffff0000; /*  csr13  */
-  state.reg[CSR_SIATXRX / 8] = 0xffffffff; /*  csr14  */
-  state.reg[CSR_SIAGEN / 8] = 0x8ff00000;  /*  csr15  */
+	// Drop any partially assembled RX buffer.
+	if (state.rx.cur_buf != NULL)
+		free(state.rx.cur_buf);
 
-  state.tx.idling_threshold = 10;
-  state.rx.cur_addr = state.tx.cur_addr = 0;
+	//  if (state.tx.cur_buf != NULL)
+	//        free(state.tx.cur_buf);
+	state.rx.cur_buf = /*state.tx.cur_buf = */ NULL;
 
-  /*  Version (= 1) and Chip count (= 1):  */
-  state.srom.data[TULIP_ROM_SROM_FORMAT_VERION] = 1;
-  state.srom.data[TULIP_ROM_CHIP_COUNT] = 1;
+	memset(state.reg, 0, sizeof(uint32_t) * 32);
 
-  /*  Set the MAC address:  */
-  memcpy(state.srom.data + TULIP_ROM_IEEE_NETWORK_ADDRESS, state.mac, 6);
+	// Reset the whole SROM/MII state machines (not just their data).
+	memset(&state.srom, 0, sizeof(state.srom));
+	memset(&state.mii, 0, sizeof(state.mii));
 
-  leaf = 30;
-  state.srom.data[TULIP_ROM_CHIPn_DEVICE_NUMBER(0)] = 0;
-  state.srom.data[TULIP_ROM_CHIPn_INFO_LEAF_OFFSET(0)] = leaf & 255;
-  state.srom.data[TULIP_ROM_CHIPn_INFO_LEAF_OFFSET(0) + 1] = leaf >> 8;
+	/*  Register values at reset, per HRM tables 3-27/41/47/49/51/57/59/61/63/66:  */
+	state.reg[CSR_BUSMODE / 8] = 0xFE000000;  /* csr0  */
+	state.reg[CSR_TXPOLL / 8] = 0xFFFFFFFF;  /* csr1  */
+	state.reg[CSR_RXPOLL / 8] = 0xFFFFFFFF;  /* csr2  */
+	state.reg[CSR_STATUS / 8] = 0xF0000000;  /* csr5  */
+	state.reg[CSR_OPMODE / 8] = 0x32000040;  /* csr6  - includes MBO */
+	state.reg[CSR_INTEN / 8] = 0xF3FE0000;  /* csr7  */
+	state.reg[CSR_MISSED / 8] = 0xE0000000;  /* csr8  */
+	state.reg[CSR_MIIROM / 8] = 0xFFF483FF;  /* csr9  */
+	state.reg[CSR_GPT / 8] = 0xFFFE0000;  /* csr11 */
+	state.reg[CSR_SIASTAT / 8] = 0x000000C6;  /* csr12 - link‑fail until autoneg */
+	state.reg[CSR_SIACONN / 8] = 0xFFFF0000;  /* csr13 */
+	state.reg[CSR_SIATXRX / 8] = 0xFFFFFFFF;  /* csr14 */
+	state.reg[CSR_SIAGEN / 8] = 0x8FF00000;  /* csr15 */
 
-  state.srom.data[leaf + TULIP_ROM_IL_SELECT_CONN_TYPE] = 0; /*  Not used?  */
-  state.srom.data[leaf + TULIP_ROM_IL_MEDIA_COUNT] = 2;
-  leaf += TULIP_ROM_IL_MEDIAn_BLOCK_BASE;
+	state.rx.cur_addr = state.tx.cur_addr = 0;
 
-  state.srom.data[leaf] = 7; /*  descriptor length  */
-  state.srom.data[leaf + 1] = TULIP_ROM_MB_21142_SIA;
-  state.srom.data[leaf + 2] = TULIP_ROM_MB_MEDIA_100TX;
+	/* SROM v3 build per Digital "21X4 Serial ROM Format" 4.05.
+	 * v3 is the lowest version that defines extended-format info blocks
+	 * and 21143 block types  */
 
-  /*  here comes 4 bytes of GPIO control/data settings  */
-  leaf += state.srom.data[leaf];
+	/* ID Block (bytes 0..17) — single-function format 5 */
+	const uint16_t subsysVid = 0x1011;   /* DEC                 */
+	const uint16_t subsysId  = 0x500B;   /* DE-500BA            */
+	state.srom.data[ 0] = subsysVid & 0xff;
+	state.srom.data[ 1] = (subsysVid >> 8) & 0xff;
+	state.srom.data[ 2] = subsysId  & 0xff;
+	state.srom.data[ 3] = (subsysId  >> 8) & 0xff;
+	/* bytes 4..14 = 0  (CIS pointers, ID_Reserved1) — left zero */
+	state.srom.data[15] = 0x00;     /* MiscHwOptions   - no PME/STSCHG       */
+	/* byte 16 = ID_BLOCK_CRC (Appendix B: low byte of word 8), filled below */
+	state.srom.data[17] = 0x00;     /* Func0_HwOptions - no BootROM          */
 
-  state.srom.data[leaf] = 15; /*  descriptor length  */
-  state.srom.data[leaf + 1] = TULIP_ROM_MB_21142_MII;
-  state.srom.data[leaf + 2] = 0; /*  PHY nr  */
-  state.srom.data[leaf + 3] = 0; /*  len of select sequence  */
-  state.srom.data[leaf + 4] = 0; /*  len of reset sequence  */
+	/* Board info header (bytes 18..29) */
+	state.srom.data[TULIP_ROM_SROM_FORMAT_VERION] = 3;
+	state.srom.data[TULIP_ROM_CHIP_COUNT] = 1;
 
-  /*  5,6, 7,8, 9,10, 11,12, 13,14 = unused by GXemul  */
-  leaf += state.srom.data[leaf];
+	/*  Set the MAC address:  */
+	memcpy(state.srom.data + TULIP_ROM_IEEE_NETWORK_ADDRESS, state.mac, 6);
 
-  /*  MII PHY initial state:  */
-  state.mii.state = MII_STATE_RESET;
+	leaf = 30;
+	state.srom.data[TULIP_ROM_CHIPn_DEVICE_NUMBER(0)] = 0;
+	state.srom.data[TULIP_ROM_CHIPn_INFO_LEAF_OFFSET(0)] = leaf & 255;
+	state.srom.data[TULIP_ROM_CHIPn_INFO_LEAF_OFFSET(0) + 1] = leaf >> 8;
 
-  /*  PHY #0:  */
-  state.mii.phy_reg[MII_BMSR] =
-      BMSR_100TXFDX | BMSR_10TFDX | BMSR_ACOMP | BMSR_ANEG | BMSR_LINK;
+	/* Controller info leaf (offset 30) — 21143 7.5.1 */
+	state.srom.data[leaf + 0] = 0x00;   /* Selected Conn Type LSB         */
+	state.srom.data[leaf + 1] = 0x08;   /* MSB -> 0x0800 Powerup+Dynamic   */
+	state.srom.data[leaf + 2] = 2;      /* Block Count = 2                */
+	leaf += 3;
 
-  state.tx.suspend = false;
+	/* 21143 SYM 100BaseTX-FDX (type 4, extended) 7.5.2.1.3
+	 * The DE-500BA uses the chip's internal SYM scrambler/PCS for 100TX
+	 * - there is NO external MII PHY on this board.  */
+	state.srom.data[leaf++] = 0x80 | 8;       /* F=1, length=8                       */
+	state.srom.data[leaf++] = TULIP_ROM_MB_21143_SYM;
+	state.srom.data[leaf++] = TULIP_ROM_MB_MEDIA_100TX_FDX;  /* 0x05 = 100BaseTX FDX */
+	state.srom.data[leaf++] = 0x00;           /* GPP Control LSB - no GPP needed     */
+	state.srom.data[leaf++] = 0x00;           /* GPP Control MSB                     */
+	state.srom.data[leaf++] = 0x00;           /* GPP Data LSB                        */
+	state.srom.data[leaf++] = 0x00;           /* GPP Data MSB                        */
+	state.srom.data[leaf++] = 0x61;           /* Command LSB: PS|PCS|SCR, no TTM     */
+	state.srom.data[leaf++] = 0x80;           /* Command MSB: no media sense pin      */
 
-  // compute the CRC for the SROM data.  This code is from the
-  // tu sample driver from HP in if_tu.c, which was apparently
-  // derived from the 21140 Hardware Specification
-  unsigned int POLY = 0x04c11db6;
-  unsigned int FlippedCrc = 0;
-  unsigned int Crc = 0xffffffff;
-  unsigned char i;
-  unsigned char CurrentByte;
-  unsigned char Bit;
-  unsigned char Msb;
-  unsigned char chksm_1;
-  unsigned char chksm_2;
+	/* 21142/3 SIA 10BaseT (type 2, extended, EXT=0) 7.4.2.1.1 */
+	state.srom.data[leaf++] = 0x80 | 6;       /* F=1, length=6 (no Media Specific Data) */
+	state.srom.data[leaf++] = TULIP_ROM_MB_21142_SIA;
+	state.srom.data[leaf++] = 0x00;           /* EXT=0, MediaCode=0 (10BaseT) */
+	state.srom.data[leaf++] = 0x00;           /* GPP Control LSB          */
+	state.srom.data[leaf++] = 0x00;           /* GPP Control MSB          */
+	state.srom.data[leaf++] = 0x00;           /* GPP Data LSB             */
+	state.srom.data[leaf++] = 0x00;           /* GPP Data MSB             */
 
-  for (i = 0; i < 126; i++) {
-    CurrentByte = state.srom.data[i];
+	/* ID_BLOCK_CRC (Appendix B): 8-bit CRC, MSB-first, poly 0x06, init 0xFF.
+	 * Walks bits of the first 9 words MSB-first, stopping at word 8 bit 7.
+	 * Per the algorithm in the spec, the CRC result lands in the LOW byte
+	 * of word 8 (= byte 16). Byte 17 is the high byte of word 8 and is
+	 * INPUT to the walk (Func0_HwOptions in our layout, value 0). */
+	{
+		unsigned char crc8 = 0xFF;
+		for (int word = 0; word < 9; word++) {
+			uint16_t w = state.srom.data[word*2] | (state.srom.data[word*2 + 1] << 8);
+			for (int bit = 15; bit >= 0; bit--) {
+				if (word == 8 && bit == 7) break;
+				unsigned char bv = ((w >> bit) & 1) ^ ((crc8 >> 7) & 1);
+				crc8 <<= 1;
+				if (bv) { crc8 ^= 0x06; crc8 |= 0x01; }
+			}
+		}
+		state.srom.data[16] = crc8;
+	}
 
-    for (Bit = 0; Bit < 8; Bit++) {
-      Msb = (Crc >> 31) & 1;
-      Crc <<= 1;
+	/*  MII Management decoder initial state:  */
+	state.mii.state = MII_STATE_RESET;
 
-      if (Msb ^ (CurrentByte & 1)) {
-        Crc ^= POLY;
-        Crc |= 1;
-      }
+	state.tx.suspend = false;
 
-      CurrentByte >>= 1;
-    }
-  }
+	// compute the CRC for the SROM data.  This code is from the
+	// tu sample driver from HP in if_tu.c, which was apparently
+	// derived from the 21140 Hardware Specification
+	unsigned int  POLY = 0x04c11db6;
+	unsigned int  FlippedCrc = 0;
+	unsigned int  Crc = 0xffffffff;
+	unsigned char i;
+	unsigned char CurrentByte;
+	unsigned char Bit;
+	unsigned char Msb;
+	unsigned char chksm_1;
+	unsigned char chksm_2;
 
-  for (i = 0; i < 32; i++) {
-    FlippedCrc <<= 1;
-    Bit = Crc & 1;
-    Crc >>= 1;
-    FlippedCrc += Bit;
-  }
+	for (i = 0; i < 126; i++)
+	{
+		CurrentByte = state.srom.data[i];
 
-  Crc = FlippedCrc ^ 0xffffffff;
+		for (Bit = 0; Bit < 8; Bit++)
+		{
+			Msb = (Crc >> 31) & 1;
+			Crc <<= 1;
 
-  chksm_1 = Crc & 0xff;
-  chksm_2 = Crc >> 8;
+			if (Msb ^ (CurrentByte & 1))
+			{
+				Crc ^= POLY;
+				Crc |= 1;
+			}
 
-  state.srom.data[126] = chksm_1;
-  state.srom.data[127] = chksm_2;
+			CurrentByte >>= 1;
+		}
+	}
+
+	for (i = 0; i < 32; i++)
+	{
+		FlippedCrc <<= 1;
+		Bit = Crc & 1;
+		Crc >>= 1;
+		FlippedCrc += Bit;
+	}
+
+	Crc = FlippedCrc ^ 0xffffffff;
+
+	chksm_1 = Crc & 0xff;
+	chksm_2 = Crc >> 8;
+
+	state.srom.data[126] = chksm_1;
+	state.srom.data[127] = chksm_2;
 #if defined(DEBUG_NIC_SROM)
-  printf("%%NIC-I-CKSUM: SROM checksum bytes are %02x, %02x\n",
-         state.srom.data[126], state.srom.data[127]);
+	printf("%%NIC-I-CKSUM: SROM checksum bytes are %02x, %02x\n",
+		state.srom.data[126], state.srom.data[127]);
 #endif
+
+	// Make sure the host-side capture filter matches the reset state (SRM relies on this).
+	SetupFilter();
+
+	// Real reset deasserts the interrupt line.
+	(void)do_pci_interrupt(0, false);
+	state.irq_was_asserted = false;
 }
 
-static u32 nic_magic1 = 0xDEC21143;
-static u32 nic_magic2 = 0x21143DEC;
+static u32  nic_magic1 = 0xDEC21143;
+static u32  nic_magic2 = 0x21143DEC;
 
 /**
  * Save state to a Virtual Machine State file.
  **/
-int CDEC21143::SaveState(FILE *f) {
-  long ss = sizeof(state);
-  int res;
+int CDEC21143::SaveState(FILE* f)
+{
+	long  ss = sizeof(state);
+	int   res;
 
-  if ((res = CPCIDevice::SaveState(f)))
-    return res;
+	if ((res = CPCIDevice::SaveState(f)))
+		return res;
 
-  fwrite(&nic_magic1, sizeof(u32), 1, f);
-  fwrite(&ss, sizeof(long), 1, f);
-  fwrite(&state, sizeof(state), 1, f);
-  fwrite(&nic_magic2, sizeof(u32), 1, f);
-  printf("%s: %ld bytes saved.\n", devid_string, ss);
-  return 0;
+	fwrite(&nic_magic1, sizeof(u32), 1, f);
+	fwrite(&ss, sizeof(long), 1, f);
+	fwrite(&state, sizeof(state), 1, f);
+	fwrite(&nic_magic2, sizeof(u32), 1, f);
+	printf("%s: %li bytes saved.\n", devid_string, ss);
+	return 0;
 }
 
 /**
  * Restore state from a Virtual Machine State file.
  **/
-int CDEC21143::RestoreState(FILE *f) {
-  long ss;
-  u32 m1;
-  u32 m2;
-  int res;
-  size_t r;
+int CDEC21143::RestoreState(FILE* f)
+{
+	long    ss;
+	u32     m1;
+	u32     m2;
+	int     res;
+	size_t  r;
 
-  if ((res = CPCIDevice::RestoreState(f)))
-    return res;
+	if ((res = CPCIDevice::RestoreState(f)))
+		return res;
 
-  r = fread(&m1, sizeof(u32), 1, f);
-  if (r != 1) {
-    printf("%s: unexpected end of file!\n", devid_string);
-    return -1;
-  }
+	r = fread(&m1, sizeof(u32), 1, f);
+	if (r != 1)
+	{
+		printf("%s: unexpected end of file!\n", devid_string);
+		return -1;
+	}
 
-  if (m1 != nic_magic1) {
-    printf("%s: MAGIC 1 does not match!\n", devid_string);
-    return -1;
-  }
+	if (m1 != nic_magic1)
+	{
+		printf("%s: MAGIC 1 does not match!\n", devid_string);
+		return -1;
+	}
 
-  r = fread(&ss, sizeof(long), 1, f);
-  if (r != 1) {
-    printf("%s: unexpected end of file!\n", devid_string);
-    return -1;
-  }
+	fread(&ss, sizeof(long), 1, f);
+	if (r != 1)
+	{
+		printf("%s: unexpected end of file!\n", devid_string);
+		return -1;
+	}
 
-  if (ss != sizeof(state)) {
-    printf("%s: STRUCT SIZE does not match!\n", devid_string);
-    return -1;
-  }
+	if (ss != sizeof(state))
+	{
+		printf("%s: STRUCT SIZE does not match!\n", devid_string);
+		return -1;
+	}
 
-  r = fread(&state, sizeof(state), 1, f);
-  if (r != 1) {
-    printf("%s: unexpected end of file!\n", devid_string);
-    return -1;
-  }
+	fread(&state, sizeof(state), 1, f);
+	if (r != 1)
+	{
+		printf("%s: unexpected end of file!\n", devid_string);
+		return -1;
+	}
 
-  r = fread(&m2, sizeof(u32), 1, f);
-  if (r != 1) {
-    printf("%s: unexpected end of file!\n", devid_string);
-    return -1;
-  }
+	r = fread(&m2, sizeof(u32), 1, f);
+	if (r != 1)
+	{
+		printf("%s: unexpected end of file!\n", devid_string);
+		return -1;
+	}
 
-  if (m2 != nic_magic2) {
-    printf("%s: MAGIC 1 does not match!\n", devid_string);
-    return -1;
-  }
+	if (m2 != nic_magic2)
+	{
+		printf("%s: MAGIC 1 does not match!\n", devid_string);
+		return -1;
+	}
 
-  printf("%s: %ld bytes restored.\n", devid_string, ss);
-  return 0;
+	printf("%s: %li bytes restored.\n", devid_string, ss);
+	return 0;
 }
-#endif // defined(HAVE_PCAP)
+
+// Helper functions
+
+/* Helper for descriptor endianness when CSR0.DBO is set. */
+inline u32 CDEC21143::bswap32_local(u32 v)
+{
+	return ((v & 0x000000ffU) << 24) |
+		((v & 0x0000ff00U) << 8) |
+		((v & 0x00ff0000U) >> 8) |
+		((v & 0xff000000U) >> 24);
+}
+
+/* ----- IRQ recompute: set/clear INTx instantly (level-triggered) ----- */
+void CDEC21143::update_irq()
+{
+	/* Rebuild NIS/AIS like the background loop does, but do it now. */
+	const u32 csr5_before = state.reg[CSR_STATUS / 8];
+	const u32 csr7 = state.reg[CSR_INTEN / 8];
+
+	/* Summary recompute follows QEMU logic: only enabled events contribute. */
+	u32 ie = csr5_before & csr7;
+	u32 csr5 = csr5_before & ~(STATUS_NIS | STATUS_AIS);
+
+	const u32 normal = (STATUS_TI | STATUS_TU | STATUS_RI | STATUS_TM | STATUS_ER);
+	const u32 abnormal = (STATUS_LC | STATUS_GPPI | STATUS_SE | STATUS_LNF | STATUS_ETI |
+		STATUS_RWT | STATUS_RPS | STATUS_RU | STATUS_UNF | STATUS_LNPANC |
+		STATUS_TJT | STATUS_TPS);
+	if (ie & normal)   csr5 |= STATUS_NIS;
+	if (ie & abnormal) csr5 |= STATUS_AIS;
+
+	state.reg[CSR_STATUS / 8] = csr5;
+
+	const bool asserted = (csr5 & csr7 & (STATUS_AIS | STATUS_NIS)) != 0;
+	if (asserted != state.irq_was_asserted) {
+#if defined(DEBUG_NIC_IRQ)
+		printf("21143: IRQ %s  CSR5=%08x CSR7=%08x pendN=%08x pendA=%08x\n",
+			asserted ? "ASSERT" : "DEASSERT",
+			csr5, csr7, (ie & normal), (ie & abnormal));
+#endif
+		if (do_pci_interrupt(0, asserted))
+			state.irq_was_asserted = asserted;
+	}
+}
+
+
+#endif //defined(HAVE_PCAP)
