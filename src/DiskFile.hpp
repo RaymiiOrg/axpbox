@@ -27,32 +27,36 @@
  * serve the general public.
  */
 
+ /**
+  * \file
+  * Contains definitions to use a file as a disk image.
+ **/
 #if !defined(__DISKFILE_H__)
 #define __DISKFILE_H__
 
 #include "Disk.hpp"
+#include <string>
 
-/**
- * \brief Emulated disk that uses an image file.
- **/
-class CDiskFile : public CDisk {
+  /**
+   * \brief Emulated disk that uses an image file.
+   **/
+class CDiskFile : public CDisk
+{
 public:
-  CDiskFile(CConfigurator *cfg, CSystem *sys, CDiskController *c, int idebus,
-            int idedev);
-  virtual ~CDiskFile(void);
+  CDiskFile(CConfigurator* cfg, CSystem* sys, CDiskController* c,
+    int idebus, int idedev);
+  virtual         ~CDiskFile(void);
 
-  virtual bool seek_byte(off_t_large byte);
-  virtual size_t read_bytes(void *dest, size_t bytes);
-  virtual size_t write_bytes(void *src, size_t bytes);
+  virtual bool    seek_byte(off_t_large byte);
+  virtual size_t  read_bytes(void* dest, size_t bytes);
+  virtual size_t  write_bytes(void* src, size_t bytes);
+  virtual void    flush();
 
-  FILE *get_handle() { return handle; };
-
+  void reload_file(char* filename);
+  FILE* get_handle() { return handle; };
 protected:
-  FILE *handle;
-  char *filename;
-
-  void createDiskFile(const std::string &filename, u64 diskFileSize);
+  FILE* handle = nullptr;
+  char* filename = nullptr;
   std::string defaultFilename;
-  void checkFileWritable(const std::string& filename) const;
 };
-#endif //! defined(__DISKFILE_H__)
+#endif //!defined(__DISKFILE_H__)

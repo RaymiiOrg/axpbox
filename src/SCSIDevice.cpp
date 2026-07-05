@@ -26,34 +26,44 @@
  * serve the general public.
  */
 
+ /**
+  * \file
+  * Contains definitions for the SCSI device base class.
+ **/
+#include "StdAfx.hpp"
 #include "SCSIDevice.hpp"
 #include "SCSIBus.hpp"
 
-/**
- * \brief Constructor.
- *
- * Set this device as unregistered with any SCSI bus.
- **/
-CSCSIDevice::CSCSIDevice(void) {
-  int i;
-  for (i = 0; i < 10; i++) {
-    scsi_bus[i] = 0;
-    scsi_initiator_id[i] = -1;
-  }
+  /**
+   * \brief Constructor.
+   *
+   * Set this device as unregistered with any SCSI bus.
+   **/
+CSCSIDevice::CSCSIDevice(void)
+{
+	int i;
+	for (i = 0; i < 10; i++)
+	{
+		scsi_bus[i] = 0;
+		scsi_initiator_id[i] = -1;
+	}
 }
 
 /**
  * \brief Destructor.
  **/
-CSCSIDevice::~CSCSIDevice(void) {}
+CSCSIDevice::~CSCSIDevice(void)
+{
+}
 
 /**
  * \brief Register this device with a SCSI bus.
  **/
-void CSCSIDevice::scsi_register(int busno, class CSCSIBus *with, int target) {
-  scsi_bus[busno] = with;
-  scsi_initiator_id[busno] = target;
-  scsi_bus[busno]->scsi_register(this, busno, target);
+void CSCSIDevice::scsi_register(int busno, class CSCSIBus* with, int target)
+{
+	scsi_bus[busno] = with;
+	scsi_initiator_id[busno] = target;
+	scsi_bus[busno]->scsi_register(this, busno, target);
 }
 
 /**
@@ -61,8 +71,9 @@ void CSCSIDevice::scsi_register(int busno, class CSCSIBus *with, int target) {
  *
  * See CSCSIBus::arbitrate for a description.
  **/
-bool CSCSIDevice::scsi_arbitrate(int bus) {
-  return scsi_bus[bus]->arbitrate(scsi_initiator_id[bus]);
+bool CSCSIDevice::scsi_arbitrate(int bus)
+{
+	return scsi_bus[bus]->arbitrate(scsi_initiator_id[bus]);
 }
 
 /**
@@ -70,8 +81,9 @@ bool CSCSIDevice::scsi_arbitrate(int bus) {
  *
  * See CSCSIBus::select for a description.
  **/
-bool CSCSIDevice::scsi_select(int bus, int target) {
-  return scsi_bus[bus]->select(scsi_initiator_id[bus], target);
+bool CSCSIDevice::scsi_select(int bus, int target)
+{
+	return scsi_bus[bus]->select(scsi_initiator_id[bus], target);
 }
 
 /**
@@ -81,8 +93,9 @@ bool CSCSIDevice::scsi_select(int bus, int target) {
  * functions should at least call scsi_set_phase to set
  * the SCSI bus phase to a valid phase.
  **/
-void CSCSIDevice::scsi_select_me(int bus) {
-  FAILURE(NotImplemented, "selected device doesn't implement scsi_select_me");
+void CSCSIDevice::scsi_select_me(int bus)
+{
+	FAILURE(NotImplemented, "selected device doesn't implement scsi_select_me");
 }
 
 /**
@@ -90,8 +103,9 @@ void CSCSIDevice::scsi_select_me(int bus) {
  *
  * See CSCSIBus::set_phase for a description.
  **/
-void CSCSIDevice::scsi_set_phase(int bus, int phase) {
-  scsi_bus[bus]->set_phase(scsi_initiator_id[bus], phase);
+void CSCSIDevice::scsi_set_phase(int bus, int phase)
+{
+	scsi_bus[bus]->set_phase(scsi_initiator_id[bus], phase);
 }
 
 /**
@@ -99,15 +113,19 @@ void CSCSIDevice::scsi_set_phase(int bus, int phase) {
  *
  * See CSCSIBus::get_phase for a description.
  **/
-int CSCSIDevice::scsi_get_phase(int bus) { return scsi_bus[bus]->get_phase(); }
+int CSCSIDevice::scsi_get_phase(int bus)
+{
+	return scsi_bus[bus]->get_phase();
+}
 
 /**
  * \brief Release the SCSI bus.
  *
  * See CSCSIBus::free_bus for a description.
  **/
-void CSCSIDevice::scsi_free(int bus) {
-  return scsi_bus[bus]->free_bus(scsi_initiator_id[bus]);
+void CSCSIDevice::scsi_free(int bus)
+{
+	return scsi_bus[bus]->free_bus(scsi_initiator_id[bus]);
 }
 
 /**
@@ -120,9 +138,10 @@ void CSCSIDevice::scsi_free(int bus) {
  * For an overview of data transfer during a SCSI bus phase,
  * see SCSIDevice::scsi_xfer_ptr.
  **/
-size_t CSCSIDevice::scsi_expected_xfer_me(int bus) {
-  FAILURE(NotImplemented,
-          "selected device doesn't implement scsi_expected_xfer_me");
+size_t CSCSIDevice::scsi_expected_xfer_me(int bus)
+{
+	FAILURE(NotImplemented,
+		"selected device doesn't implement scsi_expected_xfer_me");
 }
 
 /**
@@ -135,11 +154,9 @@ size_t CSCSIDevice::scsi_expected_xfer_me(int bus) {
  * For an overview of data transfer during a SCSI bus phase,
  * see SCSIDevice::scsi_xfer_ptr.
  **/
-size_t CSCSIDevice::scsi_expected_xfer(int bus) {
-  return scsi_bus[bus]
-      ->targets[scsi_bus[bus]->state.target]
-      ->scsi_expected_xfer_me(
-          scsi_bus[bus]->target_bus_no[scsi_bus[bus]->state.target]);
+size_t CSCSIDevice::scsi_expected_xfer(int bus)
+{
+	return scsi_bus[bus]->targets[scsi_bus[bus]->state.target]->scsi_expected_xfer_me(scsi_bus[bus]->target_bus_no[scsi_bus[bus]->state.target]);
 }
 
 /**
@@ -151,8 +168,9 @@ size_t CSCSIDevice::scsi_expected_xfer(int bus) {
  * For an overview of data transfer during a SCSI bus phase,
  * see SCSIDevice::scsi_xfer_ptr.
  **/
-void *CSCSIDevice::scsi_xfer_ptr_me(int bus, size_t bytes) {
-  FAILURE(NotImplemented, "selected device doesn't implement scsi_xfer_ptr_me");
+void* CSCSIDevice::scsi_xfer_ptr_me(int bus, size_t bytes)
+{
+	FAILURE(NotImplemented, "selected device doesn't implement scsi_xfer_ptr_me");
 }
 
 /**
@@ -173,9 +191,10 @@ void *CSCSIDevice::scsi_xfer_ptr_me(int bus, size_t bytes) {
  *     process the data and/or transfer to a new phase.
  *   .
  **/
-void *CSCSIDevice::scsi_xfer_ptr(int bus, size_t bytes) {
-  return scsi_bus[bus]->targets[scsi_bus[bus]->state.target]->scsi_xfer_ptr_me(
-      scsi_bus[bus]->target_bus_no[scsi_bus[bus]->state.target], bytes);
+void* CSCSIDevice::scsi_xfer_ptr(int bus, size_t bytes)
+{
+	return scsi_bus[bus]->targets[scsi_bus[bus]->state.target]->scsi_xfer_ptr_me(scsi_bus[bus]->target_bus_no[scsi_bus[bus]->state.target],
+		bytes);
 }
 
 /**
@@ -187,9 +206,9 @@ void *CSCSIDevice::scsi_xfer_ptr(int bus, size_t bytes) {
  * For an overview of data transfer during a SCSI bus phase,
  * see SCSIDevice::scsi_xfer_ptr.
  **/
-void CSCSIDevice::scsi_xfer_done_me(int bus) {
-  FAILURE(NotImplemented,
-          "selected device doesn't implement scsi_xfer_done_me");
+void CSCSIDevice::scsi_xfer_done_me(int bus)
+{
+	FAILURE(NotImplemented, "selected device doesn't implement scsi_xfer_done_me");
 }
 
 /**
@@ -201,7 +220,7 @@ void CSCSIDevice::scsi_xfer_done_me(int bus) {
  * For an overview of data transfer during a SCSI bus phase,
  * see SCSIDevice::scsi_xfer_ptr.
  **/
-void CSCSIDevice::scsi_xfer_done(int bus) {
-  scsi_bus[bus]->targets[scsi_bus[bus]->state.target]->scsi_xfer_done_me(
-      scsi_bus[bus]->target_bus_no[scsi_bus[bus]->state.target]);
+void CSCSIDevice::scsi_xfer_done(int bus)
+{
+	scsi_bus[bus]->targets[scsi_bus[bus]->state.target]->scsi_xfer_done_me(scsi_bus[bus]->target_bus_no[scsi_bus[bus]->state.target]);
 }

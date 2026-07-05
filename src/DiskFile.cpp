@@ -27,151 +27,233 @@
  * serve the general public.
  */
 
-#include "DiskFile.hpp"
+ /**
+  * \file
+  * Contains code to use a file as a disk image.
+ **/
 #include "StdAfx.hpp"
-#include <fstream>
-#include <iostream>
+#include "DiskFile.hpp"
 
-CDiskFile::CDiskFile(CConfigurator *cfg, CSystem *sys, CDiskController *c,
-                     int idebus, int idedev)
-    : CDisk(cfg, sys, c, idebus, idedev) {
+#include <vector>
+std::vector<CDiskFile*> cd_diskfiles;
 
-  /* If the filename exists in the config, use that,
-   * otherwise, use a default filename */
-  filename = myCfg->get_text_value("file");
-  if (!filename) {
-    defaultFilename = std::string(devid_string) + ".default.img";
-    std::cerr << devid_string
-              << ": Disk has no filename attached! Assuming default: "
-              << defaultFilename << std::endl;
-    filename = const_cast<char *>(defaultFilename.c_str());
-  }
+#ifdef _WIN32
+#include <windows.h>
+#include <commdlg.h>
 
-  /* if the file does not exist, create it. ifs actually checks for
-   * accessibility, not for existence, but for compatibility with
-   * platforms without c++17/boost and std::filesystem::exists, this
-   * is good enough. ifstream.good() returns false if the file does
-   * not exist.*/
-  std::ifstream ifs(filename, std::ios::binary);
-  if (!ifs.good()) {
-    std::cerr << devid_string << ": file does not exist: " << filename
-              << std::endl;
+void win32_select_file(HWND hwnd)
+{
+	OPENFILENAME ofn;
+	char szFileName[MAX_PATH] = "";
 
-    /* If the disk file size was not set and the disk file does not exist, do
-     * not create it, but exit */
-    u64 diskFileSize = myCfg->get_num_value("autocreate_size", false, 0);
-    if (!diskFileSize) {
-      FAILURE_1(Runtime, "%s: file does not exist and no autocreate_size set.",
-                devid_string);
-    }
+	ZeroMemory(&ofn, sizeof(ofn));
 
-    /* Don't create disk file if it's supposed to be a cdrom */
-    if (is_cdrom) {
-      FAILURE_1(Runtime, "%s: file does not exist and is configured as cdrom.",
-                devid_string);
-    }
+	ofn.lStructSize = sizeof(ofn);
+	ofn.hwndOwner = hwnd;
+	ofn.lpstrFilter = "ISO Files (*.iso)\0*.iso\0All Files (*.*)\0*.*\0";
+	ofn.lpstrFile = szFileName;
+	ofn.nMaxFile = MAX_PATH;
+	ofn.Flags = OFN_EXPLORER | OFN_FILEMUSTEXIST;
+	ofn.lpstrDefExt = "iso";
 
-    createDiskFile(filename, diskFileSize);
-  }
+	if (GetOpenFileNameA(&ofn))
+	{
+		if (cd_diskfiles.size() > 0)
+		{
+			printf("Change ISO file to %s\n", szFileName);
+			cd_diskfiles[0]->reload_file(szFileName);
+		}
+	}
+}
+#elif defined(HAVE_SDL) && defined(HAVE_SDL3)
+#include <SDL3/SDL.h>
 
-  if (!read_only) {
-    /* If the file is not configured as readonly, test if we can
-     * write to it by opening it in append mode. Just using 'out'
-     * would overwrite the contents of the file, which is
-     * unwanted. Issue #29. */
-    checkFileWritable(filename);
-  }
+static const SDL_DialogFileFilter filters[] = {
+	{ "ISO files",  "iso" },
+	{ "All files",   "*" }
+};
 
-  handle = fopen(filename, read_only ? "rb" : "rb+");
+static void SDLCALL callback(void* userdata, const char* const* filelist, int filter)
+{
+	if (!filelist) {
+		SDL_Log("An error occured: %s", SDL_GetError());
+		return;
+	} else if (!*filelist) {
+		SDL_Log("The user did not select any file.");
+		return;
+	}
 
-  // determine size...
-  fseek_large(handle, 0, SEEK_END);
-  byte_size = ftell_large(handle);
-  fseek_large(handle, 0, SEEK_SET);
-  state.byte_pos = ftell_large(handle);
+	if (cd_diskfiles.size() > 0) {
+		char* szFileName = SDL_strdup(filelist[0]);
+		SDL_Log("Change ISO file to %s", szFileName);
+		cd_diskfiles[0]->reload_file(szFileName);
+		SDL_free(szFileName);
+	}
+}
 
-  sectors = 32;
-  heads = 8;
-
-  // calc_cylinders();
-  determine_layout();
-
-  model_number = myCfg->get_text_value("model_number", filename);
-
-  // skip to the filename portion of the path.
-  char *p = model_number;
-#if defined(_WIN32)
-  char x = '\\';
-#elif defined(__VMS)
-  char x = ']';
-#else
-  char x = '/';
+void sdl_select_file(SDL_Window* window) {
+	SDL_ShowOpenFileDialog(callback, nullptr, window, filters, SDL_arraysize(filters), nullptr, false);
+}
 #endif
-  while (*p) {
-    if (*p == x)
-      model_number = p + 1;
-    p++;
-  }
 
-  printf("%s: Mounted file %s, %" PRId64 " %zd-byte blocks, %" PRId64 "/%ld/%ld.\n",
-         devid_string, filename, byte_size / state.block_size, state.block_size,
-         cylinders, heads, sectors);
+CDiskFile::CDiskFile(CConfigurator* cfg, CSystem* sys, CDiskController* c,
+	int idebus, int idedev) : CDisk(cfg, sys, c, idebus, idedev)
+{
+	filename = myCfg->get_text_value("file");
+	if (!filename)
+	{
+		// AXPbox behavior: fall back to a default image name (created on
+		// first use through the autocreate path in reload_file).
+		defaultFilename = std::string(devid_string) + ".default.img";
+		fprintf(stderr,
+			"%s: Disk has no filename attached! Assuming default: %s\n",
+			devid_string, defaultFilename.c_str());
+		filename = const_cast<char *>(defaultFilename.c_str());
+	}
+
+	reload_file(filename);
+	state.scsi.media_changed = 0;
+
+	model_number = myCfg->get_text_value("model_number", filename);
+
+	// skip to the filename portion of the path.
+	char* p = model_number;
+#if defined(_WIN32)
+	char    x = '\\';
+#elif defined(__VMS)
+	char    x = ']';
+#else
+	char    x = '/';
+#endif
+	while (*p)
+	{
+		if (*p == x)
+			model_number = p + 1;
+		p++;
+	}
+
+	if (cdrom())
+	{
+		printf("CD FILE\n");
+		cd_diskfiles.push_back((CDiskFile*)this);
+	}
+	printf("%s: Mounted file %s, %" PRId64 " %zu-byte blocks, %" PRId64 "/%ld/%ld.\n",
+		devid_string, filename, byte_size / state.block_size, state.block_size,
+		cylinders, heads, sectors);
 }
 
-void CDiskFile::checkFileWritable(const std::string& fileName) const {
-  std::ofstream ofs(fileName, std::ios::app);
-  // is_open for an ofstream checks if the file can be written to
-  bool isWritable = (ofs.is_open() && ofs.good());
-  if (!isWritable) {
-    FAILURE_2(Runtime, "%s: file %s is not writable", devid_string, fileName.c_str())
-  }
-  ofs.close();
+CDiskFile::~CDiskFile(void)
+{
+	printf("%s: Closing file.\n", devid_string);
+	fclose(handle);
 }
 
-void CDiskFile::createDiskFile(const std::string &fileName, u64 diskFileSize) {
+void CDiskFile::reload_file(char* _filename)
+{
+	if (handle)
+	{
+		fclose(handle);
+		handle = nullptr;
+	}
+	if (read_only)
+		handle = fopen(_filename, "rb");
+	else
+		handle = fopen_large(_filename, "rb+");
+	if (!handle)
+	{
+		printf("%s: Could not open file %s!\n", devid_string, _filename);
 
-  std::ofstream ofs(fileName, std::ios::binary);
-  if (ofs.is_open() && ofs.good()) {
-    ofs.seekp((diskFileSize)-1);
-    ofs.write("", 1);
-  } else {
-    FAILURE_1(Runtime, "%s: File does not exist and could not be created",
-              devid_string);
-  }
+		int sz = myCfg->get_num_value("autocreate_size", false, 0) / 1024 / 1024;
+		if (!sz)
+			FAILURE_1(Runtime, "%s: File does not exist and no autocreate_size set",
+				devid_string);
 
-  std::cout << devid_string << " " << (diskFileSize / 1024 / 1024) << "MB file "
-            << filename << " created" << std::endl;
+		void* crt_buf;
+		handle = fopen_large(_filename, "wb");
+		if (!handle)
+			FAILURE_1(Runtime, "%s: File does not exist and could not be created",
+				devid_string);
+		crt_buf = calloc(1024, 1024);
+		printf("%s: writing %d 1kB blocks:   0%%\b\b\b\b", devid_string, sz);
+
+		int lastpc = 0;
+		for (int a = 0; a < sz; a++)
+		{
+			fwrite(crt_buf, 1024, 1024, handle);
+
+			int pc = a * 100 / sz;
+			if (pc != lastpc)
+			{
+				printf("%3d\b\b\b", pc);
+				lastpc = pc;
+			}
+
+			fflush(stdout);
+		}
+
+		printf("100%%\n");
+		fclose(handle);
+		free(crt_buf);
+		if (read_only)
+			handle = fopen_large(_filename, "rb");
+		else
+			handle = fopen_large(_filename, "rb+");
+		if (!handle)
+		{
+			FAILURE_1(Runtime, "%s: File created could not be opened", devid_string);
+		}
+
+		printf("%s: %d MB file %s created.\n", devid_string, sz, _filename);
+	}
+
+	// determine size...
+	fseek_large(handle, 0, SEEK_END);
+	byte_size = ftell_large(handle);
+	fseek_large(handle, 0, SEEK_SET);
+	state.byte_pos = ftell_large(handle);
+
+	sectors = 32;
+	heads = 8;
+
+	//calc_cylinders();
+	determine_layout();
+	state.scsi.media_changed = 1;
 }
 
-CDiskFile::~CDiskFile(void) {
-  printf("%s: Closing file.\n", devid_string);
-  fclose(handle);
+bool CDiskFile::seek_byte(off_t_large byte)
+{
+	if (byte >= byte_size)
+	{
+		FAILURE_1(InvalidArgument, "%s: Seek beyond end of file!\n", devid_string);
+	}
+
+	fseek_large(handle, byte, SEEK_SET);
+	state.byte_pos = ftell_large(handle);
+
+	return true;
 }
 
-bool CDiskFile::seek_byte(off_t_large byte) {
-  if (byte >= byte_size) {
-    FAILURE_1(InvalidArgument, "%s: Seek beyond end of file!\n", devid_string);
-  }
-
-  fseek_large(handle, byte, SEEK_SET);
-  state.byte_pos = ftell_large(handle);
-
-  return true;
+size_t CDiskFile::read_bytes(void* dest, size_t bytes)
+{
+	size_t  r;
+	r = fread(dest, 1, bytes, handle);
+	state.byte_pos = ftell_large(handle);
+	return r;
 }
 
-size_t CDiskFile::read_bytes(void *dest, size_t bytes) {
-  size_t r;
-  r = fread(dest, 1, bytes, handle);
-  state.byte_pos = ftell_large(handle);
-  return r;
+size_t CDiskFile::write_bytes(void* src, size_t bytes)
+{
+	if (read_only)
+		return 0;
+
+	size_t  r;
+	r = fwrite(src, 1, bytes, handle);
+	state.byte_pos = ftell_large(handle);
+	return r;
 }
 
-size_t CDiskFile::write_bytes(void *src, size_t bytes) {
-  if (read_only)
-    return 0;
-
-  size_t r;
-  r = fwrite(src, 1, bytes, handle);
-  state.byte_pos = ftell_large(handle);
-  return r;
+void CDiskFile::flush()
+{
+	if (handle && !read_only)
+		fflush(handle);
 }

@@ -26,69 +26,70 @@
  * serve the general public.
  */
 
+ /**
+  * \file
+  * Contains the definitions for the emulated Symbios SCSI controller.
+ **/
 #if !defined(INCLUDED_SYM53C810_H_)
 #define INCLUDED_SYM53C810_H_
 
-#include "DiskController.hpp"
 #include "PCIDevice.hpp"
+#include "DiskController.hpp"
 #include "SCSIDevice.hpp"
 
-/**
- * \brief Symbios Sym53C810 SCSI disk controller.
- *
- * \bug Exception below ASTDEL during OpenVMS boot when booting from SCSI.
- *
- * Documentation consulted:
- *  - SCSI 2 (http://www.t10.org/ftp/t10/drafts/s2/s2-r10l.pdf)
- *  - SCSI 3 Multimedia Commands (MMC)
- *(http://www.t10.org/ftp/t10/drafts/mmc/mmc-r10a.pdf)
- *  - SYM53C810A PCI-SCSI I/O Processor
- *(http://ftp.netbsd.org/pub/NetBSD/arch/bebox/doc/810a.pdf)
- *  - Symbios SCSI SCRIPTS Processors Programming Guide
- *(http://la.causeuse.org/hauke/macbsd/symbios_53cXXX_doc/lsilogic-53cXXX-scripts.pdf)
- *  .
- **/
+  /**
+   * \brief Symbios Sym53C810 SCSI disk controller.
+   *
+   * \bug Exception below ASTDEL during OpenVMS boot when booting from SCSI.
+   *
+   * Documentation consulted:
+   *  - SCSI 2 (http://www.t10.org/ftp/t10/drafts/s2/s2-r10l.pdf)
+   *  - SCSI 3 Multimedia Commands (MMC) (http://www.t10.org/ftp/t10/drafts/mmc/mmc-r10a.pdf)
+   *  - SYM53C810A PCI-SCSI I/O Processor (http://ftp.netbsd.org/pub/NetBSD/arch/bebox/doc/810a.pdf)
+   *  - Symbios SCSI SCRIPTS Processors Programming Guide (http://la.causeuse.org/hauke/macbsd/symbios_53cXXX_doc/lsilogic-53cXXX-scripts.pdf)
+   *  .
+   **/
 class CSym53C810 : public CPCIDevice,
-                   public CDiskController,
-                   public CSCSIDevice {
+  public CDiskController,
+  public CSCSIDevice
+{
 public:
-  virtual int SaveState(FILE *f);
-  virtual int RestoreState(FILE *f);
-  virtual void check_state();
+  virtual int   SaveState(FILE* f);
+  virtual int   RestoreState(FILE* f);
+  virtual void  check_state();
 
-  void run();
-  virtual void init();
-  virtual void start_threads();
-  virtual void stop_threads();
+  virtual void  run();  // Poco Thread entry point
+  virtual void  init();
+  virtual void  start_threads();
+  virtual void  stop_threads();
 
-  virtual void WriteMem_Bar(int func, int bar, u32 address, int dsize,
-                            u32 data);
-  virtual u32 ReadMem_Bar(int func, int bar, u32 address, int dsize);
+  virtual void  WriteMem_Bar(int func, int bar, u32 address, int dsize,
+    u32 data);
+  virtual u32   ReadMem_Bar(int func, int bar, u32 address, int dsize);
 
-  virtual u32 config_read_custom(int func, u32 address, int dsize, u32 data);
-  virtual void config_write_custom(int func, u32 address, int dsize,
-                                   u32 old_data, u32 new_data, u32 data);
+  virtual u32   config_read_custom(int func, u32 address, int dsize, u32 data);
+  virtual void  config_write_custom(int func, u32 address, int dsize,
+    u32 old_data, u32 new_data, u32 data);
 
-  virtual void register_disk(class CDisk *dsk, int bus, int dev);
+  virtual void  register_disk(class CDisk* dsk, int bus, int dev);
 
-  CSym53C810(CConfigurator *cfg, class CSystem *c, int pcibus, int pcidev);
-  virtual ~CSym53C810();
-
+  CSym53C810(CConfigurator* cfg, class CSystem* c, int pcibus, int pcidev);
+  virtual       ~CSym53C810();
 private:
-  void write_b_scntl0(u8 value);
-  void write_b_scntl1(u8 value);
-  void write_b_istat(u8 value);
-  u8 read_b_ctest2();
-  void write_b_ctest3(u8 value);
-  void write_b_ctest4(u8 value);
-  void write_b_ctest5(u8 value);
-  void write_b_stest2(u8 value);
-  void write_b_stest3(u8 value);
-  u8 read_b_dstat();
-  u8 read_b_sist(int id);
-  void write_b_dcntl(u8 value);
+  void  write_b_scntl0(u8 value);
+  void  write_b_scntl1(u8 value);
+  void  write_b_istat(u8 value);
+  u8    read_b_ctest2();
+  void  write_b_ctest3(u8 value);
+  void  write_b_ctest4(u8 value);
+  void  write_b_ctest5(u8 value);
+  void  write_b_stest2(u8 value);
+  void  write_b_stest3(u8 value);
+  u8    read_b_dstat();
+  u8    read_b_sist(int id);
+  void  write_b_dcntl(u8 value);
 
-  void post_dsp_write();
+  void  post_dsp_write();
 
   int check_phase(int chk_phase);
   void execute_io_op();
@@ -97,49 +98,72 @@ private:
   void execute_mm_op();
   void execute_tc_op();
   void execute_bm_op();
-  void execute();
+  void  execute();
 
-  void eval_interrupts();
-  void set_interrupt(int reg, u8 interrupt);
-  void chip_reset();
+  void  eval_interrupts();
+  void  set_interrupt(int reg, u8 interrupt);
+  void  chip_reset();
 
   std::unique_ptr<std::thread> myThread;
   std::atomic_bool myThreadDead{false};
   CSemaphore mySemaphore;
-  CMutex *myRegLock;
-  bool StopThread;
+  CMutex* myRegLock;
+  bool            StopThread;
 
-  /// The state structure contains all elements that need to be saved to the
-  /// statefile.
-  struct SSym_state {
-    bool irq_asserted;
+  /// The state structure contains all elements that need to be saved to the statefile.
+  struct SSym_state
+  {
+    bool  irq_asserted;
 
-    union USym_regs {
-      u8 reg8[128];
+    union USym_regs
+    {
+      u8  reg8[128];
       u16 reg16[64];
       u32 reg32[64];
     } regs;
 
-    struct SSym_alu {
-      bool carry;
+    struct SSym_alu
+    {
+      bool  carry;
     } alu;
 
-    u8 ram[4096];
+    u8    ram[4096];
 
-    bool executing;
+    bool  executing;
 
-    bool wait_reselect;
-    bool select_timeout;
-    int disconnected;
-    u32 wait_jump;
+    bool  wait_reselect;
+    bool  select_timeout;
+    int   disconnected;
+    u32   wait_jump;
 
-    u8 dstat_stack;
-    u8 sist0_stack;
-    u8 sist1_stack;
+    u8    dstat_stack;
+    u8    sist0_stack;
+    u8    sist1_stack;
 
-    long gen_timer;
+    long  gen_timer;
 
-    // int phase;
+    // Instruction counter for runaway SCRIPTS protection
+    int insn_processed;
+
+    // SCSI phase tracked by the controller (SSTAT1 bits [2:0])
+    int  scsi_phase;
+
+    // Current SCSI status byte from command completion
+    u8   status;
+
+    // Message-in buffer and length
+    u8   msg[8];
+    int  msg_len;
+
+    // Message action: what to do after MSG IN phase completes
+    // 0 = COMMAND, 1 = disconnect, 2 = DATA OUT, 3 = DATA IN
+    int  msg_action;
+
+    // Current LUN (set by IDENTIFY message)
+    u8   current_lun;
+
+    // Command completion pending flag
+    int  command_complete;
   } state;
 };
 #endif // !defined(INCLUDED_SYM_H)

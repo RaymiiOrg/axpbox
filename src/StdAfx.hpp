@@ -164,12 +164,16 @@ inline char printable(char c) {
 }
 
 #if defined(HAVE__FSEEKI64)
+#define fopen_large fopen
 #define fseek_large _fseeki64
 #elif defined(HAVE_FSEEKO64)
+#define fopen_large fopen64
 #define fseek_large fseeko64
 #elif defined(HAVE_FSEEKO)
+#define fopen_large fopen
 #define fseek_large fseeko
 #elif defined(HAVE_FSEEK)
+#define fopen_large fopen
 #define fseek_large fseek
 #else
 #error "Need fseek"

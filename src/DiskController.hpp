@@ -26,24 +26,28 @@
  * serve the general public.
  */
 
+ /**
+  * \file
+  * Contains definitions for the disk controller base class.
+ **/
 #if !defined(__DISKCONTROLLER_H__)
 #define __DISKCONTROLLER_H__
 
-/**
- * \brief Abstract base class for disk controllers (uses CDisk's)
- **/
-class CDiskController {
+  /**
+   * \brief Abstract base class for disk controllers (uses CDisk's)
+   **/
+class CDiskController
+{
 public:
   CDiskController(int num_busses, int num_devs);
   ~CDiskController(void);
 
-  virtual void register_disk(class CDisk *dsk, int bus, int dev);
-  class CDisk *get_disk(int bus, int dev);
-
+  virtual void  register_disk(class CDisk* dsk, int bus, int dev);
+  class CDisk* get_disk(int bus, int dev);
 private:
-  int num_bus;
-  int num_dev;
+  int             num_bus;
+  int             num_dev;
 
-  class CDisk **disks;
+  class CDisk** disks;
 };
-#endif //! defined(__DISKCONTROLLER_H__)
+#endif //!defined(__DISKCONTROLLER_H__)
