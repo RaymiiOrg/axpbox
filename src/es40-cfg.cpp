@@ -697,22 +697,6 @@ int main_cfg(int argc, char *argv[]) {
 
   cpu_q.ask();
 
-  MultipleChoiceQuestion icache_q;
-
-  icache_q.setQuestion("Do you want the ICACHE on the CPU's enabled?");
-  icache_q.setExplanation(
-      "The ICACHE makes the CPU emulation more accurate, but also slows down "
-      "the emulator. Decent operating systems shouldn't depend on this.");
-  icache_q.setDefault("yes");
-  icache_q.addAnswer("yes", "true",
-                     "ICACHE enabled. Performance hit, but may be necessary "
-                     "for some software.");
-  icache_q.addAnswer(
-      "no", "false",
-      "ICACHE disabled. Better performance, but may not always work.");
-
-  icache_q.ask();
-
   MultipleChoiceQuestion skip_memtest_hack_q;
 
   skip_memtest_hack_q.setQuestion("Do you want to skip memtest on SRM start?");
@@ -748,7 +732,6 @@ int main_cfg(int argc, char *argv[]) {
     os << "  cpu" << i << " = ev68cb\n";
     os << "  {\n";
     os << "    speed = " << mhz_q.getAnswer() << "M;\n";
-    os << "    icache = " << icache_q.getAnswer() << ";\n";
     os << "    skip_memtest_hack = " << skip_memtest_hack_q.getAnswer()
        << ";\n";
     os << "  }\n\n";
@@ -1007,9 +990,6 @@ int main_cfg(int argc, char *argv[]) {
 #endif
   card_q.addAnswer("scsi", "sym53c810",
                    "Symbios 53C810 narrow SCSI controller");
-  card_q.addAnswer(
-      "wide scsi", "sym53c895",
-      "Symbios 53C895 wide SCSI controller (doesn't work with OpenVMS)");
   card_q.addAnswer("es1370 audio", "es1370",
                    "ES1370 Audio card (works only with Windows NT 4.0)");
 
@@ -1107,28 +1087,6 @@ int main_cfg(int argc, char *argv[]) {
       /* Ask what disks to add.
        */
       add_disks(&disk_q, &os);
-    } else if (card_q.getAnswer() == "sym53c895") {
-      /* Use a ShrinkingChoiceQuestion; once
-       * a disk position has been used, it
-       * can't be used again.
-       */
-      ShrinkingChoiceQuestion disk_q;
-      disk_q.setQuestion(
-          "Do you want to add any disks to the Sym53C895 controller?");
-      disk_q.setDefault("none");
-      disk_q.setExplanation(
-          "Add disks. Select 'none' if you have no more disks to add.");
-      disk_q.addAnswer("none", "", "stop adding disks");
-      /* The wide SCSI controller supports
-       * devices at targets 0..6 and 8..15.
-       */
-      for (int i = 0; i < 16; i++) {
-        if (i != 7)
-          disk_q.addAnswer(i2s(i), "disk0." + i2s(i), "Target " + i2s(i));
-      }
-      /* Ask what disks to add.
-       */
-      add_disks(&disk_q, &os);
     }
     os << "  }\n\n";
   }
@@ -1162,13 +1120,6 @@ int main_cfg(int argc, char *argv[]) {
 
 #endif
 
-  MultipleChoiceQuestion mouse_q;
-  mouse_q.setQuestion("Would you like to emulate the mouse?");
-  mouse_q.setExplanation("The mouse is not really working yet... :-(");
-  mouse_q.addAnswer("no", "false", "Disable the mouse");
-  mouse_q.addAnswer("yes", "true", "Enable the mouse");
-  mouse_q.setDefault("yes");
-
   MultipleChoiceQuestion vgacons_q;
   vgacons_q.setQuestion("Where would you like console output to go?");
   vgacons_q.setExplanation("This is the SRM console option");
@@ -1178,16 +1129,13 @@ int main_cfg(int argc, char *argv[]) {
 
   if (vga_q.getAnswer() != "") {
     /* If a VGA card is present, ask about
-     * the mouse and the console.
+     * the console.
      */
-    mouse_q.ask();
     vgacons_q.ask();
   } else {
-    /* No VGA card present, mouse support
-     * is disabled, and the console goes
+    /* No VGA card present, the console goes
      * to serial port 0.
      */
-    mouse_q.setAnswer("false");
     vgacons_q.setAnswer("false");
   }
 
@@ -1276,7 +1224,6 @@ int main_cfg(int argc, char *argv[]) {
 
   os << "  pci0.7 = ali\n";
   os << "  {\n";
-  os << "    mouse.enabled = " << mouse_q.getAnswer() << ";\n";
   os << "    vga_console = " << vgacons_q.getAnswer() << ";\n";
   if (lpt_q.getAnswer() != "")
     os << "    lpt.outfile = \"" << lpt_q.getAnswer() << "\"\n";
