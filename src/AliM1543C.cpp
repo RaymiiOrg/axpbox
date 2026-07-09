@@ -146,6 +146,14 @@ void CAliM1543C::init() {
     state.toy_stored_data[i] = 0;
   state.toy_offset = 0;
 
+  // The MC146818 is battery-backed: register A keeps its divider/rate across
+  // power cycles, so on real hardware the 1024Hz periodic tick runs from
+  // power-on. SRM's boot-CPU speed calibration (at "lowering IPL", BEFORE it
+  // programs the RTC at "create timer") depends on that: with no ticks it
+  // times out after ~0.7s and falls back to a hardcoded 2800ps cycle time =
+  // the mystery 357 MHz readout.
+  state.toy_stored_data[0x0a] = 0x26; // divider on, periodic rate 1024Hz
+
   arc_year_compat =
       myCfg->get_myParent()->get_bool_value("arc_year_compat", false);
 
@@ -285,6 +293,10 @@ void CAliM1543C::init() {
     state.pit_status[i] = 0x40; // invalid/null counter
   for (i = 0; i < 9; i++)
     state.pit_counter[i] = 0;
+  m_pit_last = std::chrono::steady_clock::now();
+  for (i = 0; i < 3; i++)
+    m_pit_epoch[i] = m_pit_last;
+  m_pit_acc = 0;
 
   add_legacy_io(7, 0x20, 2);
   add_legacy_io(8, 0xa0, 2);
@@ -550,7 +562,8 @@ u8 CAliM1543C::reg_61_read() {
 	read_count++;
 #else
   state.reg_61 &= ~0x20;
-  state.reg_61 |= (state.pit_status[2] & 0x80) >> 2;
+  if (pit_out(2)) // analytic ch2 phase: pollers see jitter-free edges
+    state.reg_61 |= 0x20;
 #endif
   return state.reg_61;
 }
@@ -633,8 +646,7 @@ void CAliM1543C::superio_reset() {
   // (the IRQ12 wire is on KBD's reg 0x72), but NT may also probe LDN 8
   // as a separate "logical" mouse device — keep it advertised so the
   // PnP enumerator doesn't mark the port driver as "no mouse".
-  state.superio_ldn_regs[8][0x30] =
-      myCfg->get_bool_value("mouse.enabled", true) ? 0x01 : 0x00;
+  state.superio_ldn_regs[8][0x30] = 0x01;
   state.superio_ldn_regs[8][0x70] = 0x0c;
   state.superio_ldn_regs[8][0xf0] = 0x00;
 
@@ -1032,15 +1044,15 @@ void CAliM1543C::toy_write(u32 address, u8 data) {
       //# #define RTC_FREQ_SELECT RTC_REG_A
       //#
       //# /* update-in-progress - set to "1" 244 microsecs before RTC goes off
-      //the bus, # * reset after update (may take 1.984ms @ 32768Hz RefClock) is
-      //complete, # * totalling to a max high interval of 2.228 ms. # */ # #
-      //define RTC_UIP 0x80 # # define RTC_DIV_CTL 0x70 # /* divider control:
-      //refclock values 4.194 / 1.049 MHz / 32.768 kHz */ # # define
-      //RTC_REF_CLCK_4MHZ 0x00 # # define RTC_REF_CLCK_1MHZ 0x10 # # define
-      //RTC_REF_CLCK_32KHZ 0x20 # /* 2 values for divider stage reset, others
-      //for "testing purposes only" */ # # define RTC_DIV_RESET1 0x60 # # define
-      //RTC_DIV_RESET2 0x70 # /* Periodic intr. / Square wave rate select.
-      //0=none, 1=32.8kHz,... 15=2Hz */ # # define RTC_RATE_SELECT 0x0F
+      // the bus, # * reset after update (may take 1.984ms @ 32768Hz RefClock)
+      // is complete, # * totalling to a max high interval of 2.228 ms. # */ # #
+      // define RTC_UIP 0x80 # # define RTC_DIV_CTL 0x70 # /* divider control:
+      // refclock values 4.194 / 1.049 MHz / 32.768 kHz */ # # define
+      // RTC_REF_CLCK_4MHZ 0x00 # # define RTC_REF_CLCK_1MHZ 0x10 # # define
+      // RTC_REF_CLCK_32KHZ 0x20 # /* 2 values for divider stage reset, others
+      // for "testing purposes only" */ # # define RTC_DIV_RESET1 0x60 # #
+      // define RTC_DIV_RESET2 0x70 # /* Periodic intr. / Square wave rate
+      // select. 0=none, 1=32.8kHz,... 15=2Hz */ # # define RTC_RATE_SELECT 0x0F
       //#
       // The SRM-init value of 0x26 means:
       //  xtal speed 32.768KHz  (standard)
@@ -1251,6 +1263,8 @@ void CAliM1543C::pit_write(u32 address, u8 data) {
       }
     }
   } else { // a counter
+    m_pit_epoch[address] =
+        std::chrono::steady_clock::now(); // pit_out phase reference
     switch (state.pit_mode[address]) {
     case 0:
       break;
@@ -1282,11 +1296,40 @@ void CAliM1543C::pit_write(u32 address, u8 data) {
   }
 }
 
-#define PIT_FACTOR 5000
-#define PIT_DEC(p) p = (p < PIT_FACTOR ? 0 : p - PIT_FACTOR);
+#define PIT_CLOCK_HZ 1193182
 
 /**
- * Handle the PIT interrupt.
+ * Derive a counter's output pin from wall-clock phase since its last load.
+ * Analytic on purpose: a poller (port 61h bit 5) sees exact edges instead of
+ * edges quantized to the Ali thread's wakeup cadence.
+ **/
+bool CAliM1543C::pit_out(int c) {
+  if (state.pit_status[c] & 0x40) // no count loaded: OUT idles high
+    return true;
+  const u32 n = state.pit_counter[c + PIT_OFFSET_MAX];
+  if (!n)
+    return true;
+
+  // microsecond granularity: ns * PIT_CLOCK_HZ would overflow u64 after ~4h
+  // uptime
+  const u64 clocks = (u64)std::chrono::duration_cast<std::chrono::microseconds>(
+                         std::chrono::steady_clock::now() - m_pit_epoch[c])
+                         .count() *
+                     PIT_CLOCK_HZ / 1000000ull;
+  switch ((state.pit_status[c] & 0x0e) >> 1) {
+  case 0: // interrupt on terminal count: low while counting, high at terminal
+    return clocks >= n;
+
+  case 3: // square wave: high for the first half of each period
+    return ((clocks % n) * 2) < n;
+
+  default: // unmodelled mode: fall back to the decrement machinery's view
+    return (state.pit_status[c] & 0x80) != 0;
+  }
+}
+
+/**
+ * Advance the PIT counters by elapsed wall-clock time.
  *
  *  - counter 0 is the 18.2Hz time counter.
  *  - counter 1 is the ram refresh, we don't care.
@@ -1294,38 +1337,59 @@ void CAliM1543C::pit_write(u32 address, u8 data) {
  *  .
  **/
 void CAliM1543C::pit_clock() {
-  int i;
-  for (i = 0; i < 3; i++) {
+  // Convert elapsed host time to 1.193182 MHz input clocks. The pacing must
+  // be wall-clock: SRM calibrates the boot CPU's speed against this timer,
+  // and the guest RPCC it compares against is wall-clock true.
+  const auto now = std::chrono::steady_clock::now();
+  u64 elapsed_ns = (u64)std::chrono::duration_cast<std::chrono::nanoseconds>(
+                       now - m_pit_last)
+                       .count();
+  m_pit_last = now;
+  if (elapsed_ns > 30000000ull) // stall/restore catch-up cap: under one ch0
+    elapsed_ns = 30000000ull;   // half-period, so toggles can never bunch
+                                // into one call
+  m_pit_acc += elapsed_ns * PIT_CLOCK_HZ;
+  const u64 clocks = m_pit_acc / 1000000000ull;
+  m_pit_acc %= 1000000000ull;
+  if (!clocks)
+    return;
 
-    // decrement the counter.
+  for (int i = 0; i < 3; i++) {
     if (state.pit_status[i] & 0x40)
       continue;
-    PIT_DEC(state.pit_counter[i]);
     switch ((state.pit_status[i] & 0x0e) >> 1) {
     case 0: // interrupt at terminal
-      if (!state.pit_counter[i]) {
+      if (state.pit_counter[i] <= clocks) {
+        state.pit_counter[i] = 0;
         state.pit_status[i] |= 0xc0; // out pin high, no count set.
-      }
+      } else
+        state.pit_counter[i] -= (u32)clocks;
       break;
 
-    case 3: // square wave generator
-      if (!state.pit_counter[i]) {
+    case 3: // square wave generator: counts down by two per input clock,
+            // output toggles at terminal, so one output period = one reload
+            // value
+    {
+      u64 dec = clocks * 2;
+      const u32 reload = state.pit_counter[i + PIT_OFFSET_MAX];
+      while (dec >= state.pit_counter[i]) {
+        if (!reload) { // half-programmed counter: don't spin on a zero reload
+          state.pit_counter[i] = 0;
+          dec = 0;
+          break;
+        }
+        dec -= state.pit_counter[i];
+        state.pit_counter[i] = reload;
         if (state.pit_status[i] & 0x80) {
           state.pit_status[i] &= ~0x80; // lower output;
         } else {
           state.pit_status[i] |= 0x80; // raise output
-          if (i == 0) {
+          if (i == 0)
             pic_interrupt(0, 0); // counter 0 is tied to irq 0.
-                                 // printf("Generating timer interrupt.\n");
-          }
         }
-
-        state.pit_counter[i] = state.pit_counter[i + PIT_OFFSET_MAX];
       }
-
-      // decrement again, since we want a half-wide square wave.
-      PIT_DEC(state.pit_counter[i]);
-      break;
+      state.pit_counter[i] -= (u32)dec;
+    } break;
 
     default:
       break; // we don't care to handle it.
@@ -1354,23 +1418,16 @@ void CAliM1543C::run() {
   }
 }
 
-#define PIT_RATIO 1
-
 /**
  * Handle all events that need to be handled on a clock-driven basis.
  *
  * This is a slow-clocked device, which means this DoClock isn't called as often
  *as the CPU's DoClock. Do the following:
- *  - Handle PIT clock.
+ *  - Handle PIT clock (wall-clock paced, so the call cadence only sets
+ *granularity).
  *  .
  **/
-void CAliM1543C::do_pit_clock() {
-  static int pit_counter = 0;
-  if (pit_counter++ >= PIT_RATIO) {
-    pit_counter = 0;
-    pit_clock();
-  }
-}
+void CAliM1543C::do_pit_clock() { pit_clock(); }
 
 u64 CAliM1543C::get_interval_period_ns() const {
   const u8 reg_a = state.toy_stored_data[0x0a];

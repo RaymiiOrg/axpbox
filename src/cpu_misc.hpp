@@ -274,17 +274,11 @@
 
 #define DO_IMPLVER state.r[REG_3] = CPU_IMPLVER;
 
-#ifdef ES40_JIT
-// Unwound/JIT lane advances state.cc per instruction (gated on cc_ena) and has
-// no _cc_accum batch accumulator, so the live cycle count is simply state.cc.
+// state.cc is wall-clock in both engines (advanced at batch boundaries by real
+// elapsed time * cpu_hz), so the live cycle count is simply state.cc; _cc_accum
+// only feeds cc_large for the legacy check_state speed-factor feedback.
 #define DO_RPCC                                                                \
   state.r[REG_1] = ((u64)state.cc_offset) << 32 | (state.cc & U64(0xffffffff))
-#else
-#define DO_RPCC                                                                \
-  state.r[REG_1] =                                                             \
-      ((u64)state.cc_offset) << 32 |                                           \
-      ((state.cc + (state.cc_ena ? _cc_accum : U64(0))) & U64(0xffffffff))
-#endif
 
 // The following ops have no function right now (at least, not until multiple
 // CPU's are supported). well, let's set up to have that happen soon.... Alpha

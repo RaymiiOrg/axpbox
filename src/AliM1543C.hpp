@@ -35,6 +35,8 @@
 
 #include "PCIDevice.hpp"
 
+#include <chrono>
+
 /**
  * \brief Emulated ISA part of the ALi M1543C chipset.
  *
@@ -97,6 +99,17 @@ private:
   u8 pit_read(u32 address);
   void pit_write(u32 address, u8 data);
   void pit_clock();
+  bool pit_out(int c);
+
+  // Wall-clock pacing for the 8254: elapsed host time is converted to
+  // 1.193182 MHz input clocks; m_pit_acc carries the sub-clock remainder
+  // (in ns * PIT_CLOCK_HZ units). m_pit_epoch marks each channel's last
+  // counter load so pit_out() can derive the output pin analytically
+  // (jitter-free) instead of from thread-tick decrements.
+  // Not saved state - re-primed on restore.
+  std::chrono::steady_clock::time_point m_pit_last;
+  std::chrono::steady_clock::time_point m_pit_epoch[3];
+  u64 m_pit_acc;
 
 public:
   // Period in ns of the MC146818 SQW output (rate from TOY reg A).

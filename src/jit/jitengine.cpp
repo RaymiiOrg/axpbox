@@ -159,6 +159,8 @@ enum SafeOp {
                   // phys[Rb+disp12]
   OP_HW_LDQ_VPTE, // HW_LD (0x1b) func 5: virtual PTE fetch, access-checked vs
                   // KERNEL mode
+  OP_HW_LDL_WCHK, // HW_LD (0x1b) func 0xa: longword virtual read + write-check
+                  // (WrChk)
   OP_HW_MTPR, // HW_MTPR (0x1d) side-effect-free IPRs, PALmode only: IPR[fn] =
               // Rb
   OP_HW_MTPR_TERM, // HW_MTPR I_CTL (0x11): writes SDE/SPE/VA mode -> terminate,
@@ -557,9 +559,9 @@ SafeOp classify(uint32_t ins, bool pal_block) {
     return known ? OP_HW_MFPR : OP_NONE;
   }
   case 0x1b: { // HW_LD: read phys[Rb+disp12] -> Ra. PALmode-only. Compile the
-    // physical forms (func 0/1) and the quad VPTE fetch (func 5, kernel-checked
-    // -- see jit_read_vpte). Locked, virtual, alt and write-check forms stay
-    // interpreted.
+    // physical forms (func 0/1), the quad VPTE fetch (func 5, kernel-checked --
+    // jit_read_vpte), and the longword virtual WrChk (func 0xa, jit_read_wchk).
+    // Locked + alt forms interpret.
     if (!pal_block)
       return OP_NONE;
     const uint32_t f = (ins >> 12) & 0xf;
@@ -571,6 +573,12 @@ SafeOp classify(uint32_t ins, bool pal_block) {
       if (((ins >> 21) & 0x1f) == 31)
         return OP_NONE;
       return OP_HW_LDQ_VPTE;
+    }
+    if (f == 10) { // func 0xa (HRM TYPE 1012): longword virtual read + WrChk --
+                   // jit_read_wchk
+      if (((ins >> 21) & 0x1f) == 31)
+        return OP_NONE; // Ra==31: probe-only, interpret for the fault
+      return OP_HW_LDL_WCHK;
     }
     return OP_NONE;
   }
@@ -745,6 +753,16 @@ CJitEngine::CJitEngine(int cpu_id)
     : m_cpu_id(cpu_id), m_recorded(0), m_code_bytes(0), m_rt(nullptr) {
   memset(m_blocks, 0,
          sizeof(m_blocks)); // flush() is lazy (gen bump) -- zero the slots here
+  memset(m_traces, 0,
+         sizeof(m_traces)); // trace tier: empty until formation fills slots
+  // Trace tier kill-switch (config_debug.h JIT_TRACES). OFF by default, 1-block
+  // traces preempt block chaining = a net loss; re-enable when fusion closes
+  // loops in-trace.
+#ifdef JIT_TRACES
+  m_traces_enabled = true;
+#else
+  m_traces_enabled = false;
+#endif
   m_rt = new asmjit::JitRuntime();
 #ifdef JIT_VERIFY
   m_v_exec = m_v_fail = 0;
@@ -759,6 +777,8 @@ CJitEngine::CJitEngine(int cpu_id)
   m_tsc_compiled = m_tsc_interp = 0;
   m_tsc_window_start = jit_rdtsc();
   m_bail_link = m_jmp_attempt = m_jmp_hit = 0;
+  m_fresh_cold = m_fresh_tag = m_fresh_asn = m_fresh_phys = m_fresh_hash = 0;
+  m_trace_formed = m_trace_entered = m_trace_exits = m_trace_stale = 0;
   memset(m_term_op, 0, sizeof(m_term_op));
   memset(m_pal_func, 0, sizeof(m_pal_func));
   memset(m_mtpr_func, 0, sizeof(m_mtpr_func));
@@ -774,6 +794,11 @@ CJitEngine::CJitEngine(int cpu_id)
     fprintf(stderr,
             "[JIT][CPU%d] could not open %s for the disassembly trace\n",
             m_cpu_id, name);
+#endif
+#ifdef JIT_VERIFY
+  if (cpu_id == 0)
+    trace_selftest(); // M0: validate trace_ok's source-coherence once
+                      // (SMC/IMB/remap)
 #endif
 }
 
@@ -830,6 +855,23 @@ CJitEngine::JitBlock *CJitEngine::record(uint64_t virt_pc, uint64_t phys_pc,
   }
   // New block, page remap, or modified bytes: record fresh and force a
   // recompile.
+#ifdef JIT_STATS
+  // Why is this a FRESH compile (steps 2+3 both failed)? Categorize the slot's
+  // prior occupant in the same order step 3 checks, so we know whether the
+  // churn is cache aliasing (tag) -- which more slots fix -- vs same-PC
+  // cross-process (asn) -- which needs asn in the index -- vs
+  // remap/self-mod/cold.
+  if (!b.code)
+    m_fresh_cold++; // empty / reclaimed slot (genuine cold or warmup)
+  else if (b.tag != virt_pc)
+    m_fresh_tag++; // a DIFFERENT block aliases this slot (cache-size lever)
+  else if (!(b.asm_global || b.asn == asn))
+    m_fresh_asn++; // same PC, different process (needs asn-in-index)
+  else if (b.phys != phys_pc)
+    m_fresh_phys++; // page remap
+  else
+    m_fresh_hash++; // source bytes changed (self-modifying code)
+#endif
   b.tag = virt_pc;
   b.phys = phys_pc;
   b.asn = asn;
@@ -840,9 +882,16 @@ CJitEngine::JitBlock *CJitEngine::record(uint64_t virt_pc, uint64_t phys_pc,
   b.code = nullptr;
   b.jit_body =
       nullptr; // not compiled yet -> cached links to us must miss until compile
-  b.link = nullptr; // no cached successor yet
+  for (int i = 0; i < kLinkSlots; ++i)
+    b.link[i] = nullptr; // no cached successors yet
+#ifdef JIT_STATS
+  b.link_misses = 0;
+  b.link_fanout =
+      0; // instrumentation: reset successor-fanout tracking on (re)use
+#endif
   b.prefix_len = 0;
   b.compiled = false;
+  b.hot = 0; // fresh block: restart the trace-promotion counter
 #ifdef JIT_REGPROF
   b.rp_hits = 0; // fresh block: restart the exec counter (resurrect/revalidate
                  // keep theirs)
@@ -861,16 +910,123 @@ CJitEngine::JitBlock *CJitEngine::revalidate_flushed(uint64_t virt_pc,
                                                      uint64_t phys_pc,
                                                      const uint8_t *dram) {
   JitBlock &b = m_blocks[index_of(virt_pc)];
-  if (!(b.valid && b.code && b.tag == virt_pc &&
-        (b.asm_global || b.asn == asn)))
+  // Resurrect BOTH lazy-flush survivors (flush(): valid, flush_gen-stale) AND
+  // flush_non_global() drops (valid cleared). The source-hash below is the
+  // guard, matching record()'s revalidate path so don't require valid flags;
+  // requiring it forced every flush_non_global'd block through an interpret
+  // pass. tag/asn/phys/hash still guard collisions, cross-process aliasing,
+  // page remaps, and self-modifying code.
+  if (!(b.code && b.tag == virt_pc && (b.asm_global || b.asn == asn)))
     return nullptr;
   if (b.phys != phys_pc || b.src_sum != src_hash(dram + phys_pc, b.hash_len))
     return nullptr;
+  b.valid = true; // flush_non_global() may have cleared it; the hash just
+                  // re-validated the bytes
   b.flush_gen = m_flush_gen;
   b.vgen = m_itb_gen + m_flush_gen; // phys + code bytes just validated
   b.jit_body = (void *)((uint8_t *)(void *)b.code + b.body_off);
   return &b;
 }
+
+// Trace tier - is a looked-up trace safe to enter? (review: per-segment source
+// validation.) head_live_phys is the head's freshly resolved physical. The
+// steps mirror the block dispatcher's phys check (jit_run ~line 832) +
+// revalidate_flushed's hash:
+//   1. head remap / ASN-recycle: the head's live physical no longer matches
+//   what we built from -> stale.
+//   2. epoch fresh (nothing flushed/ITB-invalidated since build) -> enter
+//   directly.
+//   3. epoch changed -> re-hash every fused segment. Unchanged bytes => the
+//   epoch bumped for an unrelated
+//      reason (e.g. an IMB on another page): keep the trace + re-stamp. Changed
+//      bytes (SMC/remap): stale.
+// Interior coherence: the source hash here checks BYTES at the cached phys --
+// it can't see an interior page remapped to a DIFFERENT physical with identical
+// bytes. The CALLER closes that gap by re-resolving each segment's LIVE
+// physical: trace_segs_live (trace entry) + the recorder's per-successor check
+// (formation).
+bool CJitEngine::trace_ok(TraceFragment *t, uint64_t head_live_phys,
+                          const uint8_t *dram) {
+  if (t->n_segs == 0 || t->segs[0].phys_pc != head_live_phys) {
+    note_trace_stale();
+    return false;
+  } // head remap / ASN recycle
+  // A 1-block trace mirrors its head block's compiled prefix, whose length can
+  // change with NO source-byte or epoch change: a fault-truncated cold record
+  // shrinks prefix_len (n_instr oscillates), a later clean record regrows it
+  // invisibly to the hash below. If the live head block compiled a different
+  // length, the trace is stale; drop it so the dispatcher re-forms a consistent
+  // one.
+  for (uint32_t s = 0; s < t->n_segs;
+       ++s) { // ANY fused block's prefix_len can oscillate with no source/epoch
+              // change (not just the head)
+    const JitBlock &sb = m_blocks[index_of(t->segs[s].guest_pc)];
+    if (sb.valid && sb.tag == t->segs[s].guest_pc &&
+        sb.prefix_len != t->segs[s].n_instr) {
+      note_trace_stale();
+      return false;
+    }
+  }
+  if (t->vgen == m_itb_gen + m_flush_gen)
+    return true; // epoch fresh: nothing changed since build
+  for (uint32_t i = 0; i < t->n_segs; ++i) {
+    const SourceSeg &s = t->segs[i];
+    if (s.src_sum != src_hash(dram + s.phys_pc, s.n_instr)) {
+      note_trace_stale();
+      return false;
+    } // a segment's source bytes changed -> stale
+  }
+  t->vgen =
+      m_itb_gen + m_flush_gen; // all segments re-validated: re-stamp the epoch
+  t->flush_gen = m_flush_gen;
+  return true;
+}
+
+#ifdef JIT_VERIFY
+// unit-test trace_ok's source-coherence decision (SMC/IMB, ITB-remap,
+// head-remap, multi-segment) WITHOUT real traces or the emitter. Mutates
+// m_itb_gen/m_flush_gen but saves/restores; runs once at ctor when the engine
+// is fresh (counters 0, no live blocks). A FAIL here means the trace tier's
+// coherence is broken
+void CJitEngine::trace_selftest() {
+  const uint64_t save_itb = m_itb_gen, save_flush = m_flush_gen;
+  uint32_t mem[8] = {0x11111111, 0x22222222, 0x33333333, 0x44444444,
+                     0x55555555, 0x66666666, 0x77777777, 0x88888888};
+  const uint8_t *d = (const uint8_t *)mem;
+
+  TraceFragment t = {};
+  t.valid = true;
+  t.head_tag = 0x2000;
+  t.asn = 1;
+  t.n_segs = 2;
+  t.segs[0] = {0x2000, 0, 4,
+               false,  1, src_hash(d + 0, 4)}; // words[0..3] at phys 0
+  t.segs[1] = {0x2010, 16, 4,
+               false,  1,  src_hash(d + 16, 4)}; // words[4..7] at phys 16
+  t.vgen = m_itb_gen + m_flush_gen;
+
+  bool ok = true;
+  ok &= (trace_ok(&t, 0, d) ==
+         true); // 1. fresh: epoch + head-phys match -> enter
+  ok &= (trace_ok(&t, 999, d) ==
+         false); // 2. head remap / ASN-recycle: live head phys differs -> drop
+  ++m_itb_gen;   // 3. ITB-invalidate, bytes unchanged:
+  ok &= (trace_ok(&t, 0, d) ==
+         true); //    epoch bumps, re-hash matches -> keep ...
+  ok &= (t.vgen ==
+         m_itb_gen + m_flush_gen); //    ... and re-stamped to the new epoch
+  mem[5] = 0xDEADBEEF;
+  ++m_flush_gen; // 4. SMC on interior seg1 + IMB (flush bump):
+  ok &= (trace_ok(&t, 0, d) == false); //    re-hash mismatch -> drop
+  mem[5] = 0x66666666; // 5. restore the byte, epoch still bumped:
+  ok &= (trace_ok(&t, 0, d) == true); //    re-hash matches again -> keep
+
+  printf("[JIT][CPU%d] trace_ok self-test (SMC/IMB/ITB-remap/head-remap): %s\n",
+         m_cpu_id, ok ? "PASS" : "*** FAIL ***");
+  m_itb_gen = save_itb;
+  m_flush_gen = save_flush;
+}
+#endif
 
 // Free ALL compiled code (delete+new of the runtime; reset()-and-reuse
 // corrupted the JitAllocator block tree) and drop every slot's now-dangling
@@ -890,6 +1046,11 @@ void CJitEngine::reclaim_code() {
     m_blocks[i].jit_body = nullptr;
     m_blocks[i].compiled = false;
   }
+  // Traces hold JitFns into the runtime we just deleted -- drop them too, or a
+  // post-reclaim trace dispatch jumps through a freed pointer. trace_lookup
+  // keys on valid, so clearing it is enough.
+  for (int i = 0; i < kTraceEntries; ++i)
+    m_traces[i].valid = false;
 }
 
 void CJitEngine::flush() {
@@ -904,8 +1065,10 @@ void CJitEngine::flush() {
 }
 
 // ASM-bit-clear icache flush (process/ASN switch): drop only !asm_global
-// blocks. Global (ASM) PAL blocks are ASN-independent and must survive it. Past
-// the reclaim cap, defer to the full flush().
+// blocks. Global (ASM) PAL blocks are ASN-independent and must survive it. The
+// drop is SOFT, revalidate_flushed() re-hashes and resurrects the compiled code
+// on next use (no recompile, no interpret pass, unless the bytes actually
+// changed)
 void CJitEngine::flush_non_global() {
   if (m_rt && m_code_bytes >= kReclaimBytes) {
     flush();
@@ -916,6 +1079,18 @@ void CJitEngine::flush_non_global() {
       m_blocks[i].valid = false;
       m_blocks[i].jit_body = nullptr;
     }
+  }
+  for (int i = 0; i < kTraceEntries;
+       ++i) { // a trace spanning any !asm_global segment depends on a
+              // soft-dropped block -> drop it too
+    if (!m_traces[i].valid)
+      continue;
+    for (uint32_t s = 0; s < m_traces[i].n_segs; ++s)
+      if (!m_traces[i].segs[s].asm_global) {
+        m_traces[i].valid = false;
+        note_trace_stale();
+        break;
+      }
   }
 }
 
@@ -1007,217 +1182,57 @@ static uint32_t regprof_mask(const uint32_t *w, uint32_t n) {
 }
 #endif
 
-void CJitEngine::compile_block(
-    JitBlock *b, const uint8_t *dram, uint64_t dram_size, void *read_helper,
-    void *write_helper, void *opcdec_helper, void *hw_mfpr_helper,
-    void *hw_ld_helper, void *hw_mtpr_helper, void *hw_st_helper,
-    void *indirect_helper, void *read_locked_helper, void *stc_helper,
-    void *misc_helper, void *read_vpte_helper, void *itof_helper,
-    void *ftoi_helper, void *fltl_helper, void *fp_read_helper,
-    void *fp_write_helper, void *fltv_helper) {
+// The 3 guest GPRs kept live in the callee-saved pins r12/r13/r15.
+// compile_block uses the global hot set (RA/a0/PV); compile_trace can override
+// with the trace's own hot regs (the M2 regalloc spike).
+static const int kGlobalPins[3] = {26, 16, 27};
+
+void CJitEngine::emit_op(void *a_ptr, const uint8_t *gpa, void *done_ptr,
+                         const HelperSet &hs, bool pal_block, JitBlock *b,
+                         uint32_t ins, uint32_t i, RegAlloc &regalloc) {
   using namespace asmjit;
-  // Reclaim must self-trigger here, NOT only in flush(): flush() runs when the
-  // guest executes IMB/IC_FLUSH, and a compute-heavy phase can go minutes
-  // without one while recompiles keep allocating -- code memory grew unbounded
-  // (multi-GB). Safe: we're in this CPU's cold path.
-  if (m_rt && m_code_bytes >= kReclaimBytes) {
-    reclaim_code();
-    b->valid =
-        true; // b was just (re)validated by record(); restore it after the wipe
-  }
-  b->compiled = true;
+  x86::Assembler &a = *(x86::Assembler *)a_ptr;
+  Label &done = *(Label *)done_ptr;
+  // aliases so the moved if-chain references the helper names verbatim:
+  void *read_helper = hs.read_helper;
+  void *write_helper = hs.write_helper;
+  void *opcdec_helper = hs.opcdec_helper;
+  void *hw_mfpr_helper = hs.hw_mfpr_helper;
+  void *hw_ld_helper = hs.hw_ld_helper;
+  void *hw_mtpr_helper = hs.hw_mtpr_helper;
+  void *hw_st_helper = hs.hw_st_helper;
+  void *indirect_helper = hs.indirect_helper;
+  void *read_locked_helper = hs.read_locked_helper;
+  void *stc_helper = hs.stc_helper;
+  void *misc_helper = hs.misc_helper;
+  void *read_vpte_helper = hs.read_vpte_helper;
+  void *read_wchk_helper = hs.read_wchk_helper;
+  void *itof_helper = hs.itof_helper;
+  void *ftoi_helper = hs.ftoi_helper;
+  void *fltl_helper = hs.fltl_helper;
+  void *fp_read_helper = hs.fp_read_helper;
+  void *fp_write_helper = hs.fp_write_helper;
+  void *fltv_helper = hs.fltv_helper;
 
-  uint64_t phys = b->phys;
-  if (b->n_instr == 0 || phys + (uint64_t)b->n_instr * 4 > dram_size)
-    return;
-  const uint32_t *words = (const uint32_t *)(dram + phys); // x86 LE == Alpha LE
-
-  // PALmode blocks (PC bit 0) remap R4-7/R20-23 to the shadow bank (see RREG);
-  // reg() applies it.
-  const bool pal_block = (b->tag & 1) != 0;
-
-  // Stop at the 8 KB page boundary: past it the next instruction's physical
-  // address need not be phys+4 (the next virtual page maps elsewhere), so
-  // words[] there would be the wrong instructions. (The page-crossing case
-  // verify caught.)
-  const uint64_t page_end = (phys & ~(uint64_t)0x1FFF) + 0x2000;
-  uint32_t plen = 0;
-  bool terminator_branch =
-      false; // last instruction is a compiled terminator (sets its own PC)
-  bool terminator_jmp =
-      false; // ...and it's a computed jump (don't chain: targets vary)
-  while (plen < b->n_instr && plen < 64 &&
-         (phys + (uint64_t)plen * 4) < page_end) {
-    SafeOp sop = classify(words[plen], pal_block);
-    if (sop == OP_NONE) { // uncompilable op ends the straight-line prefix
-#ifdef JIT_STATS
-      const uint32_t bop = words[plen] >> 26;
-      m_term_op[bop]++; // tally what cut this block (the coverage gap to chase)
-      if (bop == 0x00)  // CALL_PAL: also tally the function code (low 8 bits)
-        m_pal_func[words[plen] & 0xFF]++;
-      else if (bop == 0x1d) // HW_MTPR: tally the IPR index -- which writes
-                            // break blocks
-        m_mtpr_func[(words[plen] >> 8) & 0xFF]++;
-      else if (bop == 0x1b) // HW_LD: tally the form (phys/virt/lock/vpte/chk,
-                            // ins[15:12])
-        m_hwld_func[(words[plen] >> 12) & 0xF]++;
-      else if (bop == 0x18) // MISC: tally the Ra==31 form (ins[15:12]: 0xc RPCC
-                            // / 0xe RC / 0xf RS)
-        m_misc_func[(words[plen] >> 12) & 0xF]++;
-      // Punch list: one-shot print of the first ACTIONABLE breaker -- skip the
-      // opcodes whose compilable subset is already settled, so it points at the
-      // next NEW target rather than a decided one: 0x00 CALL_PAL (terminator),
-      // 0x1b HW_LD / 0x1f HW_ST (physical done; conditional/virtual forms
-      // side-effecting), 0x1d HW_MTPR (pure-store IPRs done; rest
-      // side-effecting), 0x10 INTA + 0x13 INTM (non-trapping ops done; only /V
-      // overflow-trap variants left), 0x18 MISC (barriers/hints + RPCC/RC/RS
-      // via log/replay done; only the rare Ra==31 RC/RS forms interpret), 0x14
-      // ITFP (ITOF* moves done; SQRT* = the deferred FP-math class:
-      // FPCR/rounding/traps), 0x17 FLTL (non-arithmetic done; only CVTQL/V trap
-      // variants left). JMP (0x1a) + HW_RET (0x1e) are now compiled+chained.
-      // Stats count all.
-      if (!m_first_breaker_logged && bop != 0x00 && bop != 0x1b &&
-          bop != 0x1d && bop != 0x1f && bop != 0x10 && bop != 0x18 &&
-          bop != 0x13 && bop != 0x14 && bop != 0x17) {
-        m_first_breaker_logged = true;
-        printf(
-            "[JIT][PUNCH][CPU%d] first unhandled breaker: %s(0x%02x) ins=%08x "
-            "at pc=%016llx%s\n",
-            m_cpu_id, opcode_name(bop), bop, words[plen],
-            (unsigned long long)((b->tag & ~(uint64_t)1) + (uint64_t)plen * 4),
-            pal_block ? "  [PALmode]" : "");
-      }
-#endif
-      break;
-    }
-    plen++;
-    if (is_terminator(sop)) { // branch or computed jump ends the block
-      terminator_branch = true;
-      if (sop == OP_JMP || sop == OP_HW_RET)
-        terminator_jmp = true;
-      break;
-    }
-  }
-
-  if (plen == 0)
-    return;
-#ifdef JIT_REGPROF
-  b->rp_mask = regprof_mask(
-      words, plen); // GPR-access fingerprint; exec-weighted at report time
-#endif
-
-  // Emit  uint32_t fn(CAlphaCPU* cpu, uint64_t* regs)  (Win64: cpu=RCX,
-  // regs=RDX). Keep cpu in RBP and regs in RBX (callee-saved, so they survive
-  // helper calls); reserve a 40-byte frame (32 shadow + 8 load-out slot) that
-  // keeps RSP 16-aligned for calls. RAX = op1/result, RCX = operand2 (CL for
-  // variable shifts).
-  CodeHolder code;
-  if (code.init(((JitRuntime *)m_rt)->environment()) != Error::kOk)
-    return;
-#ifdef JIT_DISASM
-  // Dev: capture this block's disassembly, validate each emitted instruction,
-  // and trap any emit failure (dumped + bailed near rt->add() below). Logging
-  // formats every instruction.
-  StringLogger logger;
-  code.set_logger(&logger);
-  JitErrorHandler eh;
-  eh.cpu_id = m_cpu_id;
-  eh.fp = m_disasm_fp;
-  code.set_error_handler(&eh);
-#endif
-  x86::Assembler a(&code);
-#ifdef JIT_DISASM
-  a.add_diagnostic_options(DiagnosticOptions::kValidateAssembler);
-#endif
-
-  // Host integer-argument registers:
-  // Win64 {rcx,rdx,r8,r9}; System V {rdi,rsi,rdx,rcx}. aq(i)/ad(i) = the i
-  // argument as a 64-/32-bit register; emit_call (below) marshals into them,
-  // replacing out usage of #ifdef _WIN32. Helpers limited to <= 4 integer
-  // arguments.
-  CallConv cc;
-  (void)cc.init(CallConvId::kCDecl, ((JitRuntime *)m_rt)->environment());
-  const uint8_t *gpa = cc.passed_order(RegGroup::kGp);
-  auto aq = [&](int i) { return x86::gpq(gpa[i]); };
-  auto ad = [&](int i) { return x86::gpd(gpa[i]); };
-  // cpu (RBP), regs (RBX), the chain counter (R14) and the basic Alpha-GPR pins
-  // (R12/R13/R15) all hold live values across helper calls, so they must be
-  // callee-saved under the host ABI. Verified at dev time (compiled out in
-  // NDEBUG builds).
-  [[maybe_unused]] const uint32_t kPinnedGp =
-      (1u << x86::rbp.id()) | (1u << x86::rbx.id()) | (1u << x86::r14.id()) |
-      (1u << x86::r12.id()) | (1u << x86::r13.id()) | (1u << x86::r15.id());
-  assert((((uint32_t)cc.preserved_regs(RegGroup::kGp)) & kPinnedGp) ==
-         kPinnedGp);
-
-  a.push(x86::rbx);
-  a.push(x86::rbp);
-  a.push(x86::r14); // callee-saved: accumulates the chain's instruction count
-  a.push(x86::r12); // callee-saved: pin for Alpha R26 (RA)
-  a.push(x86::r13); // callee-saved: pin for Alpha R16 (a0)
-  a.push(x86::r15); // callee-saved: pin for Alpha R27 (PV)
-  a.sub(x86::rsp, imm(40)); // 32 shadow + load-out slot; 6 pushes -> 40 keeps
-                            // RSP 16-aligned at calls
-  a.mov(x86::rbp, aq(0));   // cpu  (arg 0)
-  a.mov(x86::rbx, aq(1));   // regs (arg 1)
-  a.xor_(x86::r14d, x86::r14d); // instruction count := 0
-  // Load the global pins from regs[] on cold entry. Chained re-entry jumps to
-  // `body` below, skipping this -- the pins stay live in x86 across the whole
-  // chain, synced back at `done`.
-  a.mov(x86::r12, x86::qword_ptr(x86::rbx, 26 * 8)); // R26 (RA)
-  a.mov(x86::r13, x86::qword_ptr(x86::rbx, 16 * 8)); // R16 (a0)
-  a.mov(x86::r15, x86::qword_ptr(x86::rbx, 27 * 8)); // R27 (PV)
-
-  Label done =
-      a.new_label(); // shared exit: restore frame + ret (EAX preset by caller)
-  Label body =
-      a.new_label(); // chained re-entry (after the prologue; preserves R14)
-  a.bind(body);
-  const size_t body_off =
-      code.code_size(); // byte offset of the chained entry from fn
-#ifdef JIT_REGPROF
-  a.mov(x86::rax,
-        imm((uint64_t)&b->rp_hits)); // REGPROF: count every execution (cold
-                                     // entry + chained re-entry)
-  a.inc(x86::qword_ptr(
-      x86::rax)); // RAX is dead at body entry -- the first op reloads it
-#endif
-
-  // The compiled block computes its own next PC into state.pc at every exit
-  // (the foundation for branch compilation and block linking). R10 is scratch
-  // here.
+  auto aq = [&](int k) { return x86::gpq(gpa[k]); };
+  auto ad = [&](int k) { return x86::gpd(gpa[k]); };
   auto set_pc = [&](uint64_t pc_val) {
     a.mov(x86::r10, imm(pc_val));
     a.mov(x86::qword_ptr(x86::rbp, m_off.state_pc), x86::r10);
   };
-
-  // basic global register pins (JIT_REGPROF data: R26=RA, R16=a0, R27=PV
-  // dominate the call-heavy hot path). Each maps to a callee-saved x86 reg free
-  // under both Win64 and SysV (R12/R13/R15; see kPinnedGp). pin_id(r) -> the
-  // x86 reg id, or -1 if r isn't pinned. Returning -1 for all (the kill-switch)
-  // reverts every access site to the regs[] memory path.
-  auto pin_id = [&](int r) -> int {
-    switch (r) {
-    case 26:
-      return (int)x86::r12.id();
-    case 16:
-      return (int)x86::r13.id();
-    case 27:
-      return (int)x86::r15.id();
-    default:
-      return -1;
-    }
+  auto pin_id = [&](int r)
+      -> int { // r -> its bound host reg id, or -1 = the state.r[] memory slot
+    return regalloc.host_of(r);
   };
 
-  for (uint32_t i = 0; i < plen; ++i) {
-    uint32_t ins = words[i];
-    SafeOp op = classify(ins, pal_block);
-    int ra = (ins >> 21) & 0x1F;
-    int rb = (ins >> 16) & 0x1F;
-    int rc = ins & 0x1F;
-    bool islit = ((ins >> 12) & 1) != 0;
-    uint32_t lit = (ins >> 13) & 0xFF;
+  int ra = (ins >> 21) & 0x1F;
+  int rb = (ins >> 16) & 0x1F;
+  int rc = ins & 0x1F;
+  bool islit = ((ins >> 12) & 1) != 0;
+  uint32_t lit = (ins >> 13) & 0xFF;
+  SafeOp op = classify(ins, pal_block);
 
+  do {
     // MISC (0x18) barriers/hints: emit an mfence for TRAPB/EXCB/MB/WMB (x86's
     // seq_cst fence, to preserve the guest's MP memory ordering, matching
     // DO_*'s atomic_thread_fence), nothing for the prefetch/cache hints -- then
@@ -1228,6 +1243,12 @@ void CJitEngine::compile_block(
       a.mfence();
       continue;
     }
+
+    // Value-forwarding: rax may still hold the guest reg the previous op
+    // computed. Capture that for op1_rax's reuse, then default-invalidate; only
+    // mov_to_reg(_, rax) below re-marks what rax holds.
+    const int prev_rax = regalloc.rax_holds;
+    regalloc.rax_holds = -1;
 
     auto reg = [&](int r) {
       // PALshadow (RREG, AlphaCPU.h): in a PALmode block with SDE set, R4-7 and
@@ -1266,8 +1287,12 @@ void CJitEngine::compile_block(
         a.mov(x86::gpq((uint32_t)p), src);
       else
         a.mov(reg(r), src);
+      if (src.id() == x86::rax.id() && r != 31)
+        regalloc.rax_holds = r; // rax now mirrors r[r]; forward it
     };
     auto op1_rax = [&]() {
+      if (ra != 31 && prev_rax == ra)
+        return; // value-forward: rax already holds Ra (prev op's result)
       if (ra == 31)
         a.xor_(x86::eax, x86::eax);
       else
@@ -1280,6 +1305,24 @@ void CJitEngine::compile_block(
         a.xor_(x86::ecx, x86::ecx);
       else
         mov_from_reg(x86::rcx, rb);
+    };
+    // op2 as a DIRECT ALU source, folding away the mov-to-rcx: literal imm, R31
+    // -> 0, a pinned host reg, or the regs[] memory slot -- all valid `OP rax,
+    // <src>` sources. emit_alu2 uses it for the simple accumulate-into-rax ops
+    // (rax stays the dest, so no aliasing concern).
+    auto op2op = [&]() -> Operand {
+      if (islit)
+        return imm(lit);
+      if (rb == 31)
+        return imm(0);
+      int p = pin_id(rb);
+      if (p >= 0)
+        return x86::gpq((uint32_t)p);
+      return reg(rb);
+    };
+    auto emit_alu2 = [&](uint32_t instId) {
+      op1_rax();
+      a.emit(instId, x86::rax, op2op());
     };
 
     // ABI-native helper call.
@@ -1384,7 +1427,8 @@ void CJitEngine::compile_block(
         a.jz(ok);
         set_pc(b->tag + 4 * (uint64_t)i); // resume at the faulting load
         a.mov(x86::eax, imm(i));          // this iteration: i instrs done
-        a.add(x86::eax, x86::r14d);       // + earlier chained iterations
+        a.add(x86::eax,
+              x86::dword_ptr(x86::rsp, 40)); // + earlier chained iterations
         a.jmp(done);
         a.bind(ok);
         if (op == OP_LDQ || op == OP_LDQ_U)
@@ -1487,7 +1531,8 @@ void CJitEngine::compile_block(
         a.jz(ok);
         set_pc(b->tag + 4 * (uint64_t)i); // resume at the faulting store
         a.mov(x86::eax, imm(i));          // this iteration: i instrs done
-        a.add(x86::eax, x86::r14d);       // + earlier chained iterations
+        a.add(x86::eax,
+              x86::dword_ptr(x86::rsp, 40)); // + earlier chained iterations
         a.jmp(done);
         a.bind(ok);
       };
@@ -1593,7 +1638,7 @@ void CJitEngine::compile_block(
         a.jz(ok);
         set_pc(b->tag + 4 * (uint64_t)i); // resume at the faulting FP mem op
         a.mov(x86::eax, imm(i));
-        a.add(x86::eax, x86::r14d);
+        a.add(x86::eax, x86::dword_ptr(x86::rsp, 40));
         a.jmp(done);
         a.bind(ok);
       };
@@ -1680,7 +1725,7 @@ void CJitEngine::compile_block(
       a.jz(nobail);
       set_pc(b->tag + 4 * (uint64_t)i); // resume at the faulting STx_C
       a.mov(x86::eax, imm(i));
-      a.add(x86::eax, x86::r14d);
+      a.add(x86::eax, x86::dword_ptr(x86::rsp, 40));
       a.jmp(done);
       a.bind(nobail);
       mov_to_reg(ra, x86::rax); // Ra = success(1) / fail(0)
@@ -1691,12 +1736,13 @@ void CJitEngine::compile_block(
     // translation. jit_read_phys does the aligned DRAM read (or replays in
     // verify, bails on MMIO so the interpreter does the ordered device read).
     // disp is 12-bit here, not the 16-bit memory-format displacement.
-    if (op == OP_HW_LDL || op == OP_HW_LDQ || op == OP_HW_LDQ_VPTE) {
+    if (op == OP_HW_LDL || op == OP_HW_LDQ || op == OP_HW_LDQ_VPTE ||
+        op == OP_HW_LDL_WCHK) {
       if (ra == 31)
         continue; // R31 dest discards the read
       const int disp =
           (int)((int32_t)(ins << 20) >> 20); // sign-extend 12-bit displacement
-      const int size_bits = (op == OP_HW_LDL) ? 32 : 64;
+      const int size_bits = (op == OP_HW_LDL || op == OP_HW_LDL_WCHK) ? 32 : 64;
       if (rb == 31)
         a.mov(x86::rdx,
               imm(disp)); // address (phys, or virtual for VPTE) -> RDX
@@ -1707,7 +1753,9 @@ void CJitEngine::compile_block(
       }
       // func 5 -> jit_read_vpte (kernel-checked virtual read); else
       // jit_read_phys
-      emit_call(op == OP_HW_LDQ_VPTE ? read_vpte_helper : hw_ld_helper,
+      emit_call(op == OP_HW_LDQ_VPTE   ? read_vpte_helper
+                : op == OP_HW_LDL_WCHK ? read_wchk_helper
+                                       : hw_ld_helper,
                 {{JA_CPU, 0},
                  {JA_VA, 0},
                  {JA_I32, (uint64_t)size_bits},
@@ -1717,14 +1765,15 @@ void CJitEngine::compile_block(
       a.jz(ok);
       set_pc(b->tag + 4 * (uint64_t)i); // resume at the faulting HW_LD
       a.mov(x86::eax, imm(i));          // this iteration: i instrs done
-      a.add(x86::eax, x86::r14d);       // + earlier chained iterations
+      a.add(x86::eax,
+            x86::dword_ptr(x86::rsp, 40)); // + earlier chained iterations
       a.jmp(done);
       a.bind(ok);
       // HW_LDL SIGN-extends the longword to canonical form (QEMU gen_hw_ld uses
       // MO_LESL; the EV68CB HRM is silent but the Alpha longword-canonical rule
       // applies, same as LDL). NOTE: the interp's DO_HW_LDL zero-extends --
       // that is the bug, fixed in cpu_pal.h to match this.
-      if (op == OP_HW_LDL)
+      if (op == OP_HW_LDL || op == OP_HW_LDL_WCHK)
         a.movsxd(x86::rax, x86::dword_ptr(x86::rsp, 32));
       else
         a.mov(x86::rax,
@@ -1755,7 +1804,7 @@ void CJitEngine::compile_block(
       a.jz(ok);
       set_pc(b->tag + 4 * (uint64_t)i); // resume at the faulting LDx_L
       a.mov(x86::eax, imm(i));
-      a.add(x86::eax, x86::r14d);
+      a.add(x86::eax, x86::dword_ptr(x86::rsp, 40));
       a.jmp(done);
       a.bind(ok);
       a.mov(x86::rax,
@@ -1818,7 +1867,7 @@ void CJitEngine::compile_block(
       a.jz(ok);
       set_pc(b->tag + 4 * (uint64_t)i); // resume at the faulting HW_ST
       a.mov(x86::eax, imm(i));
-      a.add(x86::eax, x86::r14d);
+      a.add(x86::eax, x86::dword_ptr(x86::rsp, 40));
       a.jmp(done);
       a.bind(ok);
       continue;
@@ -1896,7 +1945,7 @@ void CJitEngine::compile_block(
       set_pc(b->tag +
              4 * (uint64_t)i); // FEN trap: resume here in the interpreter
       a.mov(x86::eax, imm(i));
-      a.add(x86::eax, x86::r14d);
+      a.add(x86::eax, x86::dword_ptr(x86::rsp, 40));
       a.jmp(done);
       a.bind(ok);
       continue;
@@ -1915,7 +1964,7 @@ void CJitEngine::compile_block(
       set_pc(b->tag +
              4 * (uint64_t)i); // FEN trap: resume here in the interpreter
       a.mov(x86::eax, imm(i));
-      a.add(x86::eax, x86::r14d);
+      a.add(x86::eax, x86::dword_ptr(x86::rsp, 40));
       a.jmp(done);
       a.bind(ok);
       a.mov(x86::rax, x86::qword_ptr(x86::rsp, 32));
@@ -1971,7 +2020,7 @@ void CJitEngine::compile_block(
       set_pc(b->tag +
              4 * (uint64_t)i); // resume this instruction in the interpreter
       a.mov(x86::eax, imm(i));
-      a.add(x86::eax, x86::r14d);
+      a.add(x86::eax, x86::dword_ptr(x86::rsp, 40));
       a.jmp(done);
       a.bind(cont);
       continue;
@@ -2045,7 +2094,7 @@ void CJitEngine::compile_block(
       a.bind(bail);
       set_pc(b->tag + 4 * (uint64_t)i);
       a.mov(x86::eax, imm(i));
-      a.add(x86::eax, x86::r14d);
+      a.add(x86::eax, x86::dword_ptr(x86::rsp, 40));
       a.jmp(done);
       a.bind(cont);
       continue;
@@ -2106,7 +2155,7 @@ void CJitEngine::compile_block(
       a.bind(bail);
       set_pc(b->tag + 4 * (uint64_t)i);
       a.mov(x86::eax, imm(i));
-      a.add(x86::eax, x86::r14d);
+      a.add(x86::eax, x86::dword_ptr(x86::rsp, 40));
       a.jmp(done);
       a.bind(cont);
       continue;
@@ -2174,7 +2223,7 @@ void CJitEngine::compile_block(
       a.bind(bail);
       set_pc(b->tag + 4 * (uint64_t)i);
       a.mov(x86::eax, imm(i));
-      a.add(x86::eax, x86::r14d);
+      a.add(x86::eax, x86::dword_ptr(x86::rsp, 40));
       a.jmp(done);
       a.bind(cont);
       continue;
@@ -2206,7 +2255,7 @@ void CJitEngine::compile_block(
       a.bind(bail);
       set_pc(b->tag + 4 * (uint64_t)i);
       a.mov(x86::eax, imm(i));
-      a.add(x86::eax, x86::r14d);
+      a.add(x86::eax, x86::dword_ptr(x86::rsp, 40));
       a.jmp(done);
       a.bind(cont);
       continue;
@@ -2249,7 +2298,7 @@ void CJitEngine::compile_block(
       a.bind(bail);
       set_pc(b->tag + 4 * (uint64_t)i);
       a.mov(x86::eax, imm(i));
-      a.add(x86::eax, x86::r14d);
+      a.add(x86::eax, x86::dword_ptr(x86::rsp, 40));
       a.jmp(done);
       a.bind(cont);
       continue;
@@ -2289,7 +2338,7 @@ void CJitEngine::compile_block(
       a.bind(bail);
       set_pc(b->tag + 4 * (uint64_t)i);
       a.mov(x86::eax, imm(i));
-      a.add(x86::eax, x86::r14d);
+      a.add(x86::eax, x86::dword_ptr(x86::rsp, 40));
       a.jmp(done);
       a.bind(cont);
       continue;
@@ -2342,7 +2391,7 @@ void CJitEngine::compile_block(
       a.bind(bail);
       set_pc(b->tag + 4 * (uint64_t)i);
       a.mov(x86::eax, imm(i));
-      a.add(x86::eax, x86::r14d);
+      a.add(x86::eax, x86::dword_ptr(x86::rsp, 40));
       a.jmp(done);
       a.bind(cont);
       continue;
@@ -2359,7 +2408,7 @@ void CJitEngine::compile_block(
       set_pc(b->tag +
              4 * (uint64_t)i); // FEN trap: resume here in the interpreter
       a.mov(x86::eax, imm(i));
-      a.add(x86::eax, x86::r14d);
+      a.add(x86::eax, x86::dword_ptr(x86::rsp, 40));
       a.jmp(done);
       a.bind(ok);
       continue;
@@ -2380,11 +2429,11 @@ void CJitEngine::compile_block(
       set_pc(b->tag +
              4 * (uint64_t)i); // 1: FEN trap (op not run) -> resume this instr
       a.mov(x86::eax, imm(i));
-      a.add(x86::eax, x86::r14d);
+      a.add(x86::eax, x86::dword_ptr(x86::rsp, 40));
       a.jmp(done);
       a.bind(trapped); // op ran then diverted: count it, keep state.pc
       a.mov(x86::eax, imm(i + 1));
-      a.add(x86::eax, x86::r14d);
+      a.add(x86::eax, x86::dword_ptr(x86::rsp, 40));
       a.jmp(done);
       a.bind(ok);
       continue;
@@ -2445,9 +2494,9 @@ void CJitEngine::compile_block(
             opcdec_helper,
             {{JA_CPU, 0},
              {JA_I64, cpc}}); // jit_opcdec: sets state.pc/exc_addr, clears lock
-        a.add(x86::r14d,
-              imm(plen)); // count the block; helper already wrote state.pc
-        a.mov(x86::eax, x86::r14d);
+        a.add(x86::qword_ptr(x86::rsp, 40),
+              imm(i + 1)); // count the block; helper already wrote state.pc
+        a.mov(x86::eax, x86::dword_ptr(x86::rsp, 40));
         a.jmp(done); // trap path exits (does not chain)
       }
       a.bind(do_vector);
@@ -2523,7 +2572,7 @@ void CJitEngine::compile_block(
       set_pc(b->tag +
              4 * (uint64_t)i); // resume this instruction in the interpreter
       a.mov(x86::eax, imm(i));
-      a.add(x86::eax, x86::r14d);
+      a.add(x86::eax, x86::dword_ptr(x86::rsp, 40));
       a.jmp(done);
       a.bind(cont);
       continue;
@@ -2733,29 +2782,19 @@ void CJitEngine::compile_block(
 
     switch (op) {
     case OP_ADDQ:
-      op1_rax();
-      op2_rcx();
-      a.add(x86::rax, x86::rcx);
+      emit_alu2(x86::Inst::kIdAdd);
       break;
     case OP_SUBQ:
-      op1_rax();
-      op2_rcx();
-      a.sub(x86::rax, x86::rcx);
+      emit_alu2(x86::Inst::kIdSub);
       break;
     case OP_AND:
-      op1_rax();
-      op2_rcx();
-      a.and_(x86::rax, x86::rcx);
+      emit_alu2(x86::Inst::kIdAnd);
       break;
     case OP_BIS:
-      op1_rax();
-      op2_rcx();
-      a.or_(x86::rax, x86::rcx);
+      emit_alu2(x86::Inst::kIdOr);
       break;
     case OP_XOR:
-      op1_rax();
-      op2_rcx();
-      a.xor_(x86::rax, x86::rcx);
+      emit_alu2(x86::Inst::kIdXor);
       break;
     case OP_BIC:
       op1_rax();
@@ -2978,14 +3017,239 @@ void CJitEngine::compile_block(
 
     if (rc != 31)
       mov_to_reg(rc, x86::rax);
+  } while (0);
+}
+
+void CJitEngine::compile_block(
+    JitBlock *b, const uint8_t *dram, uint64_t dram_size, void *read_helper,
+    void *write_helper, void *opcdec_helper, void *hw_mfpr_helper,
+    void *hw_ld_helper, void *hw_mtpr_helper, void *hw_st_helper,
+    void *indirect_helper, void *read_locked_helper, void *stc_helper,
+    void *misc_helper, void *read_vpte_helper, void *read_wchk_helper,
+    void *itof_helper, void *ftoi_helper, void *fltl_helper,
+    void *fp_read_helper, void *fp_write_helper, void *fltv_helper) {
+  using namespace asmjit;
+  // Reclaim must self-trigger here, NOT only in flush(): flush() runs when the
+  // guest executes IMB/IC_FLUSH, and a compute-heavy phase can go minutes
+  // without one while recompiles keep allocating -- code memory grew unbounded
+  // (multi-GB). Safe: we're in this CPU's cold path.
+  if (m_rt && m_code_bytes >= kReclaimBytes) {
+    reclaim_code();
+    b->valid =
+        true; // b was just (re)validated by record(); restore it after the wipe
   }
-  // Epilogue. Count this block's instructions, then chain into the next block
-  // (staying in native code) or return to the dispatcher.
+  b->compiled = true;
+
+  uint64_t phys = b->phys;
+  if (b->n_instr == 0 || phys + (uint64_t)b->n_instr * 4 > dram_size)
+    return;
+  const uint32_t *words = (const uint32_t *)(dram + phys); // x86 LE == Alpha LE
+
+  // PALmode blocks (PC bit 0) remap R4-7/R20-23 to the shadow bank (see RREG);
+  // reg() applies it.
+  const bool pal_block = (b->tag & 1) != 0;
+
+  // Stop at the 8 KB page boundary: past it the next instruction's physical
+  // address need not be phys+4 (the next virtual page maps elsewhere), so
+  // words[] there would be the wrong instructions. (The page-crossing case
+  // verify caught.)
+  const uint64_t page_end = (phys & ~(uint64_t)0x1FFF) + 0x2000;
+  uint32_t plen = 0;
+  bool terminator_branch =
+      false; // last instruction is a compiled terminator (sets its own PC)
+  bool terminator_jmp =
+      false; // ...and it's a computed jump (don't chain: targets vary)
+  while (plen < b->n_instr && plen < 64 &&
+         (phys + (uint64_t)plen * 4) < page_end) {
+    SafeOp sop = classify(words[plen], pal_block);
+    if (sop == OP_NONE) { // uncompilable op ends the straight-line prefix
+#ifdef JIT_STATS
+      const uint32_t bop = words[plen] >> 26;
+      m_term_op[bop]++; // tally what cut this block (the coverage gap to chase)
+      if (bop == 0x00)  // CALL_PAL: also tally the function code (low 8 bits)
+        m_pal_func[words[plen] & 0xFF]++;
+      else if (bop == 0x1d) // HW_MTPR: tally the IPR index -- which writes
+                            // break blocks
+        m_mtpr_func[(words[plen] >> 8) & 0xFF]++;
+      else if (bop == 0x1b) // HW_LD: tally the form (phys/virt/lock/vpte/chk,
+                            // ins[15:12])
+        m_hwld_func[(words[plen] >> 12) & 0xF]++;
+      else if (bop == 0x18) // MISC: tally the Ra==31 form (ins[15:12]: 0xc RPCC
+                            // / 0xe RC / 0xf RS)
+        m_misc_func[(words[plen] >> 12) & 0xF]++;
+      // Punch list: one-shot print of the first ACTIONABLE breaker -- skip the
+      // opcodes whose compilable subset is already settled, so it points at the
+      // next NEW target rather than a decided one: 0x00 CALL_PAL (terminator),
+      // 0x1b HW_LD / 0x1f HW_ST (physical done; conditional/virtual forms
+      // side-effecting), 0x1d HW_MTPR (pure-store IPRs done; rest
+      // side-effecting), 0x10 INTA + 0x13 INTM (non-trapping ops done; only /V
+      // overflow-trap variants left), 0x18 MISC (barriers/hints + RPCC/RC/RS
+      // via log/replay done; only the rare Ra==31 RC/RS forms interpret), 0x14
+      // ITFP (ITOF* moves done; SQRT* = the deferred FP-math class:
+      // FPCR/rounding/traps), 0x17 FLTL (non-arithmetic done; only CVTQL/V trap
+      // variants left). JMP (0x1a) + HW_RET (0x1e) are now compiled+chained.
+      // Stats count all.
+      if (!m_first_breaker_logged && bop != 0x00 && bop != 0x1b &&
+          bop != 0x1d && bop != 0x1f && bop != 0x10 && bop != 0x18 &&
+          bop != 0x13 && bop != 0x14 && bop != 0x17) {
+        m_first_breaker_logged = true;
+        printf(
+            "[JIT][PUNCH][CPU%d] first unhandled breaker: %s(0x%02x) ins=%08x "
+            "at pc=%016llx%s\n",
+            m_cpu_id, opcode_name(bop), bop, words[plen],
+            (unsigned long long)((b->tag & ~(uint64_t)1) + (uint64_t)plen * 4),
+            pal_block ? "  [PALmode]" : "");
+      }
+#endif
+      break;
+    }
+    plen++;
+    if (is_terminator(sop)) { // branch or computed jump ends the block
+      terminator_branch = true;
+      if (sop == OP_JMP || sop == OP_HW_RET)
+        terminator_jmp = true;
+      break;
+    }
+  }
+
+  if (plen == 0)
+    return;
+#ifdef JIT_REGPROF
+  b->rp_mask = regprof_mask(
+      words, plen); // GPR-access fingerprint; exec-weighted at report time
+#endif
+
+  // Emit  uint32_t fn(CAlphaCPU* cpu, uint64_t* regs)  (Win64: cpu=RCX,
+  // regs=RDX). Keep cpu in RBP and regs in RBX (callee-saved, so they survive
+  // helper calls); reserve a 40-byte frame (32 shadow + 8 load-out slot) that
+  // keeps RSP 16-aligned for calls. RAX = op1/result, RCX = operand2 (CL for
+  // variable shifts).
+  CodeHolder code;
+  if (code.init(((JitRuntime *)m_rt)->environment()) != Error::kOk)
+    return;
+#ifdef JIT_DISASM
+  // Dev: capture this block's disassembly, validate each emitted instruction,
+  // and trap any emit failure (dumped + bailed near rt->add() below). Logging
+  // formats every instruction.
+  StringLogger logger;
+  code.set_logger(&logger);
+  JitErrorHandler eh;
+  eh.cpu_id = m_cpu_id;
+  eh.fp = m_disasm_fp;
+  code.set_error_handler(&eh);
+#endif
+  x86::Assembler a(&code);
+#ifdef JIT_DISASM
+  a.add_diagnostic_options(DiagnosticOptions::kValidateAssembler);
+#endif
+
+  // Host integer-argument registers:
+  // Win64 {rcx,rdx,r8,r9}; System V {rdi,rsi,rdx,rcx}. aq(i)/ad(i) = the i
+  // argument as a 64-/32-bit register; emit_call (below) marshals into them,
+  // replacing out usage of #ifdef _WIN32. Helpers limited to <= 4 integer
+  // arguments.
+  CallConv cc;
+  (void)cc.init(CallConvId::kCDecl, ((JitRuntime *)m_rt)->environment());
+  const uint8_t *gpa = cc.passed_order(RegGroup::kGp);
+  auto aq = [&](int i) { return x86::gpq(gpa[i]); };
+  auto ad = [&](int i) { return x86::gpd(gpa[i]); };
+  // cpu (RBP), regs (RBX), the chain counter (R14) and the basic Alpha-GPR pins
+  // (R12/R13/R15) all hold live values across helper calls, so they must be
+  // callee-saved under the host ABI. Verified at dev time (compiled out in
+  // NDEBUG builds).
+  [[maybe_unused]] const uint32_t kPinnedGp =
+      (1u << x86::rbp.id()) | (1u << x86::rbx.id()) | (1u << x86::r14.id()) |
+      (1u << x86::r12.id()) | (1u << x86::r13.id()) | (1u << x86::r15.id());
+  assert((((uint32_t)cc.preserved_regs(RegGroup::kGp)) & kPinnedGp) ==
+         kPinnedGp);
+
+  a.push(x86::rbx);
+  a.push(x86::rbp);
+  a.push(x86::r14); // callee-saved: now a pin for Alpha R30 (SP); chain count
+                    // moved to [rsp+40]
+  a.push(x86::r12); // callee-saved: pin for Alpha R26 (RA)
+  a.push(x86::r13); // callee-saved: pin for Alpha R16 (a0)
+  a.push(x86::r15); // callee-saved: pin for Alpha R27 (PV)
+#ifdef _WIN32
+  a.push(x86::rsi); // callee-saved on Win64: pin for Alpha R29 (GP)
+  a.push(x86::rdi); // callee-saved on Win64: pin for Alpha R0 (v0)
+#endif
+  a.sub(x86::rsp, imm(56)); // 32 shadow + out slot + chain-count slot [rsp+40];
+                            // 6/8 pushes -> 56 keeps RSP 16-aligned
+  a.mov(x86::rbp, aq(0));   // cpu  (arg 0)
+  a.mov(x86::rbx, aq(1));   // regs (arg 1)
+  a.mov(x86::qword_ptr(x86::rsp, 40),
+        imm(0)); // chain instruction count := 0 (reclaimed r14 -> stack slot)
+  // Load the global pins from regs[] on cold entry. Chained re-entry jumps to
+  // `body` below, skipping this -- the pins stay live in x86 across the whole
+  // chain, synced back at `done`.
+  a.mov(x86::r12, x86::qword_ptr(x86::rbx, 26 * 8)); // R26 (RA)
+  a.mov(x86::r13, x86::qword_ptr(x86::rbx, 16 * 8)); // R16 (a0)
+  a.mov(x86::r15, x86::qword_ptr(x86::rbx, 27 * 8)); // R27 (PV)
+  a.mov(x86::r14,
+        x86::qword_ptr(x86::rbx, 30 * 8)); // R30 (SP) -- reclaimed r14
+#ifdef _WIN32
+  a.mov(x86::rsi, x86::qword_ptr(x86::rbx, 29 * 8)); // R29 (GP)
+  a.mov(x86::rdi, x86::qword_ptr(x86::rbx, 0 * 8));  // R0 (v0)
+#endif
+
+  Label done =
+      a.new_label(); // shared exit: restore frame + ret (EAX preset by caller)
+  Label body =
+      a.new_label(); // chained re-entry (after the prologue; preserves R14)
+  a.bind(body);
+  const size_t body_off =
+      code.code_size(); // byte offset of the chained entry from fn
+#ifdef JIT_REGPROF
+  a.mov(x86::rax,
+        imm((uint64_t)&b->rp_hits)); // REGPROF: count every execution (cold
+                                     // entry + chained re-entry)
+  a.inc(x86::qword_ptr(
+      x86::rax)); // RAX is dead at body entry -- the first op reloads it
+#endif
+
+  // The compiled block computes its own next PC into state.pc at every exit
+  // (the foundation for branch compilation and block linking). R10 is scratch
+  // here.
+  auto set_pc = [&](uint64_t pc_val) {
+    a.mov(x86::r10, imm(pc_val));
+    a.mov(x86::qword_ptr(x86::rbp, m_off.state_pc), x86::r10);
+  };
+
+  // Block register allocator: the 3 global pins (R26/R16/R27 -> r12/r13/r15,
+  // callee-saved, live across the chain) are the static binding today. Dynamic
+  // next.
+  RegAlloc ra;
+  for (int r = 0; r < 32; ++r)
+    ra.host[r] = -1;
+  ra.rax_holds = -1;
+  ra.host[kGlobalPins[0]] = (int)x86::r12.id();
+  ra.host[kGlobalPins[1]] = (int)x86::r13.id();
+  ra.host[kGlobalPins[2]] = (int)x86::r15.id();
+  ra.host[30] = (int)x86::r14.id(); // SP (reclaimed r14), all platforms
+#ifdef _WIN32
+  ra.host[29] = (int)x86::rsi.id(); // GP (Win64)
+  ra.host[0] = (int)x86::rdi.id();  // v0 (Win64)
+#endif
+
+  const HelperSet hs = {
+      read_helper,        write_helper,    opcdec_helper, hw_mfpr_helper,
+      hw_ld_helper,       hw_mtpr_helper,  hw_st_helper,  indirect_helper,
+      read_locked_helper, stc_helper,      misc_helper,   read_vpte_helper,
+      read_wchk_helper,   itof_helper,     ftoi_helper,   fltl_helper,
+      fp_read_helper,     fp_write_helper, fltv_helper};
+
+  for (uint32_t i = 0; i < plen; ++i)
+    emit_op(&a, gpa, &done, hs, pal_block, b, words[i], i, ra);
+
+    // Epilogue. Count this block's instructions, then chain into the next block
+    // (staying in native code) or return to the dispatcher.
 #ifndef JIT_VERIFY
   // Gate the chain: stop if we've hit the budget ceiling or an interrupt/timer
   // is pending
   auto emit_gate = [&](Label &lbl) {
-    a.cmp(x86::r14, x86::qword_ptr(x86::rbp, m_off.jit_budget));
+    a.mov(x86::rax, x86::qword_ptr(x86::rsp, 40));
+    a.cmp(x86::rax, x86::qword_ptr(x86::rbp, m_off.jit_budget));
     a.jge(lbl);
     a.cmp(x86::byte_ptr(x86::rbp, m_off.check_int), imm(0));
     a.jne(lbl);
@@ -3006,39 +3270,53 @@ void CJitEngine::compile_block(
   // fall back. R10 = next PC; clobbers RAX/RCX/RDX.
   auto emit_chain = [&](Label &lbl) {
     Label miss = a.new_label();
-    a.mov(x86::rax, imm((uint64_t)&b->link));
-    a.mov(x86::rax, x86::qword_ptr(x86::rax)); // succ = b->link
-    a.test(x86::rax, x86::rax);
-    a.jz(miss);
-    a.mov(x86::rcx, x86::qword_ptr(x86::rax, off_body)); // succ->jit_body
-    a.test(x86::rcx, x86::rcx);
-    a.jz(miss);
-    a.mov(x86::rdx, x86::qword_ptr(x86::rax, off_tag)); // succ->tag
-    a.cmp(x86::rdx, x86::r10);
-    a.jne(miss); // not this exit's target
-    // Single epoch guard, all successors: vgen = itb_gen + flush_gen at last
+    // PAL/SDE guard once -- depends on the target (R10) + SDE, not the slot: a
+    // PALmode target's shadow remap assumes SDE, so if R10 is PAL and !SDE no
+    // cached slot may chain in.
+    {
+      Label ok = a.new_label();
+      a.test(x86::r10, imm(1));
+      a.jz(ok);
+      a.cmp(x86::byte_ptr(x86::rbp, m_off.sde), imm(0));
+      a.je(miss); // PALmode + !SDE: don't
+      a.bind(ok);
+    }
+    // Epoch sum once, reused by every slot: vgen = itb_gen + flush_gen at last
     // validation; both counters are monotonic, so one sum compare catches a
     // remap OR a flush since then.
     const uint32_t fg_off =
         (uint32_t)((char *)&m_flush_gen - (char *)&m_itb_gen);
     a.mov(x86::rdx, imm((uint64_t)&m_itb_gen));
     a.mov(x86::r11, x86::qword_ptr(x86::rdx));
-    a.add(x86::r11, x86::qword_ptr(x86::rdx, fg_off)); // current epoch sum
-    a.cmp(x86::qword_ptr(x86::rax, off_vgen), x86::r11);
-    a.jne(miss); // stale: revalidate via dispatcher
-    // PALmode successor (tag bit 0): its shadow remap assumes SDE -- the
-    // dispatcher's guard.
-    Label chain_ok = a.new_label();
-    a.test(x86::r10, imm(1));
-    a.jz(chain_ok);
-    a.cmp(x86::byte_ptr(x86::rbp, m_off.sde), imm(0));
-    a.je(miss); // PALmode + !SDE: don't
-    a.bind(chain_ok);
-    a.jmp(x86::rcx); // HIT: tail in (shared frame)
+    a.add(x86::r11,
+          x86::qword_ptr(x86::rdx, fg_off)); // r11 = current epoch sum
+    // Poly-link: walk the cached direct successors; the first LIVE one mapping
+    // this exit (tag == R10) tails in. A 2-successor block keeps both cached,
+    // so an alternating successor stops thrashing the dispatcher.
+    for (int sl = 0; sl < kLinkSlots; ++sl) {
+      Label nxt = (sl + 1 < kLinkSlots) ? a.new_label() : miss;
+      a.mov(x86::rax, imm((uint64_t)&b->link[sl]));
+      a.mov(x86::rax, x86::qword_ptr(x86::rax)); // succ = b->link[sl]
+      a.test(x86::rax, x86::rax);
+      a.jz(nxt);
+      a.mov(x86::rcx,
+            x86::qword_ptr(x86::rax,
+                           off_body)); // succ->jit_body (cleared on flush)
+      a.test(x86::rcx, x86::rcx);
+      a.jz(nxt);
+      a.mov(x86::rdx, x86::qword_ptr(x86::rax, off_tag)); // succ->tag
+      a.cmp(x86::rdx, x86::r10);
+      a.jne(nxt); // not this exit's target
+      a.cmp(x86::qword_ptr(x86::rax, off_vgen), x86::r11);
+      a.jne(nxt);      // stale: revalidate via dispatcher
+      a.jmp(x86::rcx); // HIT: tail in (shared frame)
+      if (sl + 1 < kLinkSlots)
+        a.bind(nxt);
+    }
     a.bind(miss);
     a.mov(x86::rax, imm((uint64_t)b));
     a.mov(x86::qword_ptr(x86::rbp, m_off.link_from),
-          x86::rax); // request b->link patch
+          x86::rax); // request a successor-cache patch
     // fall through to lbl (return to dispatcher)
   };
 #endif
@@ -3049,7 +3327,7 @@ void CJitEngine::compile_block(
     // it's live + runnable here. Unlike the old single-slot link this keys on
     // the ACTUAL target, so it handles all targets with no thrash on varying
     // jumps.
-    a.add(x86::r14d, imm(plen));
+    a.add(x86::qword_ptr(x86::rsp, 40), imm(plen));
 #ifndef JIT_VERIFY
     Label exit_chain = a.new_label();
     emit_gate(exit_chain);  // budget/interrupt: bail to dispatcher
@@ -3064,7 +3342,7 @@ void CJitEngine::compile_block(
 #endif
   } else if (terminator_branch) {
     a.add(
-        x86::r14d,
+        x86::qword_ptr(x86::rsp, 40),
         imm(plen)); // R10 still holds the next PC (branch wrote state.pc + R10)
 #ifndef JIT_VERIFY
     Label exit_chain = a.new_label();
@@ -3083,7 +3361,7 @@ void CJitEngine::compile_block(
   } else {
     set_pc(b->tag +
            4 * (uint64_t)plen); // straight-line fall-through to the next block
-    a.add(x86::r14d, imm(plen));
+    a.add(x86::qword_ptr(x86::rsp, 40), imm(plen));
 #ifndef JIT_VERIFY
     Label exit_chain = a.new_label();
     emit_gate(exit_chain);
@@ -3091,15 +3369,26 @@ void CJitEngine::compile_block(
     a.bind(exit_chain);
 #endif
   }
-  a.mov(x86::eax, x86::r14d); // total instructions completed across the chain
-  a.bind(done);               // bail jumps here with EAX already set
+  a.mov(x86::eax,
+        x86::dword_ptr(x86::rsp,
+                       40)); // total instructions completed across the chain
+  a.bind(done);              // bail jumps here with EAX already set
   // Sync the pins back to regs[] -- rbx still = regs (restored last), and every
   // dispatcher exit (fall-through or mid-block bail) reaches here, so regs[] is
   // live when we return.
   a.mov(x86::qword_ptr(x86::rbx, 26 * 8), x86::r12); // R26 (RA)
   a.mov(x86::qword_ptr(x86::rbx, 16 * 8), x86::r13); // R16 (a0)
   a.mov(x86::qword_ptr(x86::rbx, 27 * 8), x86::r15); // R27 (PV)
-  a.add(x86::rsp, imm(40));
+  a.mov(x86::qword_ptr(x86::rbx, 30 * 8), x86::r14); // R30 (SP)
+#ifdef _WIN32
+  a.mov(x86::qword_ptr(x86::rbx, 29 * 8), x86::rsi); // R29 (GP)
+  a.mov(x86::qword_ptr(x86::rbx, 0 * 8), x86::rdi);  // R0 (v0)
+#endif
+  a.add(x86::rsp, imm(56));
+#ifdef _WIN32
+  a.pop(x86::rdi); // Win64 pins pop first (reverse push order)
+  a.pop(x86::rsi);
+#endif
   a.pop(x86::r15); // pins pop in reverse push order
   a.pop(x86::r13);
   a.pop(x86::r12);
@@ -3142,6 +3431,198 @@ void CJitEngine::compile_block(
 #ifdef JIT_REGPROF
   b->rp_csz = (uint32_t)csz; // exec-weighted expansion: sum(rp_hits*rp_csz) /
                              // sum(rp_hits*prefix_len)
+#endif
+}
+
+// Compile an N-block trace. Reuses the shared emit_op for each block's per-op
+// codegen (so the body is the exact one the block path already verifies).
+// Blocks are fused with a GUARD between them: after a block's terminator (which
+// left R10 = its next PC), check R10 == the next fused block's tag; on a hit
+// fall through in-trace, on a miss SIDE-EXIT to the dispatcher at the real next
+// PC. n_blocks==1 = the single- block trace. Fills the caller-provided slot t
+// (code + per-segment source descriptors + coherence epoch).
+void CJitEngine::compile_trace(TraceFragment *t, JitBlock **blocks,
+                               uint32_t n_blocks, const uint8_t *dram,
+                               uint64_t dram_size, const HelperSet &hs) {
+  using namespace asmjit;
+  if (n_blocks == 0 || n_blocks > kMaxTraceSegs)
+    return;
+  // Validate every segment up front: a compiled prefix that fits in DRAM.
+  // (prefix_len, NOT n_instr -- ops past the prefix never passed the
+  // safe-to-compile scan; emitting them runs code PAST the terminator.)
+  for (uint32_t bi = 0; bi < n_blocks; ++bi) {
+    const JitBlock *b = blocks[bi];
+    if (b->prefix_len == 0 || b->phys + (uint64_t)b->prefix_len * 4 > dram_size)
+      return;
+  }
+
+  CodeHolder code;
+  if (code.init(((JitRuntime *)m_rt)->environment()) != Error::kOk)
+    return;
+  x86::Assembler a(&code);
+  CallConv cc;
+  (void)cc.init(CallConvId::kCDecl, ((JitRuntime *)m_rt)->environment());
+  const uint8_t *gpa = cc.passed_order(RegGroup::kGp);
+
+  a.push(x86::rbx);
+  a.push(x86::rbp);
+  a.push(x86::r14);
+  a.push(x86::r12);
+  a.push(x86::r13);
+  a.push(x86::r15);
+#ifdef _WIN32
+  a.push(x86::rsi);
+  a.push(x86::rdi);
+#endif
+  a.sub(x86::rsp, imm(56));
+  a.mov(x86::rbp, x86::gpq(gpa[0])); // cpu
+  a.mov(x86::rbx, x86::gpq(gpa[1])); // regs
+  a.mov(x86::qword_ptr(x86::rsp, 40),
+        imm(0)); // chain count := 0 (reclaimed r14 -> stack slot)
+  a.mov(x86::r12, x86::qword_ptr(x86::rbx, 26 * 8)); // R26 (RA) pin
+  a.mov(x86::r13, x86::qword_ptr(x86::rbx, 16 * 8)); // R16 (a0) pin
+  a.mov(x86::r15, x86::qword_ptr(x86::rbx, 27 * 8)); // R27 (PV) pin
+  a.mov(x86::r14, x86::qword_ptr(x86::rbx, 30 * 8)); // R30 (SP) pin
+#ifdef _WIN32
+  a.mov(x86::rsi, x86::qword_ptr(x86::rbx, 29 * 8)); // R29 (GP) pin
+  a.mov(x86::rdi, x86::qword_ptr(x86::rbx, 0 * 8));  // R0 (v0) pin
+#endif
+
+  Label done = a.new_label(); // shared side-exit/return: EAX preset to the
+                              // instr count, state.pc live
+  Label body = a.new_label(); // loop re-entry (after the prologue; pins + count
+                              // stay live across iterations)
+  a.bind(body);
+
+  // Block register allocator: the 3 global pins (static, live across the
+  // trace). dynamic pool in future.
+  RegAlloc ra;
+  for (int r = 0; r < 32; ++r)
+    ra.host[r] = -1;
+  ra.rax_holds = -1;
+  ra.host[kGlobalPins[0]] = (int)x86::r12.id();
+  ra.host[kGlobalPins[1]] = (int)x86::r13.id();
+  ra.host[kGlobalPins[2]] = (int)x86::r15.id();
+  ra.host[30] = (int)x86::r14.id(); // SP (reclaimed r14), all platforms
+#ifdef _WIN32
+  ra.host[29] = (int)x86::rsi.id(); // GP (Win64)
+  ra.host[0] = (int)x86::rdi.id();  // v0 (Win64)
+#endif
+
+  for (uint32_t bi = 0; bi < n_blocks; ++bi) {
+    JitBlock *b = blocks[bi];
+    const uint32_t plen = b->prefix_len;
+    const uint32_t *words = (const uint32_t *)(dram + b->phys);
+    const bool pal_block = (b->tag & 1) != 0;
+
+    // Default R10 + state.pc = this block's sequential next (the fall-through
+    // exit). emit_op's branch/jump terminator overwrites both with its target;
+    // a fault bail writes the fault PC. For an intermediate block this also
+    // makes the guard below see R10 == the sequential successor when it falls
+    // through. (note: no compiled op currently READS state.pc mid-block, so
+    // default-before-emit is equivalent.)
+    a.mov(x86::r10, imm(b->tag + 4 * (uint64_t)plen));
+    a.mov(x86::qword_ptr(x86::rbp, m_off.state_pc), x86::r10);
+
+    for (uint32_t i = 0; i < plen; ++i)
+      emit_op(&a, gpa, &done, hs, pal_block, b, words[i], i, ra);
+
+    a.add(x86::qword_ptr(x86::rsp, 40), imm(plen)); // count this block
+    a.mov(x86::eax, x86::dword_ptr(
+                        x86::rsp, 40)); // EAX = instrs completed so far (preset
+                                        // for `done` -- a side-exit or return)
+
+    if (bi + 1 < n_blocks) {
+      // Guard: did this block actually flow to the next fused block? R10 = its
+      // next PC; a mismatch means the path diverged from what we fused ->
+      // side-exit to the dispatcher at the real next PC (state.pc).
+      a.mov(x86::rcx, imm(blocks[bi + 1]->tag)); // 64-bit tag may exceed imm32;
+                                                 // rcx scratch (not EAX)
+      a.cmp(x86::r10, x86::rcx);
+      a.jne(done);
+    }
+  }
+#ifndef JIT_VERIFY
+  // Loop closure: if the last block branches back to the trace head, close the
+  // loop in compiled code with the budget/interrupt gate ON the back-edge (risk
+  // #1). Verify builds omit this -> the trace runs one iteration and exits at
+  // state.pc, so the side-exit verify validates the body unchanged.
+  {
+    JitBlock *lb = blocks[n_blocks - 1];
+    const uint32_t *lw = (const uint32_t *)(dram + lb->phys);
+    const uint32_t lop = lw[lb->prefix_len - 1], lopc = lop >> 26;
+    if (lopc == 0x30 || lopc == 0x34 ||
+        (lopc >= 0x38 && lopc <= 0x3f)) { // PC-relative branch terminator
+      const int64_t disp = (int64_t)((uint64_t)(lop & 0x1FFFFF) << 43) >> 43;
+      const uint64_t tgt =
+          (((lb->tag & ~(uint64_t)1) + 4 * (uint64_t)(lb->prefix_len - 1)) + 4 +
+           (uint64_t)(disp * 4)) |
+          (lb->tag & 1);
+      if (tgt == blocks[0]->tag) { // taken target == head -> a closable loop
+        a.mov(x86::rcx, imm(blocks[0]->tag));
+        a.cmp(x86::r10, x86::rcx);
+        a.jne(done); // not looping now -> exit
+        a.mov(x86::rax, x86::qword_ptr(x86::rsp, 40));
+        a.cmp(x86::rax, x86::qword_ptr(x86::rbp, m_off.jit_budget));
+        a.jge(done); // budget ceiling
+        a.cmp(x86::byte_ptr(x86::rbp, m_off.check_int), imm(0));
+        a.jne(done); // interrupt pending
+        a.cmp(x86::byte_ptr(x86::rbp, m_off.check_timers), imm(0));
+        a.jne(done); // timer pending
+        a.jmp(body); // loop in compiled code
+      }
+    }
+  }
+#endif
+  a.bind(done);
+  a.mov(x86::qword_ptr(x86::rbx, 26 * 8),
+        x86::r12); // sync pins back to regs[] before returning
+  a.mov(x86::qword_ptr(x86::rbx, 16 * 8), x86::r13);
+  a.mov(x86::qword_ptr(x86::rbx, 27 * 8), x86::r15);
+  a.mov(x86::qword_ptr(x86::rbx, 30 * 8), x86::r14); // R30 (SP)
+#ifdef _WIN32
+  a.mov(x86::qword_ptr(x86::rbx, 29 * 8), x86::rsi); // R29 (GP)
+  a.mov(x86::qword_ptr(x86::rbx, 0 * 8), x86::rdi);  // R0 (v0)
+#endif
+  a.add(x86::rsp, imm(56));
+#ifdef _WIN32
+  a.pop(x86::rdi);
+  a.pop(x86::rsi);
+#endif
+  a.pop(x86::r15);
+  a.pop(x86::r13);
+  a.pop(x86::r12);
+  a.pop(x86::r14);
+  a.pop(x86::rbp);
+  a.pop(x86::rbx);
+  a.ret();
+
+  const size_t csz = code.code_size();
+  JitFn fn = nullptr;
+  if (((JitRuntime *)m_rt)->add(&fn, &code) != Error::kOk)
+    return;
+  uint32_t total = 0;
+  for (uint32_t bi = 0; bi < n_blocks; ++bi) {
+    JitBlock *b = blocks[bi];
+    t->segs[bi] = {b->tag,        b->phys,
+                   b->prefix_len, b->asm_global,
+                   b->asn,        src_hash(dram + b->phys, b->prefix_len)};
+    total += b->prefix_len;
+  }
+  t->code = fn;
+  t->head_tag = blocks[0]->tag;
+  t->asn = blocks[0]->asn;
+  t->asm_global = blocks[0]->asm_global;
+  t->valid = true;
+  t->vgen = m_itb_gen + m_flush_gen;
+  t->flush_gen = m_flush_gen;
+  t->n_blocks = n_blocks;
+  t->n_instr = total;
+  t->n_segs = n_blocks;
+  t->n_exits = 0;
+  m_code_bytes += csz;
+#ifdef JIT_STATS
+  m_trace_formed++;
 #endif
 }
 
@@ -3353,6 +3834,48 @@ uint64_t CJitEngine::note_exec(uint32_t native_instr, uint32_t interp_instr,
            m_jmp_attempt ? 100.0 * (double)m_jmp_hit / (double)m_jmp_attempt
                          : 0.0);
   }
+  // Fresh-compile reason (per window): tag=cache aliasing, asn=cross-process
+  // same-PC, phys=remap, hash=self-mod, cold=genuine new/warmup. Sums to the
+  // window's `recorded` growth (the churn cost).
+  const uint64_t fresh =
+      m_fresh_tag + m_fresh_asn + m_fresh_phys + m_fresh_hash + m_fresh_cold;
+  if (fresh)
+    printf("[JIT][STATS][CPU%d] fresh-cause: tag %llu | asn %llu | phys %llu | "
+           "hash %llu | cold %llu (of %llu recompiled)\n",
+           m_cpu_id, (unsigned long long)m_fresh_tag,
+           (unsigned long long)m_fresh_asn, (unsigned long long)m_fresh_phys,
+           (unsigned long long)m_fresh_hash, (unsigned long long)m_fresh_cold,
+           (unsigned long long)fresh);
+  if (m_trace_formed || m_trace_entered)
+    printf("[JIT][STATS][CPU%d] traces: formed %llu | entered %llu | exits "
+           "%llu | stale %llu (windowed)\n",
+           m_cpu_id, (unsigned long long)m_trace_formed,
+           (unsigned long long)m_trace_entered,
+           (unsigned long long)m_trace_exits,
+           (unsigned long long)m_trace_stale);
+  {
+    uint64_t fh[6] = {0}, mh[6] = {0},
+             tm = 0; // link-fanout: thrashing source blocks + cumulative
+                     // misses, bucketed by #distinct successors
+    for (int i = 0; i < kCacheEntries; ++i) {
+      if (!m_blocks[i].valid || m_blocks[i].link_misses == 0)
+        continue;
+      int f = m_blocks[i].link_fanout > 5 ? 5 : m_blocks[i].link_fanout;
+      fh[f]++;
+      mh[f] += m_blocks[i].link_misses;
+      tm += m_blocks[i].link_misses;
+    }
+    if (tm)
+      printf("[JIT][STATS][CPU%d] link-fanout (srcs/misses by #distinct "
+             "successors): f1=%llu/%llu f2=%llu/%llu f3=%llu/%llu f4=%llu/%llu "
+             "f5+=%llu/%llu | total miss %llu\n",
+             m_cpu_id, (unsigned long long)fh[1], (unsigned long long)mh[1],
+             (unsigned long long)fh[2], (unsigned long long)mh[2],
+             (unsigned long long)fh[3], (unsigned long long)mh[3],
+             (unsigned long long)fh[4], (unsigned long long)mh[4],
+             (unsigned long long)fh[5], (unsigned long long)mh[5],
+             (unsigned long long)tm);
+  }
   len = snprintf(buf, sizeof(buf),
                  "[JIT][STATS][CPU%d] %llu recorded, %llu compiled (avg %.1f "
                  "instr) | block-breakers:",
@@ -3454,6 +3977,8 @@ uint64_t CJitEngine::note_exec(uint32_t native_instr, uint32_t interp_instr,
   m_tsc_window_start = jit_rdtsc(); // next window's split denominator starts
                                     // after this report's I/O
   m_bail_link = m_jmp_attempt = m_jmp_hit = 0;
+  m_fresh_cold = m_fresh_tag = m_fresh_asn = m_fresh_phys = m_fresh_hash = 0;
+  m_trace_formed = m_trace_entered = m_trace_exits = m_trace_stale = 0;
   const auto stat_end = std::chrono::steady_clock::now();
   m_stat_wall_last_ns =
       (uint64_t)std::chrono::duration_cast<std::chrono::nanoseconds>(

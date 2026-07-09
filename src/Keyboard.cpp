@@ -94,7 +94,7 @@ void CKeyboard::init() {
   state.timer_pending = 0;
 
   // Mouse initialization stuff
-  state.mouse.captured = myCfg->get_bool_value("mouse.enabled", true);
+  state.mouse.captured = true;
   state.mouse.sample_rate = 100;   // reports per second
   state.mouse.resolution_cpmm = 4; // 4 counts per millimeter
   state.mouse.scaling = 1;         /* 1:1 (default) */

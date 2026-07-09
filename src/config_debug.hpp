@@ -194,3 +194,11 @@
 // error handler. VERY NOISY, and validation adds runtime cost (ES40_JIT builds
 // only).
 //#define JIT_DISASM
+
+// Define to enable the JIT trace tier. MEASURED 2026-06 = a NET PERF LOSS (~92
+// VUPS / 1.6M dhry vs 120 / 2.1M baseline): loop closure can't capture the
+// varying-successor interpreter dispatch, and the trace machinery adds
+// per-dispatch overhead. Kept DORMANT as correctness infrastructure; leave OFF.
+// The real perf lever is poly-successor direct chaining + register allocation
+// in the BLOCK JIT. (ES40_JIT only.)
+//#define JIT_TRACES

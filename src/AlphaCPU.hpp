@@ -270,8 +270,11 @@ private:
 
   // Wall-clock-paced Cchip interval timer (b_irq<2>).  CPU 0 fires once
   // per period as it passes batch-flush boundaries.  Avoids cross-thread
-  // edge coalescing seen with AliM1543C-thread firing.
+  // edge coalescing seen with AliM1543C-thread firing.  next_timer_fire is
+  // the count-preserving schedule (+= period per fire); tick_last_fire paces
+  // catch-up so backlog repays at no more than 2x the nominal rate.
   std::chrono::steady_clock::time_point next_timer_fire;
+  std::chrono::steady_clock::time_point tick_last_fire;
 
   // Wall-clock RPCC: state.cc advances by real elapsed time * cpu_hz so it
   // tracks the configured CPU frequency regardless of how fast/bursty the JIT
@@ -352,6 +355,9 @@ private:
                              u64 *out); // LDx_L: load + establish LL/SC lock
   static int jit_read_vpte(CAlphaCPU *cpu, u64 va, int size_bits,
                            u64 *out); // HW_LD VPTE: kernel-checked virtual read
+  static int
+  jit_read_wchk(CAlphaCPU *cpu, u64 va, int size_bits,
+                u64 *out); // HW_LD func 0xa: longword virtual + WrChk
   static int jit_write(CAlphaCPU *cpu, u64 va, int size_bits, u64 value);
   static int jit_write_phys(CAlphaCPU *cpu, u64 phys, int size_bits,
                             u64 value); // HW_ST physical: no translation

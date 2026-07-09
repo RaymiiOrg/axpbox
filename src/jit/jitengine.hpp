@@ -34,12 +34,25 @@ class CAlphaCPU; // compiled blocks call back into the CPU for memory accesses
 
 class CJitEngine {
 public:
-  // 64K slots: the OS-active CPU's block working set (50K+) thrashed the old
-  // 16K direct-mapped cache -- conflict evictions caused ~190K recompiles per
-  // 100M instructions on that CPU.
-  static constexpr int kCacheBits = 16;
+  // 256K slots: the OS-active CPU's block working set (50K+) thrashed the old
+  // 16K direct-mapped cache
+  // (~190K recompiles/100M); 64K cut that to ~14K/100M, but a 50K set in 64K
+  // slots still conflict-evicts (load ~0.8). 256K drops the load to ~0.2.
+  // JitBlock ~110 B -> ~28 MB/CPU of metadata.
+  static constexpr int kCacheBits = 18;
   static constexpr int kCacheEntries = 1 << kCacheBits;
   static constexpr uint64_t kIndexMask = (uint64_t)kCacheEntries - 1;
+
+  // Trace tier (M0+): a small SECOND cache, beside m_blocks, for hot superblock
+  // heads. Only the hottest loop heads are promoted, so it stays small. Same
+  // direct-mapped, virtual+ASN-keyed shape.
+  static constexpr int kTraceBits = 12; // 4K trace heads
+  static constexpr uint64_t kTraceEntries = 1 << kTraceBits;
+  static constexpr uint64_t kTraceIndexMask = kTraceEntries - 1;
+  static constexpr uint32_t kMaxTraceSegs =
+      16; // fused blocks per trace (multi-block coherence)
+  static constexpr uint32_t kMaxTraceExits =
+      16; // guards / side-exits per trace
 
   // Reclaim executable memory once compiled code passes this many bytes, rather
   // than tearing down the asmjit runtime on every flush (see flush()).
@@ -49,6 +62,10 @@ public:
   // into cpu for memory accesses; returns the number of instructions fully
   // completed
   typedef uint32_t (*JitFn)(CAlphaCPU *cpu, uint64_t *regs);
+
+  static constexpr int kLinkSlots =
+      2; // cached direct successors per block (poly-link). Instrumentation
+         // showed the thrashing fanout is EXACTLY 2; bump only if f3/f4 appear.
 
   struct JitBlock {
     uint64_t tag;     // start VIRTUAL PC (validity tag / key)
@@ -60,8 +77,15 @@ public:
     JitFn code; // compiled safe-prefix, or null (prologue entry, for C calls)
     void *jit_body; // chained re-entry point (after the prologue); null when
                     // not compiled
-    JitBlock *link; // cached successor block (back-patched by the dispatcher);
-                    // null = none
+    JitBlock *link[kLinkSlots]; // cached direct successors (poly-link,
+                                // round-robin back-patched); null = empty
+#ifdef JIT_STATS
+    uint32_t link_misses; // instrumentation: per-source link-miss count,
+                          // cumulative (poly-link sizing)
+    uint8_t link_fanout; // distinct re-link targets seen (saturates at 4; >4 =>
+                         // a small successor cache won't help)
+    uint64_t link_seen[4];
+#endif
     uint32_t prefix_len; // # safe ALU ops in code
     bool compiled;       // compile has been attempted
     uint32_t body_off; // jit_body's offset within code -- restores the chained
@@ -78,6 +102,8 @@ public:
     uint64_t flush_gen; // icache-flush generation at which the code bytes were
                         // last hash-validated; stale => lookup misses and
                         // revalidate_flushed() re-hashes (lazy IC_FLUSH)
+    uint32_t hot; // dispatches since record; at the promote threshold -> form a
+                  // trace
 #ifdef JIT_REGPROF
     uint64_t rp_hits; // REGPROF: block executions since record (body-entry inc
                       // -- counts chained runs)
@@ -86,6 +112,49 @@ public:
     uint32_t rp_csz;  // REGPROF: emitted x86 bytes for this block -- rp_hits x
                       // rp_csz = exec-weighted expansion
 #endif
+  };
+
+  // Per fused block: the source-coherence descriptor (review: multi-block
+  // traces need this). A trace spans multiple blocks/pages, so a single head
+  // tag + epoch is not enough -- trace_ok() re-hashes these on an epoch change,
+  // mirroring revalidate_flushed, and also stores what to re-form.
+  struct SourceSeg {
+    uint64_t guest_pc; // segment start virtual PC
+    uint64_t phys_pc;  // segment start physical PC (source bytes)
+    uint32_t n_instr;  // instructions in the segment (hash length)
+    bool asm_global;   // global (ASM) segment
+    uint32_t asn;      // ASN (ignored when asm_global)
+    uint64_t src_sum;  // hash of the segment's source words at build
+  };
+
+  // M4+: which guest regs are held in host registers (not yet committed to
+  // state.r[]) at a side-exit. Empty through M3 (no register cache across
+  // guards), so the side-exit needs no spill until M4.
+  struct Snapshot {
+    uint64_t dirty_gpr;
+    uint64_t dirty_fpr;
+  };
+
+  struct TraceExit {
+    uint64_t guest_pc; // resume PC handed to the block dispatcher (compile-time
+                       // constant)
+    Snapshot snap;     // M4+ (zero until then)
+  };
+
+  struct TraceFragment {
+    uint64_t head_tag; // entry virtual PC (key)
+    uint32_t asn;      // key (ignored when asm_global)
+    bool asm_global;
+    bool valid;
+    JitFn code; // single entry; null = empty slot
+    uint64_t
+        vgen; // build epoch = m_itb_gen + m_flush_gen (coherence; see trace_ok)
+    uint64_t flush_gen; // IC-flush epoch at build
+    uint32_t n_blocks, n_instr;
+    SourceSeg segs[kMaxTraceSegs];
+    uint32_t n_segs;
+    TraceExit exits[kMaxTraceExits];
+    uint32_t n_exits;
   };
 
   // Byte offsets (from the CAlphaCPU*) of the fields the inline load fast path
@@ -111,12 +180,38 @@ public:
   };
   void set_offsets(const JitOffsets &o) { m_off = o; }
 
+  // Per-op helper function pointers
+  struct HelperSet {
+    void *read_helper;
+    void *write_helper;
+    void *opcdec_helper;
+    void *hw_mfpr_helper;
+    void *hw_ld_helper;
+    void *hw_mtpr_helper;
+    void *hw_st_helper;
+    void *indirect_helper;
+    void *read_locked_helper;
+    void *stc_helper;
+    void *misc_helper;
+    void *read_vpte_helper;
+    void *read_wchk_helper;
+    void *itof_helper;
+    void *ftoi_helper;
+    void *fltl_helper;
+    void *fp_read_helper;
+    void *fp_write_helper;
+    void *fltv_helper;
+  };
+
   explicit CJitEngine(
       int cpu_id = 0); // cpu_id tags the stats/diagnostic prints
   ~CJitEngine();
 
   static inline uint64_t index_of(uint64_t virt_pc) {
     return (virt_pc >> 2) & kIndexMask;
+  }
+  static inline uint64_t trace_index_of(uint64_t virt_pc) {
+    return (virt_pc >> 2) & kTraceIndexMask;
   }
 
   // Virtual+ASN keyed: no translation on the dispatch hot path. A global (ASM)
@@ -131,6 +226,64 @@ public:
                : nullptr;
   }
 
+  // Trace tier (M0+): the global kill-switch + the trace-cache lookup.
+  // traces_enabled() is false until M1 enables a region, so the dispatcher hook
+  // is inert (one predictable-not-taken branch) and the engine is bit-identical
+  // to the block-only build. Unlike the block lookup, this does NOT gate on
+  // flush_gen -- trace_ok() owns all staleness (so an unrelated flush
+  // re-validates instead of dropping).
+  inline bool traces_enabled() const { return m_traces_enabled; }
+  inline void set_traces_enabled(bool e) { m_traces_enabled = e; }
+
+  // the slot a head PC maps to (formation fills it). Unlike trace_lookup,
+  // returns the slot unconditionally so  the caller decides whether to (re)form
+  // into it.
+  inline TraceFragment *trace_slot(uint64_t head_pc) {
+    return &m_traces[trace_index_of(head_pc)];
+  }
+  inline void note_trace_stale() { // always defined (callable from trace_ok);
+                                   // counts only under JIT_STATS
+#ifdef JIT_STATS
+    m_trace_stale++;
+#endif
+  }
+  inline void
+  note_link_edge(JitBlock *src,
+                 uint64_t tgt_tag) { // instrument a source block's successor
+                                     // fanout (poly-link sizing)
+#ifdef JIT_STATS
+    src->link_misses++;
+    for (int i = 0; i < src->link_fanout && i < 4; ++i)
+      if (src->link_seen[i] == tgt_tag)
+        return; // already counted
+    if (src->link_fanout < 4)
+      src->link_seen[src->link_fanout] = tgt_tag;
+    if (src->link_fanout < 250)
+      src->link_fanout++;
+#else
+    (void)src;
+    (void)tgt_tag;
+#endif
+  }
+#ifdef JIT_STATS
+  inline void trace_entered() { m_trace_entered++; }
+  inline void trace_exited() {
+    m_trace_exits++;
+  } // a trace side-exited / underran its first-pass span
+#endif
+
+  inline TraceFragment *trace_lookup(uint64_t virt_pc, uint32_t asn) {
+    TraceFragment &t = m_traces[trace_index_of(virt_pc)];
+    return (t.valid && t.head_tag == virt_pc && (t.asm_global || t.asn == asn))
+               ? &t
+               : nullptr;
+  }
+
+  // Source-coherence check (review: per-segment, from M0). head_live_phys is
+  // the head's freshly resolved physical; on a remap/flush since build, fall
+  // back to blocks + re-form. See the .cpp.
+  bool trace_ok(TraceFragment *t, uint64_t head_live_phys, const uint8_t *dram);
+
   // Lazy-flush survivor: hash-revalidate the slot in place (no interpreted
   // pass, no re-record).
   JitBlock *revalidate_flushed(uint64_t virt_pc, uint32_t asn, uint64_t phys_pc,
@@ -144,10 +297,35 @@ public:
                      void *hw_mtpr_helper, void *hw_st_helper,
                      void *indirect_helper, void *read_locked_helper,
                      void *stc_helper, void *misc_helper,
-                     void *read_vpte_helper, void *itof_helper,
-                     void *ftoi_helper, void *fltl_helper, void *fp_read_helper,
-                     void *fp_write_helper, void *fltv_helper);
+                     void *read_vpte_helper, void *read_wchk_helper,
+                     void *itof_helper, void *ftoi_helper, void *fltl_helper,
+                     void *fp_read_helper, void *fp_write_helper,
+                     void *fltv_helper);
   void flush();
+
+  // Per-op codegen, shared by compile_block and compile_trace
+  // Block register allocator: maps each guest GPR to a host x86 reg id, or -1 =
+  // the state.r[] memory slot. The 3 global pins (R26/R16/R27 -> r12/r13/r15)
+  // are the static binding, live across the chain; dynamic block-local pool
+  // next. host_of(r) drives emit_op's operand routing either way.
+  struct RegAlloc {
+    int host[32];  // host x86 reg id for guest GPR r, or -1 (memory)
+    int rax_holds; // guest GPR whose value currently lives in rax
+                   // (value-forward), or -1
+    int host_of(int r) const { return host[r]; }
+  };
+
+  void emit_op(void *a, const uint8_t *gpa, void *done, const HelperSet &hs,
+               bool pal_block, JitBlock *b, uint32_t ins, uint32_t i,
+               RegAlloc &regalloc);
+
+  // compile an N-block trace into slot t (reuses emit_op per block; blocks
+  // fused with a guard -> side-exit between them). n_blocks==1 is the
+  // single-block case; the exit returns to the dispatcher.
+  void compile_trace(TraceFragment *t, JitBlock **blocks, uint32_t n_blocks,
+                     const uint8_t *dram, uint64_t dram_size,
+                     const HelperSet &hs);
+
   void flush_non_global(); // flush only !asm_global blocks (the ASM-bit-clear /
                            // ASN icache flush)
   void reclaim_code();     // free ALL compiled code once past kReclaimBytes
@@ -193,6 +371,8 @@ public:
   uint64_t verify_compare(uint64_t blk_virt, const uint64_t *interp,
                           const uint64_t *jit, const uint32_t *words,
                           uint32_t nwords);
+  void trace_selftest(); // M0: unit-test trace_ok's source-coherence
+                         // (SMC/IMB/ITB-remap/head-remap)
 #endif
 
 #ifdef JIT_STATS
@@ -214,6 +394,10 @@ public:
 
 private:
   JitBlock m_blocks[kCacheEntries];
+  TraceFragment
+      m_traces[kTraceEntries]; // M0+: the trace tier's cache (inert until M1)
+  bool m_traces_enabled =
+      false; // global kill-switch; default OFF -> bit-identical
   int m_cpu_id;
   uint64_t m_recorded;
   uint64_t m_itb_gen =
@@ -249,6 +433,10 @@ private:
                                // denominator)
   uint64_t m_bail_link, m_jmp_attempt,
       m_jmp_hit; // windowed: link-miss bails, jit_indirect attempts/hits
+  uint64_t m_fresh_cold, m_fresh_tag, m_fresh_asn, m_fresh_phys,
+      m_fresh_hash; // windowed: record() step-4 fresh-compile reason
+  uint64_t m_trace_formed, m_trace_entered, m_trace_exits,
+      m_trace_stale; // windowed: trace tier activity (M1+)
   uint64_t
       m_term_op[64]; // cumulative: opcode that ended a block's compiled prefix
   uint64_t
