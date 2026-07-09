@@ -48,6 +48,8 @@
 #include "Ethernet.hpp"
 #include "base/Semaphore.hpp"
 
+#include <mutex>
+
 #if defined(WIN32)
 typedef int bpf_int32;
 typedef unsigned int bpf_u_int32;
@@ -147,6 +149,9 @@ private:
   std::atomic_bool myThreadDead{false};
   bool StopThread;
   CSemaphore mySemaphore;
+  /** serializes NIC thread vs CPU-thread CSR access (recursive: nic_read /
+   * nic_write paths may re-enter through the interrupt plumbing) */
+  std::recursive_mutex myRegLock;
 
   u32 nic_read(u32 address, int dsize);
   void nic_write(u32 address, int dsize, u32 data);

@@ -1984,7 +1984,21 @@ void CSym53C810::execute_io_op() {
     SB_R8(SCNTL1, CON, false);
     // Clear phase bits
     R8(SSTAT1) &= ~R_SSTAT1_PHASE;
-    scsi_free(0);
+    {
+      int cur_phase = scsi_get_phase(0);
+      if (cur_phase == SCSI_PHASE_ARBITRATION) {
+        // We won arbitration; the initiator may free the bus.
+        scsi_free(0);
+      } else if (cur_phase != SCSI_PHASE_FREE) {
+        // free_bus() only lets the selected target release a connected
+        // bus, and our passive targets never drop BSY on their own --
+        // release on the target's behalf instead of aborting.
+        printf("SYM: WAIT DISCONNECT with bus still connected (phase %d, "
+               "target %d); releasing.\n",
+               cur_phase, GET_DEST());
+        scsi_bus[0]->free_bus(GET_DEST());
+      }
+    }
     return;
 
   case 2:
