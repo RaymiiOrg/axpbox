@@ -97,6 +97,9 @@ private:
   unsigned int vid_scale = 0;
   bool vid_linear = true;
   bool vid_scale_change_enable = false;
+  double mouse_speed = 1.0;
+  bool mouse_invert_x = false;
+  bool mouse_invert_y = false;
   void reset_window_size();
   void adjust_window_scale(int delta);
 };
@@ -126,6 +129,10 @@ u8 old_mousebuttons = 0, new_mousebuttons = 0;
 int old_mousex = 0, new_mousex = 0;
 int old_mousey = 0, new_mousey = 0;
 static int sdl_mouse_button_state = 0;
+// Fractional motion left over after scaling by mouse.speed; carried across
+// events so multipliers < 1.0 don't drop slow movement.
+static double sdl_mouse_accum_x = 0.0;
+static double sdl_mouse_accum_y = 0.0;
 static bool sdl_swallow_keys = false;
 static bool sdl_swallow_end_release = false;
 static bool sdl_swallow_home_release = false;
@@ -163,6 +170,18 @@ void bx_sdl_gui_c::specific_init(unsigned x_tilesize, unsigned y_tilesize) {
   this->vid_scale_change_enable =
       myCfg->get_bool_value("video.scale_change_enable", false);
 
+  const char *ms = myCfg->get_text_value("mouse.speed", "1.0");
+  this->mouse_speed = atof(ms);
+  if (this->mouse_speed <= 0.0 || this->mouse_speed > 10.0) {
+    printf("%%SDL-W-MOUSESPEED: invalid mouse.speed \"%s\" (valid: 0.0 < "
+           "speed <= 10.0); using 1.0.\n",
+           ms);
+    this->mouse_speed = 1.0;
+  }
+
+  this->mouse_invert_x = myCfg->get_bool_value("mouse.invert_x", false);
+  this->mouse_invert_y = myCfg->get_bool_value("mouse.invert_y", false);
+
   new_gfx_api = 1;
 }
 
@@ -181,8 +200,8 @@ void bx_sdl_gui_c::graphics_frame_update(const u32 *pixels, unsigned width,
       last_dump = now;
       static unsigned dump_seq = 0;
       char path[512];
-      snprintf(path, sizeof(path), "%s-%03u-%ux%u.ppm", dump_prefix,
-               dump_seq++, width, height);
+      snprintf(path, sizeof(path), "%s-%03u-%ux%u.ppm", dump_prefix, dump_seq++,
+               width, height);
       FILE *f = fopen(path, "wb");
       if (f) {
         fprintf(f, "P6\n%u %u\n255\n", width, height);
@@ -490,16 +509,26 @@ void bx_sdl_gui_c::handle_events(void) {
         const char *name;
         u32 key;
       } ks_map[] = {
-          {"enter", BX_KEY_ENTER}, {"esc", BX_KEY_ESC},
-          {"tab", BX_KEY_TAB},     {"space", BX_KEY_SPACE},
-          {"up", BX_KEY_UP},       {"down", BX_KEY_DOWN},
-          {"left", BX_KEY_LEFT},   {"right", BX_KEY_RIGHT},
-          {"del", BX_KEY_DELETE},  {"f1", BX_KEY_F1},
-          {"f2", BX_KEY_F2},       {"f3", BX_KEY_F3},
-          {"f6", BX_KEY_F6},       {"f8", BX_KEY_F8},
-          {"f10", BX_KEY_F10},     {"y", BX_KEY_Y},
-          {"n", BX_KEY_N},         {"c", BX_KEY_C},
-          {"pgdn", BX_KEY_PAGE_DOWN}, {"pgup", BX_KEY_PAGE_UP},
+          {"enter", BX_KEY_ENTER},
+          {"esc", BX_KEY_ESC},
+          {"tab", BX_KEY_TAB},
+          {"space", BX_KEY_SPACE},
+          {"up", BX_KEY_UP},
+          {"down", BX_KEY_DOWN},
+          {"left", BX_KEY_LEFT},
+          {"right", BX_KEY_RIGHT},
+          {"del", BX_KEY_DELETE},
+          {"f1", BX_KEY_F1},
+          {"f2", BX_KEY_F2},
+          {"f3", BX_KEY_F3},
+          {"f6", BX_KEY_F6},
+          {"f8", BX_KEY_F8},
+          {"f10", BX_KEY_F10},
+          {"y", BX_KEY_Y},
+          {"n", BX_KEY_N},
+          {"c", BX_KEY_C},
+          {"pgdn", BX_KEY_PAGE_DOWN},
+          {"pgup", BX_KEY_PAGE_UP},
       };
       char buf[1024];
       strncpy(buf, keyscript, sizeof(buf) - 1);
@@ -554,10 +583,19 @@ void bx_sdl_gui_c::handle_events(void) {
 
     case SDL_EVENT_MOUSE_MOTION:
       if (sdl_grab) {
-        int dx = (int)sdl_event.motion.xrel;
-        int dy = -(int)sdl_event.motion.yrel;
+        // PS/2 mouse Y is positive-up, SDL is positive-down; hence the
+        // baseline Y negation. invert_x/y flip on top of that.
+        double mx = (double)sdl_event.motion.xrel * mouse_speed;
+        double my = -(double)sdl_event.motion.yrel * mouse_speed;
+        sdl_mouse_accum_x += mouse_invert_x ? -mx : mx;
+        sdl_mouse_accum_y += mouse_invert_y ? -my : my;
+
+        int dx = (int)sdl_mouse_accum_x;
+        int dy = (int)sdl_mouse_accum_y;
 
         if (dx != 0 || dy != 0) {
+          sdl_mouse_accum_x -= dx;
+          sdl_mouse_accum_y -= dy;
           theKeyboard->mouse_motion(dx, dy, 0, sdl_mouse_button_state);
         }
       }
