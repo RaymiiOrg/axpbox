@@ -30,6 +30,7 @@
 #include "Flash.hpp"
 #include "StdAfx.hpp"
 #include "System.hpp"
+#include "banner.hpp"
 
 #include "lockstep.hpp"
 
@@ -101,6 +102,8 @@ void segv_handler(int signum) {
 int main_sim(int argc, char *argv[]) {
   const char *filename = 0;
   FILE *f;
+
+  print_axpbox_banner("AXPbox Alpha Emulator");
 
 #ifdef HAS_BACKTRACE
   signal(SIGSEGV, &segv_handler);

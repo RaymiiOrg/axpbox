@@ -251,7 +251,7 @@ void CSystem::Run() {
   int k;
 
 #if defined(DUMP_MEMMAP)
-  printf("ES40 Memory Map\n");
+  printf("AXPbox Memory Map\n");
   printf("Physical Address Size     Device/Index\n");
   printf("---------------- -------- -------------------------\n");
   for (i = 0; i < iNumMemories; i++) {

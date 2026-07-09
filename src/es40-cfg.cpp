@@ -32,6 +32,7 @@
  **/
 
 #include "StdAfx.hpp"
+#include "banner.hpp"
 
 #ifdef _WIN32
 #pragma comment(lib, "winmm.lib")
@@ -435,36 +436,7 @@ int main_cfg(int argc, char *argv[]) {
 #define PCAP_OPENFLAG_PROMISCUOUS 0x00000001
 #define PCAP_OPENFLAG_NOCAPTURE_LOCAL 0x00000008
 #endif
-  printf("\n\n");
-  printf("   "
-         "**==================================================================="
-         "===**\n");
-  printf("   ||                             ES40  emulator                     "
-         "      ||\n");
-  printf("   ||                              Version " VERSION
-         "                            ||\n");
-  printf("   ||                                                                "
-         "      ||\n");
-  printf("   ||  Copyright (C) 2007-2008 by the ES40 Emulator Project          "
-         "      ||\n");
-  printf("   ||  Website: https://github.com/ES40-Emu/es40/                    "
-         "      ||\n");
-  printf("   ||                                                                "
-         "      ||\n");
-  printf("   ||                                                                "
-         "      ||\n");
-  printf("   ||  This program is free software; you can redistribute it and/or "
-         "      ||\n");
-  printf("   ||  modify it under the terms of the GNU General Public License   "
-         "      ||\n");
-  printf("   ||  as published by the Free Software Foundation; either version "
-         "2      ||\n");
-  printf("   ||  of the License, or (at your option) any later version.        "
-         "      ||\n");
-  printf("   "
-         "**==================================================================="
-         "===**\n");
-  printf("\n\n");
+  print_axpbox_banner("AXPbox Alpha Emulator configuration utility");
 
   /* Explanation
    */

@@ -172,8 +172,8 @@ static BOOL fix_size = false;
 static HWND hotKeyReceiver = NULL;
 static HWND saveParent = NULL;
 
-static char szAppName[] = "ES40 Emulator";
-static char szWindowName[] = "ES40 Emulator";
+static char szAppName[] = "AXPbox Alpha Emulator";
+static char szWindowName[] = "AXPbox Alpha Emulator";
 
 typedef struct {
   HINSTANCE hInstance;

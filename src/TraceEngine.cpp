@@ -136,7 +136,8 @@ void CTraceEngine::trace(CAlphaCPU *cpu, u64 f, u64 t, bool down, bool up,
       fprintf(asPRBRs[o].f,
               "\n==>   Switch to PRBR %08" PRIx64 " %08" PRIx64 " (%s)\n",
               asPRBRs[p].prbr, asPRBRs[p].hwpcb, asPRBRs[p].procname);
-      fprintf(asPRBRs[p].f, "        This is PRBR %08" PRIx64 " %08" PRIx64 " (%s)\n",
+      fprintf(asPRBRs[p].f,
+              "        This is PRBR %08" PRIx64 " %08" PRIx64 " (%s)\n",
               asPRBRs[p].prbr, asPRBRs[p].hwpcb, asPRBRs[p].procname);
       fprintf(asPRBRs[p].f,
               "<== Switch from PRBR %08" PRIx64 " %08" PRIx64 " (%s)\n\n",
@@ -205,8 +206,9 @@ void CTraceEngine::trace(CAlphaCPU *cpu, u64 f, u64 t, bool down, bool up,
 
         // And print the from address, and the value of the r0 register (return
         // value)
-        fprintf(asPRBRs[p].f, "%016" PRIx64 "(%08" PRIx64 ") ($r0 = %" PRIx64 ")\n", f,
-                pc_f, cpu->get_r(0, true));
+        fprintf(asPRBRs[p].f,
+                "%016" PRIx64 "(%08" PRIx64 ") ($r0 = %" PRIx64 ")\n", f, pc_f,
+                cpu->get_r(0, true));
 
         // Indent to the new (lower) trace level
         for (j = 0; j < asPRBRs[p].trclvl; j++)
@@ -333,7 +335,8 @@ void CTraceEngine::trace_br(CAlphaCPU *cpu, u64 f, u64 t) {
       fprintf(asPRBRs[o].f,
               "\n==>   Switch to PRBR %08" PRIx64 " %08" PRIx64 " (%s)\n",
               asPRBRs[p].prbr, asPRBRs[p].hwpcb, asPRBRs[p].procname);
-      fprintf(asPRBRs[p].f, "        This is PRBR %08" PRIx64 " %08" PRIx64 " (%s)\n",
+      fprintf(asPRBRs[p].f,
+              "        This is PRBR %08" PRIx64 " %08" PRIx64 " (%s)\n",
               asPRBRs[p].prbr, asPRBRs[p].hwpcb, asPRBRs[p].procname);
       fprintf(asPRBRs[p].f,
               "<== Switch from PRBR %08" PRIx64 " %08" PRIx64 " (%s)\n\n",
@@ -459,8 +462,8 @@ int CTraceEngine::get_prbr(u64 prbr, u64 hwpcb) {
     strncpy(asPRBRs[i].procname, cSystem->PtrToMem(prbr + 0x154), 20);
   else
     strcpy(asPRBRs[i].procname, "");
-  sprintf(filename, "trace_%08" PRIx64 "_%08" PRIx64 "_%02d_%s.trc", prbr, hwpcb,
-          asPRBRs[i].generation, asPRBRs[i].procname);
+  sprintf(filename, "trace_%08" PRIx64 "_%08" PRIx64 "_%02d_%s.trc", prbr,
+          hwpcb, asPRBRs[i].generation, asPRBRs[i].procname);
   asPRBRs[i].f = fopen(filename, "w");
   if (asPRBRs[i].f == 0)
     printf("Failed to open file!!\n");
@@ -628,9 +631,9 @@ void CTraceEngine::run_script(const char *filename) {
       return;
     }
   } else {
-    printf("This is the ES40 interactive debugger. To start non-interactively, "
-           "run es40,\n");
-    printf("Or run this executable (es40_idb) with a last argument of "
+    printf("This is the AXPbox interactive debugger. To start "
+           "non-interactively, run axpbox,\n");
+    printf("Or run this executable with a last argument of "
            "@<script-file>\n");
     f = stdin;
   }
@@ -1314,9 +1317,10 @@ int CTraceEngine::parse(char command[100][100]) {
             return 0;
           }
 
-          printf("%%IDB-I-BRKSET: Breakpoint set when data is read at %016" PRIx64
-                 "x.\n",
-                 iBreakPoint);
+          printf(
+              "%%IDB-I-BRKSET: Breakpoint set when data is read at %016" PRIx64
+              "x.\n",
+              iBreakPoint);
           bBreakPoint = true;
           iBreakPointMode = 4;
           return 0;
@@ -1328,10 +1332,9 @@ int CTraceEngine::parse(char command[100][100]) {
             return 0;
           }
 
-          printf(
-              "%%IDB-I-BRKSET: Breakpoint set when data is written at %016" PRIx64
-              "x.\n",
-              iBreakPoint);
+          printf("%%IDB-I-BRKSET: Breakpoint set when data is written at "
+                 "%016" PRIx64 "x.\n",
+                 iBreakPoint);
           bBreakPoint = true;
           iBreakPointMode = 5;
           return 0;
@@ -1520,7 +1523,8 @@ void CTraceEngine::list_all() {
   p = pR;
 
   while (p) {
-    printf("\n======== DISASSEMBLING %08" PRIx64 " TO %08" PRIx64 " ========\n\n",
+    printf("\n======== DISASSEMBLING %08" PRIx64 " TO %08" PRIx64
+           " ========\n\n",
            p->from, p->to);
     theSystem->get_cpu(0)->listing(p->from, p->to);
     p = p->pNext;

@@ -2366,7 +2366,8 @@ _next_instruction:
         max_mips = mips;
       if (min_mips > mips)
         min_mips = mips;
-      printf("ES40 MIPS (%3.1f sec):: current: %5.3f, min: %5.3f, max: %5.3f\n",
+      printf("AXPbox MIPS (%3.1f sec):: current: %5.3f, min: %5.3f, max: "
+             "%5.3f\n",
              secs, mips, min_mips, max_mips);
     }
 

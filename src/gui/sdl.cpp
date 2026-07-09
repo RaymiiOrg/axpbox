@@ -138,10 +138,11 @@ static bool sdl_swallow_end_release = false;
 static bool sdl_swallow_home_release = false;
 static bool sdl_swallow_pageup_release = false;
 static bool sdl_swallow_pagedown_release = false;
-static const char *sdl_title = "ES40 Emulator - Ctrl+Alt+End sends "
+static const char *sdl_title = "AXPbox Alpha Emulator - Ctrl+Alt+End sends "
                                "Ctrl+Alt+Del - Ctrl+Alt+Home resets window";
 static const char *sdl_title_grabbed =
-    "ES40 Emulator - Ctrl+F10 releases mouse - Ctrl+Alt+End sends Ctrl+Alt+Del "
+    "AXPbox Alpha Emulator - Ctrl+F10 releases mouse - Ctrl+Alt+End sends "
+    "Ctrl+Alt+Del "
     "- Ctrl+Alt+Home resets window";
 
 bx_sdl_gui_c::bx_sdl_gui_c(CConfigurator *cfg) {

@@ -35,7 +35,7 @@ First invoke the interactive configuration file generator:
 ```
 axpbox configure
 ```
-This creates a file named es40.cfg, which you can now modify (the generator UI doesn't allow to set all options). After the configuration file and the required ROM image are ready, you can start the emulation:
+This creates a file named es40.cfg, which you can now modify (the generator UI doesn't allow to set all options). The sample [es40.cfg](es40.cfg) in the repository root documents every available configuration value. After the configuration file and the required ROM image are ready, you can start the emulation:
 ```
 axpbox run
 ```

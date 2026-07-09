@@ -258,7 +258,7 @@ void bx_x11_gui_c::specific_init(unsigned tilewidth, unsigned tileheight) {
   int x;
   int y;                         /* window position */
   unsigned int border_width = 4; /* four pixels */
-  const char *window_name = "ES40 Emulator";
+  const char *window_name = "AXPbox Alpha Emulator";
   const char *icon_name = "ES40";
   XSizeHints size_hints;
   char *display_name = NULL;
@@ -276,7 +276,8 @@ void bx_x11_gui_c::specific_init(unsigned tilewidth, unsigned tileheight) {
   y_tilesize = tileheight;
 
   /* connect to X server */
-  if ((bx_x_display = XOpenDisplay(display_name)) == NULL && progname != nullptr) {
+  if ((bx_x_display = XOpenDisplay(display_name)) == NULL &&
+      progname != nullptr) {
     BX_PANIC(("%s: cannot connect to X server %s", progname,
               XDisplayName(display_name)));
   }
@@ -409,18 +410,20 @@ void bx_x11_gui_c::specific_init(unsigned tilewidth, unsigned tileheight) {
     /* These calls store window_name and icon_name into
      * XTextProperty structures and set their other
      * fields properly. */
-    if (XStringListToTextProperty((char **)&window_name, 1, &windowName) == 0 && progname != nullptr) {
+    if (XStringListToTextProperty((char **)&window_name, 1, &windowName) == 0 &&
+        progname != nullptr) {
       BX_PANIC(("%s: structure allocation for windowName failed.", progname));
     }
 
-    if (XStringListToTextProperty((char **)&icon_name, 1, &iconName) == 0 && progname != nullptr) {
+    if (XStringListToTextProperty((char **)&icon_name, 1, &iconName) == 0 &&
+        progname != nullptr) {
       BX_PANIC(("%s: structure allocation for iconName failed.", progname));
     }
 
     wm_hints.initial_state = NormalState;
     wm_hints.input = True;
     class_hints.res_name = progname;
-    class_hints.res_class = (char *)"ES40 Emulator";
+    class_hints.res_class = (char *)"AXPbox Alpha Emulator";
 
     XSetWMProperties(bx_x_display, win, &windowName, &iconName, NULL /*argv*/,
                      0 /*argc*/, &size_hints, &wm_hints, &class_hints);
