@@ -31,10 +31,14 @@
  * \file
  * Contains code to use a file as a disk image.
  **/
+
 #include "DiskFile.hpp"
 #include "StdAfx.hpp"
 
+#include <ctype.h>
+#include <string.h>
 #include <vector>
+
 std::vector<CDiskFile *> cd_diskfiles;
 
 #ifdef _WIN32
@@ -49,7 +53,8 @@ void win32_select_file(HWND hwnd) {
 
   ofn.lStructSize = sizeof(ofn);
   ofn.hwndOwner = hwnd;
-  ofn.lpstrFilter = "ISO Files (*.iso)\0*.iso\0All Files (*.*)\0*.*\0";
+  ofn.lpstrFilter = "ISO Files (*.iso)\0*.iso\0CUE Files (*.cue)\0*.cue\0All "
+                    "Files (*.*)\0*.*\0";
   ofn.lpstrFile = szFileName;
   ofn.nMaxFile = MAX_PATH;
   ofn.Flags = OFN_EXPLORER | OFN_FILEMUSTEXIST;
@@ -57,30 +62,32 @@ void win32_select_file(HWND hwnd) {
 
   if (GetOpenFileNameA(&ofn)) {
     if (cd_diskfiles.size() > 0) {
-      printf("Change ISO file to %s\n", szFileName);
+      printf("Change image file to %s\n", szFileName);
       cd_diskfiles[0]->reload_file(szFileName);
     }
   }
 }
+
 #elif defined(HAVE_SDL) && defined(HAVE_SDL3)
 #include <SDL3/SDL.h>
 
-static const SDL_DialogFileFilter filters[] = {{"ISO files", "iso"},
-                                               {"All files", "*"}};
+static const SDL_DialogFileFilter filters[] = {
+    {"ISO files", "iso"}, {"CUE files", "cue"}, {"All files", "*"}};
 
 static void SDLCALL callback(void *userdata, const char *const *filelist,
                              int filter) {
   if (!filelist) {
     SDL_Log("An error occured: %s", SDL_GetError());
     return;
-  } else if (!*filelist) {
+  }
+  if (!*filelist) {
     SDL_Log("The user did not select any file.");
     return;
   }
 
   if (cd_diskfiles.size() > 0) {
     char *szFileName = SDL_strdup(filelist[0]);
-    SDL_Log("Change ISO file to %s", szFileName);
+    SDL_Log("Change image file to %s", szFileName);
     cd_diskfiles[0]->reload_file(szFileName);
     SDL_free(szFileName);
   }
@@ -90,11 +97,23 @@ void sdl_select_file(SDL_Window *window) {
   SDL_ShowOpenFileDialog(callback, nullptr, window, filters,
                          SDL_arraysize(filters), nullptr, false);
 }
-#endif
+#endif // HAVE_SDL
+
+// ===========================================================================
+//  CDiskFile: constructor / destructor
+// ===========================================================================
 
 CDiskFile::CDiskFile(CConfigurator *cfg, CSystem *sys, CDiskController *c,
                      int idebus, int idedev)
     : CDisk(cfg, sys, c, idebus, idedev) {
+  // Initialise bin/cue state before anything else so that the destructor
+  // is always safe to call even if the constructor throws.
+  is_bincue = false;
+  tracks = nullptr;
+  track_count = 0;
+  current_lba = 0;
+  logical_byte_pos = 0;
+
   filename = myCfg->get_text_value("file");
   if (!filename) {
     // AXPbox behavior: fall back to a default image name (created on
@@ -110,17 +129,17 @@ CDiskFile::CDiskFile(CConfigurator *cfg, CSystem *sys, CDiskController *c,
 
   model_number = myCfg->get_text_value("model_number", filename);
 
-  // skip to the filename portion of the path.
+  // Advance model_number pointer past any directory component.
   char *p = model_number;
 #if defined(_WIN32)
-  char x = '\\';
+  char sep = '\\';
 #elif defined(__VMS)
-  char x = ']';
+  char sep = ']';
 #else
-  char x = '/';
+  char sep = '/';
 #endif
   while (*p) {
-    if (*p == x)
+    if (*p == sep)
       model_number = p + 1;
     p++;
   }
@@ -129,26 +148,87 @@ CDiskFile::CDiskFile(CConfigurator *cfg, CSystem *sys, CDiskController *c,
     printf("CD FILE\n");
     cd_diskfiles.push_back((CDiskFile *)this);
   }
-  printf("%s: Mounted file %s, %" PRId64 " %zu-byte blocks, %" PRId64
-         "/%ld/%ld.\n",
+
+  printf("%s: Mounted file %s, %" PRId64 " %zu-byte blocks, "
+         "%" PRId64 "/%ld/%ld.\n",
          devid_string, filename, byte_size / state.block_size, state.block_size,
          cylinders, heads, sectors);
 }
 
 CDiskFile::~CDiskFile(void) {
   printf("%s: Closing file.\n", devid_string);
-  fclose(handle);
-}
 
-void CDiskFile::reload_file(char *_filename) {
+  // Close any open bin/cue file handles and free the track array.
+  if (is_bincue) {
+    close_bin_handles();
+    if (tracks) {
+      free(tracks);
+      tracks = nullptr;
+    }
+  }
+
+  // Close the plain-file handle (nullptr when bin/cue is active).
   if (handle) {
     fclose(handle);
     handle = nullptr;
   }
+}
+
+// ===========================================================================
+//  reload_file  –  entry point for both initial load and media change
+// ===========================================================================
+
+void CDiskFile::reload_file(char *_filename) {
+  // ---- tear down any existing state --------------------------------
+  reset_bincue_state();
+
+  if (handle) {
+    fclose(handle);
+    handle = nullptr;
+  }
+
+  // ---- detect .cue extension (case-insensitive, cross-platform) ----
+  if (has_cue_extension(_filename)) {
+    printf("%s: Detected .cue extension, attempting BIN/CUE parse...\n",
+           devid_string);
+
+    if (try_parse_cue(_filename)) {
+      // Success: compute logical byte_size from track data.
+      // We expose the total user-data bytes (LBAs * 2048) to the SCSI
+      // layer so that READ CAPACITY and range checks are correct.
+      is_bincue = true;
+      byte_size = 0;
+      for (int i = 0; i < track_count; i++) {
+        long track_lbas = tracks[i].endLBA - tracks[i].startLBA;
+        if (track_lbas > 0)
+          byte_size += (off_t_large)track_lbas * 2048;
+      }
+
+      state.byte_pos = 0;
+      logical_byte_pos = 0;
+      current_lba = 0;
+
+      sectors = 32;
+      heads = 8;
+      determine_layout();
+      state.scsi.media_changed = 1;
+
+      printf("%s: BIN/CUE loaded: %d track(s), %" PRId64 " logical bytes.\n",
+             devid_string, track_count, byte_size);
+      return;
+    }
+
+    // Parse failed: fall through to raw-file handling.
+    printf("%s: BIN/CUE parse failed, falling back to raw image.\n",
+           devid_string);
+  }
+
+  // ---- plain ISO / raw image path (completely unchanged) -----------
   if (read_only)
     handle = fopen(_filename, "rb");
   else
     handle = fopen_large(_filename, "rb+");
+
   if (!handle) {
     printf("%s: Could not open file %s!\n", devid_string, _filename);
 
@@ -162,6 +242,7 @@ void CDiskFile::reload_file(char *_filename) {
     if (!handle)
       FAILURE_1(Runtime, "%s: File does not exist and could not be created",
                 devid_string);
+
     crt_buf = calloc(1024, 1024);
     printf("%s: writing %d 1kB blocks:   0%%\b\b\b\b", devid_string, sz);
 
@@ -181,18 +262,19 @@ void CDiskFile::reload_file(char *_filename) {
     printf("100%%\n");
     fclose(handle);
     free(crt_buf);
+
     if (read_only)
       handle = fopen_large(_filename, "rb");
     else
       handle = fopen_large(_filename, "rb+");
-    if (!handle) {
+
+    if (!handle)
       FAILURE_1(Runtime, "%s: File created could not be opened", devid_string);
-    }
 
     printf("%s: %d MB file %s created.\n", devid_string, sz, _filename);
   }
 
-  // determine size...
+  // Determine size.
   fseek_large(handle, 0, SEEK_END);
   byte_size = ftell_large(handle);
   fseek_large(handle, 0, SEEK_SET);
@@ -200,41 +282,663 @@ void CDiskFile::reload_file(char *_filename) {
 
   sectors = 32;
   heads = 8;
-
-  // calc_cylinders();
   determine_layout();
   state.scsi.media_changed = 1;
 }
 
+// ===========================================================================
+//  CDisk virtual interface overrides
+// ===========================================================================
+
+/**
+ * \brief Seek to an absolute logical byte position.
+ *
+ * For BIN/CUE images the position is logical (LBA * 2048); the physical
+ * file seek is deferred to read_bytes() so that we can translate across
+ * track boundaries without seeking unnecessarily.
+ *
+ * For plain images the behaviour is identical to the original code.
+ **/
 bool CDiskFile::seek_byte(off_t_large byte) {
+  if (is_bincue) {
+    if (byte >= byte_size) {
+      FAILURE_1(InvalidArgument, "%s: BIN/CUE seek beyond end of image!\n",
+                devid_string);
+    }
+
+    logical_byte_pos = byte;
+    current_lba = (long)(byte / 2048);
+    state.byte_pos = byte;
+    return true;
+  }
+
+  // --- original plain-file path (unchanged) ---
   if (byte >= byte_size) {
     FAILURE_1(InvalidArgument, "%s: Seek beyond end of file!\n", devid_string);
   }
 
   fseek_large(handle, byte, SEEK_SET);
   state.byte_pos = ftell_large(handle);
+  return true;
+}
+
+/**
+ * \brief Read \a bytes bytes from the current position into \a dest.
+ *
+ * For BIN/CUE images: translates logical byte/LBA positions to physical
+ * file offsets, extracting only user-data bytes and skipping raw sector
+ * headers. Correctly crosses track and file boundaries.
+ *
+ * For audio tracks the full raw sector (2352 bytes) is treated as payload
+ * because there is no header to skip.
+ *
+ * For plain images the behaviour is identical to the original code.
+ **/
+size_t CDiskFile::read_bytes(void *dest, size_t bytes) {
+  if (is_bincue) {
+    size_t total_read = 0;
+    u8 *out = static_cast<u8 *>(dest);
+
+    while (bytes > 0) {
+      int track_idx = 0;
+      off_t_large file_off = 0;
+
+      if (!lba_to_file_position(current_lba, track_idx, file_off)) {
+        // LBA is beyond all tracks: pad with zeros and stop.
+        printf("%s: BIN/CUE read past end of image at LBA %ld\n", devid_string,
+               current_lba);
+        break;
+      }
+
+      const CueTrack *trk = &tracks[track_idx];
+
+      // Byte offset within the current logical 2048-byte sector.
+      long offset_in_sector = (long)(logical_byte_pos % 2048);
+
+      // How many logical bytes remain in this sector.
+      size_t can_read = (size_t)(2048 - offset_in_sector);
+      if (can_read > bytes)
+        can_read = bytes;
+
+      // Physical position: start of raw sector + header + intra-sector offset.
+      off_t_large phys = file_off + (off_t_large)trk->dataOffset +
+                         (off_t_large)offset_in_sector;
+
+      if (fseek_large(trk->fileHandle, phys, SEEK_SET) != 0) {
+        printf("%s: BIN/CUE fseek failed for track %d\n", devid_string,
+               trk->number);
+        break;
+      }
+
+      size_t r = fread(out, 1, can_read, trk->fileHandle);
+      if (r == 0) {
+        printf("%s: BIN/CUE fread returned 0 for track %d\n", devid_string,
+               trk->number);
+        break;
+      }
+
+      out += r;
+      total_read += r;
+      bytes -= r;
+      logical_byte_pos += (off_t_large)r;
+      state.byte_pos = logical_byte_pos;
+      current_lba = (long)(logical_byte_pos / 2048);
+    }
+
+    return total_read;
+  }
+
+  // --- original plain-file path (unchanged) ---
+  size_t r = fread(dest, 1, bytes, handle);
+  state.byte_pos = ftell_large(handle);
+  return r;
+}
+
+/**
+ * \brief Write \a bytes bytes from \a src at the current position.
+ *
+ * BIN/CUE images are always read-only (write returns 0).
+ * Plain image behaviour is identical to the original code.
+ **/
+size_t CDiskFile::write_bytes(void *src, size_t bytes) {
+  if (is_bincue) {
+    // BIN/CUE images are treated as read-only media.
+    return 0;
+  }
+
+  if (read_only)
+    return 0;
+
+  size_t r = fwrite(src, 1, bytes, handle);
+  state.byte_pos = ftell_large(handle);
+  return r;
+}
+
+/**
+ * \brief Flush write buffers.
+ *
+ * BIN/CUE images are read-only so there is nothing to flush.
+ * Plain image behaviour is identical to the original code.
+ **/
+void CDiskFile::flush() {
+  if (is_bincue)
+    return;
+
+  if (handle && !read_only)
+    fflush(handle);
+}
+
+// ===========================================================================
+//  BIN/CUE query helpers (public)
+// ===========================================================================
+
+/**
+ * \brief Return the track that covers \a lba, or nullptr.
+ **/
+const CueTrack *CDiskFile::get_track_for_lba(long lba) const {
+  if (!is_bincue || !tracks)
+    return nullptr;
+
+  for (int i = 0; i < track_count; i++) {
+    if (lba >= tracks[i].startLBA && lba < tracks[i].endLBA)
+      return &tracks[i];
+  }
+
+  return nullptr;
+}
+
+// ===========================================================================
+//  BIN/CUE private helpers
+// ===========================================================================
+
+/**
+ * \brief Return the platform path separator character.
+ *
+ * Used when resolving .bin paths relative to the .cue file's directory.
+ **/
+char CDiskFile::path_separator() {
+#if defined(_WIN32)
+  return '\\';
+#elif defined(__VMS)
+  return ']';
+#else
+  return '/';
+#endif
+}
+
+/**
+ * \brief Return true when \a path ends with ".cue" (case-insensitive).
+ **/
+bool CDiskFile::has_cue_extension(const char *path) {
+  if (!path)
+    return false;
+
+  size_t len = strlen(path);
+  if (len < 4)
+    return false;
+
+  const char *ext = path + len - 4;
+  return (tolower((unsigned char)ext[0]) == '.' &&
+          tolower((unsigned char)ext[1]) == 'c' &&
+          tolower((unsigned char)ext[2]) == 'u' &&
+          tolower((unsigned char)ext[3]) == 'e');
+}
+
+/**
+ * \brief Convert MSF address to LBA.
+ **/
+long CDiskFile::msf_to_lba(int m, int s, int f) {
+  return (long)(m * 60 + s) * 75 + f;
+}
+
+/**
+ * \brief Convert LBA to MSF address.
+ **/
+void CDiskFile::lba_to_msf(long lba, int &m, int &s, int &f) {
+  f = (int)(lba % 75);
+  lba /= 75;
+  s = (int)(lba % 60);
+  lba /= 60;
+  m = (int)lba;
+}
+
+/**
+ * \brief Release all bin/cue state, leaving the object ready to load
+ *        a fresh image (either bin/cue or plain).
+ **/
+void CDiskFile::reset_bincue_state() {
+  if (tracks) {
+    close_bin_handles();
+    free(tracks);
+    tracks = nullptr;
+  }
+
+  is_bincue = false;
+  track_count = 0;
+  current_lba = 0;
+  logical_byte_pos = 0;
+}
+
+/**
+ * \brief Parse a .cue sheet and populate the tracks[] array.
+ *
+ * Returns true on success (tracks[] is allocated and populated,
+ * all .bin files are open).  Returns false on any error; on failure
+ * the tracks[] array is freed and the object is left in a clean state.
+ *
+ * Design notes
+ * ------------
+ * - Two-pass approach: first pass counts TRACK keywords so we can
+ *   allocate exactly the right amount of memory with a single calloc,
+ *   avoiding any std::vector dependency.
+ * - Fixed-size char arrays throughout: no heap allocations inside the
+ *   track structures, no C++ exceptions.
+ * - Robust against DOS/Unix/Mac line endings (\r\n, \n, \r).
+ * - Path joining uses path_separator() for cross-platform correctness.
+ * - OpenVMS note: VMS path syntax is  DEVICE:[DIR]FILE.EXT  The last
+ *   ']' is the directory-close character used as path_separator() on VMS,
+ *   which means get_cue_directory() correctly strips to the directory
+ *   portion (DEVICE:[DIR]) that can be prefixed to relative .bin names.
+ **/
+bool CDiskFile::try_parse_cue(const char *cue_path) {
+  // ------------------------------------------------------------------
+  // Open the .cue file
+  // ------------------------------------------------------------------
+  FILE *f = fopen(cue_path, "r");
+  if (!f) {
+    printf("%s: Cannot open .cue file: %s\n", devid_string, cue_path);
+    return false;
+  }
+
+  // ------------------------------------------------------------------
+  // Resolve the directory that contains the .cue file.
+  // .bin filenames in the cue sheet are interpreted relative to this.
+  // ------------------------------------------------------------------
+  char cue_dir[BINCUE_MAX_PATH] = "";
+  {
+    const char sep = path_separator();
+    const char *last_sep = nullptr;
+    const char *p = cue_path;
+    while (*p) {
+      if (*p == sep)
+        last_sep = p;
+      p++;
+    }
+
+    if (last_sep) {
+      size_t dir_len = (size_t)(last_sep - cue_path);
+      if (dir_len >= sizeof(cue_dir))
+        dir_len = sizeof(cue_dir) - 1;
+      memcpy(cue_dir, cue_path, dir_len);
+      cue_dir[dir_len] = '\0';
+    }
+    // If last_sep is nullptr the .cue is in the CWD; cue_dir stays "".
+  }
+
+  // ------------------------------------------------------------------
+  // First pass: count TRACK keywords to size the allocation.
+  // ------------------------------------------------------------------
+  char line[512];
+  int num_tracks = 0;
+
+  while (fgets(line, (int)sizeof(line), f)) {
+    char *p = line;
+    while (*p == ' ' || *p == '\t')
+      p++;
+    if (strncmp(p, "TRACK ", 6) == 0)
+      num_tracks++;
+  }
+
+  if (num_tracks == 0) {
+    printf("%s: .cue contains no TRACK entries.\n", devid_string);
+    fclose(f);
+    return false;
+  }
+
+  // ------------------------------------------------------------------
+  // Allocate track array (zero-initialised).
+  // ------------------------------------------------------------------
+  tracks =
+      static_cast<CueTrack *>(calloc((size_t)num_tracks, sizeof(CueTrack)));
+  if (!tracks) {
+    printf("%s: Out of memory allocating %d track descriptors.\n", devid_string,
+           num_tracks);
+    fclose(f);
+    return false;
+  }
+
+  // ------------------------------------------------------------------
+  // Second pass: populate track array.
+  // ------------------------------------------------------------------
+  rewind(f);
+
+  int current_idx = -1; // index into tracks[] for current TRACK block
+  char current_bin[BINCUE_MAX_PATH] = ""; // most-recently-seen FILE path
+
+  while (fgets(line, (int)sizeof(line), f)) {
+    // Strip leading whitespace.
+    char *p = line;
+    while (*p == ' ' || *p == '\t')
+      p++;
+
+    // Strip trailing whitespace / line endings.
+    char *end = p + strlen(p);
+    while (end > p &&
+           (*(end - 1) == '\r' || *(end - 1) == '\n' || *(end - 1) == ' '))
+      --end;
+    *end = '\0';
+
+    if (*p == '\0' || *p == ';' || *p == '#')
+      continue; // blank or comment
+
+    // ---- FILE "filename.bin" BINARY ---------------------------
+    if (strncmp(p, "FILE ", 5) == 0) {
+      char *q1 = strchr(p, '"');
+      char *q2 = q1 ? strchr(q1 + 1, '"') : nullptr;
+
+      if (!q1 || !q2) {
+        // Some tools omit quotes; grab token after "FILE ".
+        char raw[BINCUE_MAX_PATH] = "";
+        sscanf(p + 5, "%511s", raw);
+        q1 = raw - 1; // reuse pointer trick won't work here
+        // Simpler: just copy raw directly.
+        strncpy(current_bin, raw, BINCUE_MAX_PATH - 1);
+        current_bin[BINCUE_MAX_PATH - 1] = '\0';
+      } else {
+        size_t name_len = (size_t)(q2 - q1 - 1);
+        if (name_len >= BINCUE_MAX_PATH)
+          name_len = BINCUE_MAX_PATH - 1;
+        memcpy(current_bin, q1 + 1, name_len);
+        current_bin[name_len] = '\0';
+      }
+
+      // Resolve to absolute path when cue_dir is known and the
+      // filename is not already absolute.
+      //
+      // Absolute detection:
+      //   Windows  – starts with '\' or "X:"
+      //   VMS      – starts with a letter followed by ':' (device)
+      //   Unix     – starts with '/'
+      bool is_absolute = false;
+#if defined(_WIN32)
+      is_absolute = (current_bin[0] == '\\' ||
+                     (current_bin[0] != '\0' && current_bin[1] == ':'));
+#elif defined(__VMS)
+      is_absolute = (current_bin[0] != '\0' && current_bin[1] == ':');
+#else
+      is_absolute = (current_bin[0] == '/');
+#endif
+      if (!is_absolute && cue_dir[0] != '\0') {
+        char tmp[BINCUE_MAX_PATH];
+        snprintf(tmp, sizeof(tmp), "%s%c%s", cue_dir, path_separator(),
+                 current_bin);
+        strncpy(current_bin, tmp, BINCUE_MAX_PATH - 1);
+        current_bin[BINCUE_MAX_PATH - 1] = '\0';
+      }
+    }
+
+    // ---- TRACK nn MODE ----------------------------------------
+    else if (strncmp(p, "TRACK ", 6) == 0) {
+      current_idx++;
+      if (current_idx >= num_tracks) {
+        // Shouldn't happen; guard against corrupted cue files.
+        printf("%s: More TRACKs found than counted – stopping parse.\n",
+               devid_string);
+        break;
+      }
+
+      CueTrack *trk = &tracks[current_idx];
+
+      char mode_str[32] = "";
+      int track_num = 0;
+      sscanf(p + 6, "%d %31s", &track_num, mode_str);
+
+      trk->number = track_num;
+      trk->mode = parse_mode_string(mode_str, trk->sectorSize, trk->dataOffset,
+                                    trk->dataSize);
+
+      strncpy(trk->filename, current_bin, BINCUE_MAX_PATH - 1);
+      trk->filename[BINCUE_MAX_PATH - 1] = '\0';
+
+      // startLBA / endLBA filled in by INDEX lines below.
+      trk->startLBA = 0;
+      trk->endLBA = 0;
+      trk->pregapLBA = 0;
+      trk->fileOffset = 0;
+      trk->fileHandle = nullptr;
+
+      printf("%s:   Track %02d  %s  sectorSize=%d  dataOffset=%d\n",
+             devid_string, track_num, mode_str, trk->sectorSize,
+             trk->dataOffset);
+    }
+
+    // ---- INDEX nn mm:ss:ff ------------------------------------
+    else if (strncmp(p, "INDEX ", 6) == 0) {
+      if (current_idx < 0)
+        continue;
+
+      int index_num = 0, m = 0, s = 0, fr = 0;
+      if (sscanf(p + 6, "%d %d:%d:%d", &index_num, &m, &s, &fr) == 4) {
+        long lba = msf_to_lba(m, s, fr);
+        if (index_num == 0)
+          tracks[current_idx].pregapLBA = lba;
+        else if (index_num == 1)
+          tracks[current_idx].startLBA = lba;
+        // Higher index values (index points) are ignored.
+      }
+    }
+
+    // ---- PREGAP mm:ss:ff --------------------------------------
+    else if (strncmp(p, "PREGAP ", 7) == 0) {
+      if (current_idx < 0)
+        continue;
+
+      int m = 0, s = 0, fr = 0;
+      if (sscanf(p + 7, "%d:%d:%d", &m, &s, &fr) == 3)
+        tracks[current_idx].pregapLBA = msf_to_lba(m, s, fr);
+    }
+
+    // ---- Other keywords (TITLE, PERFORMER, …) -----------------
+    // Silently ignored; we only care about structural keywords.
+  }
+
+  fclose(f);
+
+  track_count = current_idx + 1;
+
+  if (track_count <= 0) {
+    printf("%s: .cue parse produced no usable tracks.\n", devid_string);
+    free(tracks);
+    tracks = nullptr;
+    track_count = 0;
+    return false;
+  }
+
+  // ------------------------------------------------------------------
+  // Compute endLBA for every track except the last.
+  // The last track's endLBA is determined from the .bin file size after
+  // we open the files below.
+  // ------------------------------------------------------------------
+  for (int i = 0; i < track_count - 1; i++)
+    tracks[i].endLBA = tracks[i + 1].startLBA;
+
+  // ------------------------------------------------------------------
+  // Open all .bin files and finalise fileOffset / last endLBA.
+  // ------------------------------------------------------------------
+  if (!open_bin_files()) {
+    // open_bin_files() already printed an error and cleaned up.
+    free(tracks);
+    tracks = nullptr;
+    track_count = 0;
+    return false;
+  }
 
   return true;
 }
 
-size_t CDiskFile::read_bytes(void *dest, size_t bytes) {
-  size_t r;
-  r = fread(dest, 1, bytes, handle);
-  state.byte_pos = ftell_large(handle);
-  return r;
+/**
+ * \brief Open the .bin file for every track and compute physical offsets.
+ *
+ * Returns false and closes any already-opened handles on failure.
+ *
+ * Note on multi-file CUEs: each track may reference a different .bin file.
+ * In the common single-file case all tracks share the same path but we
+ * still open one handle per track for simplicity; OS file caching means
+ * this has no practical cost.
+ *
+ * fileOffset for each track is the byte offset within its .bin file at
+ * which the track's raw sector data begins (startLBA * sectorSize for
+ * single-bin images; 0 for per-track bin files).
+ **/
+bool CDiskFile::open_bin_files() {
+  // Detect whether this is a single-bin or multi-bin layout by checking
+  // whether all tracks share the same filename.
+  bool single_bin = true;
+  for (int i = 1; i < track_count; i++) {
+    if (strcmp(tracks[0].filename, tracks[i].filename) != 0) {
+      single_bin = false;
+      break;
+    }
+  }
+
+  for (int i = 0; i < track_count; i++) {
+    CueTrack *trk = &tracks[i];
+
+    trk->fileHandle = fopen_large(trk->filename, "rb");
+    if (!trk->fileHandle) {
+      printf("%s: Cannot open BIN file: %s\n", devid_string, trk->filename);
+      close_bin_handles();
+      return false;
+    }
+
+    if (single_bin) {
+      // All tracks live in one .bin; each track starts at
+      // startLBA * sectorSize bytes into the file.
+      trk->fileOffset = (off_t_large)trk->startLBA * trk->sectorSize;
+    } else {
+      // Per-track .bin: track data starts at byte 0 of its file.
+      trk->fileOffset = 0;
+    }
+
+    // For the last track, determine endLBA from the file size.
+    if (i == track_count - 1 && trk->endLBA == 0) {
+      fseek_large(trk->fileHandle, 0, SEEK_END);
+      off_t_large bin_bytes = ftell_large(trk->fileHandle);
+
+      long raw_sectors;
+      if (single_bin) {
+        // The file may contain data for all tracks; compute
+        // how many sectors belong to the last track.
+        off_t_large preceding_bytes =
+            (off_t_large)trk->startLBA * trk->sectorSize;
+        off_t_large last_track_bytes = bin_bytes - preceding_bytes;
+        raw_sectors = (long)(last_track_bytes / trk->sectorSize);
+      } else {
+        raw_sectors = (long)(bin_bytes / trk->sectorSize);
+      }
+
+      trk->endLBA = trk->startLBA + raw_sectors;
+    }
+
+    printf("%s:   Track %02d  LBA %ld..%ld  file=%s  offset=%" PRId64 "\n",
+           devid_string, trk->number, trk->startLBA, trk->endLBA, trk->filename,
+           trk->fileOffset);
+  }
+
+  return true;
 }
 
-size_t CDiskFile::write_bytes(void *src, size_t bytes) {
-  if (read_only)
-    return 0;
+/**
+ * \brief Close all open .bin file handles without freeing the array.
+ **/
+void CDiskFile::close_bin_handles() {
+  if (!tracks)
+    return;
 
-  size_t r;
-  r = fwrite(src, 1, bytes, handle);
-  state.byte_pos = ftell_large(handle);
-  return r;
+  for (int i = 0; i < track_count; i++) {
+    if (tracks[i].fileHandle) {
+      fclose(tracks[i].fileHandle);
+      tracks[i].fileHandle = nullptr;
+    }
+  }
 }
 
-void CDiskFile::flush() {
-  if (handle && !read_only)
-    fflush(handle);
+/**
+ * \brief Parse a cue track-mode string and populate sector geometry.
+ *
+ * Returns the matching enum value. Falls back to TRACK_MODE1_2352
+ * for unrecognised strings and prints a warning.
+ *
+ * Sector geometry reference
+ * -------------------------
+ * AUDIO        : 2352 / offset 0  / data 2352  (raw PCM)
+ * MODE1/2048   : 2048 / offset 0  / data 2048  (cooked)
+ * MODE1/2352   : 2352 / offset 16 / data 2048
+ * MODE2/2336   : 2336 / offset 8  / data 2048
+ * MODE2/2352   : 2352 / offset 24 / data 2048
+ **/
+CueTrackMode CDiskFile::parse_mode_string(const char *s, int &sector_size,
+                                          int &data_offset, int &data_size) {
+  if (strcmp(s, "AUDIO") == 0) {
+    sector_size = 2352;
+    data_offset = 0;
+    data_size = 2352;
+    return TRACK_MODE_AUDIO;
+  }
+  if (strcmp(s, "MODE1/2048") == 0) {
+    sector_size = 2048;
+    data_offset = 0;
+    data_size = 2048;
+    return TRACK_MODE1_2048;
+  }
+  if (strcmp(s, "MODE1/2352") == 0) {
+    sector_size = 2352;
+    data_offset = 16;
+    data_size = 2048;
+    return TRACK_MODE1_2352;
+  }
+  if (strcmp(s, "MODE2/2336") == 0) {
+    sector_size = 2336;
+    data_offset = 8;
+    data_size = 2048;
+    return TRACK_MODE2_2336;
+  }
+  if (strcmp(s, "MODE2/2352") == 0) {
+    sector_size = 2352;
+    data_offset = 24;
+    data_size = 2048;
+    return TRACK_MODE2_2352;
+  }
+
+  // Unrecognised mode: warn and default to MODE1/2352.
+  printf("CDiskFile: Unknown track mode '%s', defaulting to MODE1/2352\n", s);
+  sector_size = 2352;
+  data_offset = 16;
+  data_size = 2048;
+  return TRACK_MODE1_2352;
+}
+
+/**
+ * \brief Translate a logical LBA into a physical track index and byte offset.
+ *
+ * \param lba         Logical block address to look up.
+ * \param track_idx   Receives the index into tracks[].
+ * \param file_offset Receives the byte offset in tracks[track_idx].fileHandle
+ *                    at which the *raw* sector for \a lba begins (before the
+ *                    dataOffset header skip).
+ * \return true on success, false if lba is out of range.
+ **/
+bool CDiskFile::lba_to_file_position(long lba, int &track_idx,
+                                     off_t_large &file_offset) const {
+  for (int i = 0; i < track_count; i++) {
+    if (lba >= tracks[i].startLBA && lba < tracks[i].endLBA) {
+      track_idx = i;
+      long sector_in_track = lba - tracks[i].startLBA;
+      file_offset = tracks[i].fileOffset +
+                    (off_t_large)sector_in_track * tracks[i].sectorSize;
+      return true;
+    }
+  }
+
+  return false;
 }

@@ -65,8 +65,12 @@ CDisk::CDisk(CConfigurator *cfg, CSystem *sys, CDiskController *ctrl,
                                                  strlen(c) + strlen(d) + 6));
   sprintf(devid_string, "%s(%s).%s(%s)", c, d, a, b);
 
-  serial_number = myCfg->get_text_value("serial_num", "ES40EM00000");
-  revision_number = myCfg->get_text_value("rev_num", "0.0");
+  // Accept both spellings: es40-cfg and the sample config have always
+  // emitted the long forms, while the code historically read the short ones.
+  serial_number = myCfg->get_text_value(
+      "serial_number", myCfg->get_text_value("serial_num", "ES40EM00000"));
+  revision_number = myCfg->get_text_value(
+      "rev_number", myCfg->get_text_value("rev_num", "0.0"));
   read_only = myCfg->get_bool_value("read_only");
   is_cdrom = myCfg->get_bool_value("cdrom");
 
@@ -2186,82 +2190,207 @@ int CDisk::do_scsi_command() {
 #if defined(DEBUG_SCSI)
     printf("%s: CDROM READ TOC.\n", devid_string);
 #endif
+    // We support format field == 0 only (standard TOC).
     if (state.scsi.cmd.data[2] & 0x0f) {
       FAILURE_2(NotImplemented,
                 "%s: I don't understand READ TOC/PMA/ATIP with format %01x.\n",
                 devid_string, state.scsi.cmd.data[2] & 0x0f);
     }
 
-    if (state.scsi.cmd.data[6] > 1 && state.scsi.cmd.data[6] != 0xAA) {
-      FAILURE_2(InvalidArgument, "%s: I don't know CD-ROM track 0x%02x.\n",
-                devid_string, state.scsi.cmd.data[6]);
-    }
+    const bool msf_flag = (state.scsi.cmd.data[1] & 0x02) != 0;
+    const u8 start_track_req = state.scsi.cmd.data[6];
 
-    retlen = state.scsi.cmd.data[7] * 256 + state.scsi.cmd.data[8];
+    retlen =
+        (unsigned int)state.scsi.cmd.data[7] * 256 + state.scsi.cmd.data[8];
 
     state.scsi.dati.available = retlen;
     state.scsi.dati.read = 0;
 
-    int q2 = 2;
+    // Clear response buffer so we never return stale data.
+    if (retlen <= DATI_BUFSZ)
+      memset(state.scsi.dati.data, 0, retlen);
 
-    /*Here's an actual response from a single-track pressed CD to the
-      command  0x43, 00, 00, 00, 00, 00, 00, 00, 0x0c, 0x40, 00, 00
+    // -----------------------------------------------------------------
+    // Try to get multi-track info from a bin/cue image.
+    // We use ONLY the public interface of CDiskFile so that this code
+    // compiles correctly from CDisk's scope.
+    // For plain ISO images get_track_count() returns 0 and we fall
+    // through to the original single-track response which OpenVMS relies
+    // on - completely unchanged.
+    // -----------------------------------------------------------------
+    CDiskFile *disk_file = dynamic_cast<CDiskFile *>(this);
+    int bincue_tracks = disk_file ? disk_file->get_track_count() : 0;
 
-      0000 00 0a 01 01 00 14 01 00 00 00 00 00 00 00 00 00 ................
-      0010 00 43 d6 02 00 81 ff ff 19 00 00 00 00 00 00 00 .C..............
-      0020 01 00 00 00 00 00 00 00 01 00 00 00 01 00 01 00 ................
-      0030 00 00 00 00 00 10 00 00 00 10 00 00 01 00 00 00 ................
-    */
-    state.scsi.dati.data[q2++] = 1; // first track
-    state.scsi.dati.data[q2++] = 1; // last track
-    if (state.scsi.cmd.data[6] <= 1) {
-      state.scsi.dati.data[q2++] = 0;    // reserved
-      state.scsi.dati.data[q2++] = 0x14; // adr/control (Q-channel: current
-                                         // position, data track, no copy)
-      state.scsi.dati.data[q2++] = 1;    // track number
-      state.scsi.dati.data[q2++] = 0;    // reserved
-      if (state.scsi.cmd.data[1] & 0x02) {
-        u32 x = lba2msf(0);
-        state.scsi.dati.data[q2++] = 0;
-        state.scsi.dati.data[q2++] = (x & 0xff0000) >> 16;
-        state.scsi.dati.data[q2++] = (x & 0xff00) >> 8;
-        state.scsi.dati.data[q2++] = x & 0xff;
-      } else {
-        state.scsi.dati.data[q2++] = 0 >> 24; // lba
-        state.scsi.dati.data[q2++] = 0 >> 16;
-        state.scsi.dati.data[q2++] = 0 >> 8;
-        state.scsi.dati.data[q2++] = 0;
+    if (bincue_tracks > 0) {
+      // ---- Multi-track BIN/CUE response -------------------------
+      // All track data accessed exclusively through get_track(idx).
+      const CueTrack *first = disk_file->get_track(0);
+      const CueTrack *last = disk_file->get_track(bincue_tracks - 1);
+
+      // Sanity check: both must be valid.
+      if (!first || !last) {
+        printf("%s: BIN/CUE track pointers invalid, "
+               "falling back to single-track TOC.\n",
+               devid_string);
+        bincue_tracks = 0;
+        goto single_track_toc;
       }
-    }
 
-    state.scsi.dati.data[q2++] = 0; // reserved
-    state.scsi.dati.data[q2++] =
-        0x16; // adr/control (Q-channel: current position, data track, copy)
-    state.scsi.dati.data[q2++] = 0xAA; // track number
-    state.scsi.dati.data[q2++] = 0;    // reserved
-    if (state.scsi.cmd.data[1] & 0x02) {
-      u32 x = lba2msf(get_lba_size());
-      state.scsi.dati.data[q2++] = 0;
-      state.scsi.dati.data[q2++] = (x & 0xff0000) >> 16;
-      state.scsi.dati.data[q2++] = (x & 0xff00) >> 8;
-      state.scsi.dati.data[q2++] = x & 0xff;
-    } else {
-      state.scsi.dati.data[q2++] = (u8)(get_lba_size() >> 24); // lba
-      state.scsi.dati.data[q2++] = (u8)(get_lba_size() >> 16);
-      state.scsi.dati.data[q2++] = (u8)(get_lba_size() >> 8);
-      state.scsi.dati.data[q2++] = (u8)get_lba_size();
-    }
+      int q2 = 2;
+      state.scsi.dati.data[q2++] = (u8)first->number; // first track
+      state.scsi.dati.data[q2++] = (u8)last->number;  // last track
 
-    state.scsi.dati.data[0] = (u8)(q2 >> 8);
-    state.scsi.dati.data[1] = (u8)q2;
+      // Emit one descriptor per track that satisfies start_track_req.
+      for (int ti = 0; ti < bincue_tracks; ti++) {
+        const CueTrack *trk = disk_file->get_track(ti);
+        if (!trk)
+          continue;
+
+        // Skip tracks before the requested starting track.
+        // start_track_req == 0 or 1 means "all tracks".
+        // start_track_req == 0xAA means "lead-out only" - handled
+        // after this loop.
+        if (start_track_req > 1 && start_track_req != 0xAA &&
+            trk->number < (int)start_track_req)
+          continue;
+
+        // If only the lead-out was requested, skip data tracks.
+        if (start_track_req == 0xAA)
+          continue;
+
+        // ADR/Control byte:
+        //   bits 7:4 = ADR  (1 = Q sub-channel encodes position)
+        //   bits 3:0 = Control
+        //     0x04 = data track
+        //     0x00 = audio track (2-channel, no pre-emphasis)
+        u8 adr_ctrl = (trk->mode == TRACK_MODE_AUDIO) ? 0x10 : 0x14;
+
+        state.scsi.dati.data[q2++] = 0; // reserved
+        state.scsi.dati.data[q2++] = adr_ctrl;
+        state.scsi.dati.data[q2++] = (u8)trk->number;
+        state.scsi.dati.data[q2++] = 0; // reserved
+
+        if (msf_flag) {
+          u32 x = lba2msf(trk->startLBA);
+          state.scsi.dati.data[q2++] = 0;
+          state.scsi.dati.data[q2++] = (x >> 16) & 0xff;
+          state.scsi.dati.data[q2++] = (x >> 8) & 0xff;
+          state.scsi.dati.data[q2++] = x & 0xff;
+        } else {
+          long lba = trk->startLBA;
+          state.scsi.dati.data[q2++] = (u8)(lba >> 24);
+          state.scsi.dati.data[q2++] = (u8)(lba >> 16);
+          state.scsi.dati.data[q2++] = (u8)(lba >> 8);
+          state.scsi.dati.data[q2++] = (u8)lba;
+        }
+      }
+
+      // ---- Lead-out descriptor (track 0xAA) --------------------
+      // Always emitted regardless of start_track_req: many OS TOC
+      // parsers (including OpenVMS) require the lead-out entry.
+      {
+        long leadout_lba = last->endLBA;
+
+        state.scsi.dati.data[q2++] = 0;    // reserved
+        state.scsi.dati.data[q2++] = 0x16; // ADR/Control: data, copy
+        state.scsi.dati.data[q2++] = 0xAA; // track number: lead-out
+        state.scsi.dati.data[q2++] = 0;    // reserved
+
+        if (msf_flag) {
+          u32 x = lba2msf(leadout_lba);
+          state.scsi.dati.data[q2++] = 0;
+          state.scsi.dati.data[q2++] = (x >> 16) & 0xff;
+          state.scsi.dati.data[q2++] = (x >> 8) & 0xff;
+          state.scsi.dati.data[q2++] = x & 0xff;
+        } else {
+          state.scsi.dati.data[q2++] = (u8)(leadout_lba >> 24);
+          state.scsi.dati.data[q2++] = (u8)(leadout_lba >> 16);
+          state.scsi.dati.data[q2++] = (u8)(leadout_lba >> 8);
+          state.scsi.dati.data[q2++] = (u8)leadout_lba;
+        }
+      }
+
+      // TOC data length = bytes following the 2-byte length field.
+      state.scsi.dati.data[0] = (u8)((q2 - 2) >> 8);
+      state.scsi.dati.data[1] = (u8)(q2 - 2);
 
 #if defined(DEBUG_SCSI)
-    printf("%s: Returning data: ", devid_string);
-    for (unsigned int x1 = 0; x1 < q2; x1++)
-      printf("%02x ", state.scsi.dati.data[x1]);
-    printf("\n");
+      printf("%s: BIN/CUE READ TOC: %d track(s), %d response bytes\n",
+             devid_string, bincue_tracks, q2);
+      for (int x1 = 0; x1 < q2; x1++)
+        printf("%02x ", state.scsi.dati.data[x1]);
+      printf("\n");
 #endif
-    do_scsi_error(SCSI_OK);
+      do_scsi_error(SCSI_OK);
+      break;
+    }
+
+  // -----------------------------------------------------------------
+  // Original single-track response for plain ISO / raw images.
+  // This code is IDENTICAL to the original; OpenVMS relies on it.
+  // -----------------------------------------------------------------
+  single_track_toc:
+
+    if (start_track_req > 1 && start_track_req != 0xAA) {
+      FAILURE_2(InvalidArgument, "%s: I don't know CD-ROM track 0x%02x.\n",
+                devid_string, start_track_req);
+    }
+
+    {
+      int q2 = 2;
+      state.scsi.dati.data[q2++] = 1; // first track
+      state.scsi.dati.data[q2++] = 1; // last track
+
+      if (start_track_req <= 1) {
+        state.scsi.dati.data[q2++] = 0;    // reserved
+        state.scsi.dati.data[q2++] = 0x14; // ADR/Control: data
+        state.scsi.dati.data[q2++] = 1;    // track number
+        state.scsi.dati.data[q2++] = 0;    // reserved
+
+        if (msf_flag) {
+          u32 x = lba2msf(0);
+          state.scsi.dati.data[q2++] = 0;
+          state.scsi.dati.data[q2++] = (x & 0xff0000) >> 16;
+          state.scsi.dati.data[q2++] = (x & 0x00ff00) >> 8;
+          state.scsi.dati.data[q2++] = x & 0x0000ff;
+        } else {
+          state.scsi.dati.data[q2++] = 0;
+          state.scsi.dati.data[q2++] = 0;
+          state.scsi.dati.data[q2++] = 0;
+          state.scsi.dati.data[q2++] = 0;
+        }
+      }
+
+      // Lead-out descriptor.
+      state.scsi.dati.data[q2++] = 0;    // reserved
+      state.scsi.dati.data[q2++] = 0x16; // ADR/Control: data, copy
+      state.scsi.dati.data[q2++] = 0xAA; // lead-out track
+      state.scsi.dati.data[q2++] = 0;    // reserved
+
+      if (msf_flag) {
+        u32 x = lba2msf(get_lba_size());
+        state.scsi.dati.data[q2++] = 0;
+        state.scsi.dati.data[q2++] = (x & 0xff0000) >> 16;
+        state.scsi.dati.data[q2++] = (x & 0x00ff00) >> 8;
+        state.scsi.dati.data[q2++] = x & 0x0000ff;
+      } else {
+        state.scsi.dati.data[q2++] = (u8)(get_lba_size() >> 24);
+        state.scsi.dati.data[q2++] = (u8)(get_lba_size() >> 16);
+        state.scsi.dati.data[q2++] = (u8)(get_lba_size() >> 8);
+        state.scsi.dati.data[q2++] = (u8)get_lba_size();
+      }
+
+      state.scsi.dati.data[0] = (u8)((q2 - 2) >> 8);
+      state.scsi.dati.data[1] = (u8)(q2 - 2);
+
+#if defined(DEBUG_SCSI)
+      printf("%s: Single-track READ TOC: %d bytes\n", devid_string, q2);
+      for (unsigned int x1 = 0; x1 < (unsigned)q2; x1++)
+        printf("%02x ", state.scsi.dati.data[x1]);
+      printf("\n");
+#endif
+      do_scsi_error(SCSI_OK);
+    }
   } break;
 
   case SCSICDROM_MECHANISM_STATUS: {
