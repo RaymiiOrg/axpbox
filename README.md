@@ -42,6 +42,42 @@ axpbox run
 
 Please read the [Installation Guide](https://github.com/lenticularis39/axpbox/wiki/OpenVMS-installation-guide) for information to get OpenVMS installed in the emulator. A guide for NetBSD is [also available on the Wiki](https://github.com/lenticularis39/axpbox/wiki/NetBSD-9.2-install-guide)
 
+### Headless testing and input-injection hooks
+
+For automated or headless testing (CI, scripted firmware navigation, driving
+the emulator over SSH), the SDL GUI honors a set of debug environment
+variables. They are read at startup; unset means disabled. Combined with
+`SDL_VIDEO_DRIVER=offscreen` the whole GUI stack runs without any visible
+window or display server.
+
+| Variable | Effect |
+|---|---|
+| `AXPBOX_DUMP_FB=<prefix>` | Write the emulated screen as a PPM image (`<prefix>-NNN-WxH.ppm`) every ~2 seconds. This is how you "see" the VGA output on a headless run. |
+| `AXPBOX_KEYSCRIPT="<sec>:<key>,..."` | Press named keys at fixed second offsets from GUI start, e.g. `AXPBOX_KEYSCRIPT="40:a,41:r,42:c,43:enter"` types `arc` + Enter at the SRM prompt 40 s in. Good for boot flows whose timing you already know. |
+| `AXPBOX_KEYPIPE=<file>` | Interactive variant: keys appended to `<file>` while the emulator runs are typed into the guest (one token per ~120 ms). Example: `echo "f2 down down enter" >> keys.txt` navigates an AlphaBIOS menu. Start with an empty file; the emulator remembers how far it has read. |
+| `AXPBOX_AUTOKEY_ENTER=<sec>` | Press Enter every `<sec>` seconds (blunt tool for firmware "press any key" prompts). |
+| `AXPBOX_AUTOMOUSE=<sec>` | Starting `<sec>` seconds in, inject synthetic PS/2 mouse motion (a repeating square pattern plus a periodic left click) directly into the guest, bypassing host input entirely. If the guest cursor moves with this but not with your real mouse, the problem is host-side SDL event delivery, not the emulated hardware. |
+| `AXPBOX_MOUSE_DEBUG=1` | Trace every host mouse-motion event, grab/focus transition, and relative-mouse-mode failure to stderr (`MOUSEDBG ...` lines). |
+| `AXPBOX_PC_SAMPLE=1` | Print the guest program counter on every CPU state poll (~100 ms) — identifies where a guest is stuck on headless runs. |
+
+Key names for `AXPBOX_KEYSCRIPT`/`AXPBOX_KEYPIPE`: `a`–`z`, `0`–`9`,
+`enter`, `esc`, `tab`, `space`, `up`, `down`, `left`, `right`, `del`, `ins`,
+`home`, `end`, `bksp`, `bslash`, `dot`, `minus`, `equals`, `f1`–`f12`,
+`pgup`, `pgdn`.
+
+A typical fully headless firmware run:
+
+```
+SDL_VIDEO_DRIVER=offscreen AXPBOX_DUMP_FB=fb \
+AXPBOX_KEYPIPE=keys.txt AXPBOX_KEYSCRIPT="40:a,41:r,42:c,43:enter" \
+axpbox run &
+# ... watch fb-*.ppm to see the screen, echo keys >> keys.txt to react
+```
+
+Note: a `serial` section configured with a `port` waits for a telnet
+connection at startup before the GUI comes up — connect a client (e.g.
+`nc localhost <port>`) or configure `null_attach = true` for unattended runs.
+
 ## Changes in comparison with es40
 
 - Renamed from es40 to AXPbox to avoid confusion with the physical machine (AlphaServer ES40)
