@@ -42,6 +42,37 @@ axpbox run
 
 Please read the [Installation Guide](https://github.com/lenticularis39/axpbox/wiki/OpenVMS-installation-guide) for information to get OpenVMS installed in the emulator. A guide for NetBSD is [also available on the Wiki](https://github.com/lenticularis39/axpbox/wiki/NetBSD-9.2-install-guide)
 
+### Serial consoles, networking, and sound
+
+- **Serial ports**: the sample config attaches both UARTs as `null_attach`
+  (present but unconnected), so the emulator starts without waiting for
+  anything and the console lives on the VGA window (`vga_console = true`).
+  To use a telnet console instead, set `port = 21264;` in a serial section —
+  note the emulator then **waits at startup** until a client connects
+  (`nc localhost 21264`). Ports left out of the config entirely are
+  synthesized as `null_attach` automatically.
+- **Networking**: the DEC 21143 NIC (`pci0.4 = dec21143`) bridges to a host
+  interface via pcap. Set `adapter = "eth0";` (Linux) or the
+  `\Device\NPF_{...}` name (Windows/npcap). On Linux, grant the binary
+  capture permission once:
+  ```
+  sudo setcap cap_net_raw,cap_net_admin+eip ./build/axpbox
+  ```
+  otherwise startup fails with "Error opening adapter". Don't leave
+  `adapter` unset on unattended runs — the emulator interactively asks
+  which adapter to use. Optional values: `mac` (default
+  `08-00-2B-E5-40-<nic#>`), `queue` (rx queue depth, default 1024),
+  `crc`, `trace_packets`.
+- **Sound**: `pci1.1 = es1370 {}` adds an Ensoniq AudioPCI ES1370 (SDL
+  builds). Guest drivers exist for Windows NT 4; other guests ignore it.
+- **Mouse**: click the window to grab, Ctrl+F10 to release; `mouse.speed`,
+  `mouse.invert_x`, `mouse.invert_y` in the `sdl` section tune it (see the
+  WSLg note below). `video.scale_ratio` / `video.scale_change_enable`
+  control window scaling (Ctrl+PageUp / Ctrl+PageDown at runtime).
+- **CD images**: a cdrom `file` ending in `.cue` is parsed as a BIN/CUE
+  image (multi-file, MODE1/MODE2/audio tracks); anything else is treated
+  as a flat ISO.
+
 ### Headless testing and input-injection hooks
 
 For automated or headless testing (CI, scripted firmware navigation, driving
