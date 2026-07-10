@@ -171,6 +171,31 @@ void bx_sdl_gui_c::graphics_frame_update(const u32 *pixels, unsigned width,
   if (!sdl_texture || !sdl_renderer)
     return;
 
+  // Debug aid: AXPBOX_DUMP_FB=<path-prefix> writes the frame as a PPM every
+  // ~2 seconds (verifies the S3 -> SDL pixel pipeline on headless setups).
+  static const char *dump_prefix = getenv("AXPBOX_DUMP_FB");
+  if (dump_prefix) {
+    static Uint64 last_dump = 0;
+    Uint64 now = SDL_GetTicks();
+    if (now - last_dump > 2000) {
+      last_dump = now;
+      static unsigned dump_seq = 0;
+      char path[512];
+      snprintf(path, sizeof(path), "%s-%03u-%ux%u.ppm", dump_prefix,
+               dump_seq++, width, height);
+      FILE *f = fopen(path, "wb");
+      if (f) {
+        fprintf(f, "P6\n%u %u\n255\n", width, height);
+        for (unsigned i = 0; i < width * height; i++) {
+          u8 rgb[3] = {(u8)(pixels[i] >> 16), (u8)(pixels[i] >> 8),
+                       (u8)pixels[i]};
+          fwrite(rgb, 1, 3, f);
+        }
+        fclose(f);
+      }
+    }
+  }
+
   // Upload the ARGB32 pixels directly to the streaming texture.
   // pitch = width * 4 bytes per pixel
   SDL_UpdateTexture(sdl_texture, NULL, pixels, (int)(width * sizeof(u32)));
@@ -434,6 +459,20 @@ static u32 sdl_scan_to_bx_key(SDL_Scancode sym) {
 }
 
 void bx_sdl_gui_c::handle_events(void) {
+  // Debug aid: AXPBOX_AUTOKEY_ENTER=<seconds> presses Enter once every
+  // <seconds> (drives firmware prompts on headless/scripted runs).
+  static const char *autokey = getenv("AXPBOX_AUTOKEY_ENTER");
+  if (autokey && theKeyboard) {
+    static Uint64 ak_last = 0;
+    Uint64 ak_period = (Uint64)atol(autokey) * 1000;
+    Uint64 ak_now = SDL_GetTicks();
+    if (ak_period && ak_now - ak_last > ak_period) {
+      ak_last = ak_now;
+      theKeyboard->gen_scancode(BX_KEY_ENTER);
+      theKeyboard->gen_scancode(BX_KEY_ENTER | BX_KEY_RELEASED);
+    }
+  }
+
   u32 key_event;
 
   while (SDL_PollEvent(&sdl_event)) {
