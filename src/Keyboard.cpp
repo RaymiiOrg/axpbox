@@ -1236,6 +1236,16 @@ void CKeyboard::ctrl_to_mouse(u8 value) {
   BX_DEBUG(("  allow_irq12 = %u", (unsigned)state.allow_irq12));
   BX_DEBUG(("  aux_clock_enabled = %u", (unsigned)state.aux_clock_enabled));
 #endif
+  // Debug aid: AXPBOX_MOUSE_DEBUG=1 traces every command the guest sends to
+  // the PS/2 aux device — shows whether a guest driver ever detects and
+  // enables the mouse (0xf4 = enable stream mode).
+  static const bool mdbg = getenv("AXPBOX_MOUSE_DEBUG") != nullptr;
+  if (mdbg)
+    fprintf(stderr,
+            "MOUSEDBG aux cmd %02x (enable=%u mode=%u irq12=%u clock=%u)\n",
+            (unsigned)value, (unsigned)state.mouse.enable,
+            (unsigned)state.mouse.mode, (unsigned)state.allow_irq12,
+            (unsigned)state.aux_clock_enabled);
 
   // an ACK (0xFA) is always the first response to any valid input
   // received from the system other than Set-Wrap-Mode & Resend-Command

@@ -78,6 +78,23 @@ Note: a `serial` section configured with a `port` waits for a telnet
 connection at startup before the GUI comes up — connect a client (e.g.
 `nc localhost <port>`) or configure `null_attach = true` for unattended runs.
 
+### Mouse on WSLg / Wayland
+
+Click inside the emulator window to grab the mouse; Ctrl+F10 releases it.
+On WSLg (Windows Subsystem for Linux GUI) the default Wayland backend
+delivers **no relative mouse motion** while the grab is active — the guest
+pointer never moves even though the grab succeeds. Run the emulator through
+XWayland instead:
+
+```
+SDL_VIDEO_DRIVER=x11 DISPLAY=:0 SDL_RENDER_DRIVER=software axpbox run
+```
+
+(`SDL_RENDER_DRIVER=software` avoids a fatal GLX error under WSLg's
+XWayland.) Diagnose mouse problems with `AXPBOX_MOUSE_DEBUG=1`: motion
+lines with `grab=1` mean host input reaches the guest; none after a
+`grab -> 1` line means the host backend isn't delivering relative motion.
+
 ## Changes in comparison with es40
 
 - Renamed from es40 to AXPbox to avoid confusion with the physical machine (AlphaServer ES40)
