@@ -298,7 +298,8 @@ protected:
 //   static bx_sdl_gui_c *theGui;
 #define IMPLEMENT_GUI_PLUGIN_CODE(gui_name)                                    \
   int lib##gui_name##_LTX_plugin_init(CConfigurator *cfg) {                    \
-    printf("%%GUI-I-INS: Installing %s module as the ES40 GUI\n", #gui_name);  \
+    printf("%%GUI-I-INS: Installing %s module as the AXPbox GUI\n",            \
+           #gui_name);                                                         \
     theGui = new bx_##gui_name##_gui_c(cfg);                                   \
     bx_gui = theGui;                                                           \
     return (0); /* Success */                                                  \

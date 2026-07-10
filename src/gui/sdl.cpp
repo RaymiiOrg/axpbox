@@ -478,6 +478,87 @@ static u32 sdl_scan_to_bx_key(SDL_Scancode sym) {
   }
 }
 
+// Name -> BX key code map shared by the AXPBOX_KEYSCRIPT and AXPBOX_KEYPIPE
+// debug hooks. Returns 0 for unknown names.
+static u32 sdl_debug_key_lookup(const char *name) {
+  static const struct {
+    const char *name;
+    u32 key;
+  } ks_map[] = {
+      {"enter", BX_KEY_ENTER},
+      {"esc", BX_KEY_ESC},
+      {"tab", BX_KEY_TAB},
+      {"space", BX_KEY_SPACE},
+      {"up", BX_KEY_UP},
+      {"down", BX_KEY_DOWN},
+      {"left", BX_KEY_LEFT},
+      {"right", BX_KEY_RIGHT},
+      {"del", BX_KEY_DELETE},
+      {"ins", BX_KEY_INSERT},
+      {"home", BX_KEY_HOME},
+      {"end", BX_KEY_END},
+      {"bksp", BX_KEY_BACKSPACE},
+      {"bslash", BX_KEY_BACKSLASH},
+      {"dot", BX_KEY_PERIOD},
+      {"minus", BX_KEY_MINUS},
+      {"equals", BX_KEY_EQUALS},
+      {"f1", BX_KEY_F1},
+      {"f2", BX_KEY_F2},
+      {"f3", BX_KEY_F3},
+      {"f4", BX_KEY_F4},
+      {"f5", BX_KEY_F5},
+      {"f6", BX_KEY_F6},
+      {"f7", BX_KEY_F7},
+      {"f8", BX_KEY_F8},
+      {"f9", BX_KEY_F9},
+      {"f10", BX_KEY_F10},
+      {"f11", BX_KEY_F11},
+      {"f12", BX_KEY_F12},
+      {"a", BX_KEY_A},
+      {"b", BX_KEY_B},
+      {"c", BX_KEY_C},
+      {"d", BX_KEY_D},
+      {"e", BX_KEY_E},
+      {"f", BX_KEY_F},
+      {"g", BX_KEY_G},
+      {"h", BX_KEY_H},
+      {"i", BX_KEY_I},
+      {"j", BX_KEY_J},
+      {"k", BX_KEY_K},
+      {"l", BX_KEY_L},
+      {"m", BX_KEY_M},
+      {"n", BX_KEY_N},
+      {"o", BX_KEY_O},
+      {"p", BX_KEY_P},
+      {"q", BX_KEY_Q},
+      {"r", BX_KEY_R},
+      {"s", BX_KEY_S},
+      {"t", BX_KEY_T},
+      {"u", BX_KEY_U},
+      {"v", BX_KEY_V},
+      {"w", BX_KEY_W},
+      {"x", BX_KEY_X},
+      {"y", BX_KEY_Y},
+      {"z", BX_KEY_Z},
+      {"0", BX_KEY_0},
+      {"1", BX_KEY_1},
+      {"2", BX_KEY_2},
+      {"3", BX_KEY_3},
+      {"4", BX_KEY_4},
+      {"5", BX_KEY_5},
+      {"6", BX_KEY_6},
+      {"7", BX_KEY_7},
+      {"8", BX_KEY_8},
+      {"9", BX_KEY_9},
+      {"pgdn", BX_KEY_PAGE_DOWN},
+      {"pgup", BX_KEY_PAGE_UP},
+  };
+  for (const auto &m : ks_map)
+    if (!strcmp(name, m.name))
+      return m.key;
+  return 0;
+}
+
 void bx_sdl_gui_c::handle_events(void) {
   // Debug aid: AXPBOX_AUTOKEY_ENTER=<seconds> presses Enter once every
   // <seconds> (drives firmware prompts on headless/scripted runs).
@@ -490,6 +571,30 @@ void bx_sdl_gui_c::handle_events(void) {
       ak_last = ak_now;
       theKeyboard->gen_scancode(BX_KEY_ENTER);
       theKeyboard->gen_scancode(BX_KEY_ENTER | BX_KEY_RELEASED);
+    }
+  }
+
+  // Debug aid: AXPBOX_AUTOMOUSE=<seconds> injects synthetic mouse motion
+  // straight into the guest PS/2 path starting <seconds> in, tracing a
+  // square (2 s per side), plus a left click every full lap. Verifies the
+  // guest-side mouse plumbing (KBC aux, IRQ12, guest driver) with no host
+  // input; if the guest cursor moves with this but not with the real mouse,
+  // the problem is host-side SDL event delivery.
+  static const char *automouse = getenv("AXPBOX_AUTOMOUSE");
+  if (automouse && theKeyboard) {
+    static Uint64 am_epoch = SDL_GetTicks();
+    static Uint64 am_last = 0;
+    Uint64 am_now = SDL_GetTicks();
+    if (am_now >= am_epoch + (Uint64)atol(automouse) * 1000 &&
+        am_now - am_last >= 50) {
+      am_last = am_now;
+      int phase = (int)((am_now / 2000) % 4);
+      // Guest-side +y is up (PS/2 convention), so this traces
+      // right, down, left, up on screen.
+      int dx = (phase == 0) ? 3 : (phase == 2) ? -3 : 0;
+      int dy = (phase == 1) ? -3 : (phase == 3) ? 3 : 0;
+      unsigned buttons = ((am_now / 2000) % 8 == 7) ? 0x01 : 0x00;
+      theKeyboard->mouse_motion(dx, dy, 0, buttons);
     }
   }
 
@@ -506,31 +611,6 @@ void bx_sdl_gui_c::handle_events(void) {
     static bool ks_parsed = false;
     if (!ks_parsed) {
       ks_parsed = true;
-      static const struct {
-        const char *name;
-        u32 key;
-      } ks_map[] = {
-          {"enter", BX_KEY_ENTER},
-          {"esc", BX_KEY_ESC},
-          {"tab", BX_KEY_TAB},
-          {"space", BX_KEY_SPACE},
-          {"up", BX_KEY_UP},
-          {"down", BX_KEY_DOWN},
-          {"left", BX_KEY_LEFT},
-          {"right", BX_KEY_RIGHT},
-          {"del", BX_KEY_DELETE},
-          {"f1", BX_KEY_F1},
-          {"f2", BX_KEY_F2},
-          {"f3", BX_KEY_F3},
-          {"f6", BX_KEY_F6},
-          {"f8", BX_KEY_F8},
-          {"f10", BX_KEY_F10},
-          {"y", BX_KEY_Y},
-          {"n", BX_KEY_N},
-          {"c", BX_KEY_C},
-          {"pgdn", BX_KEY_PAGE_DOWN},
-          {"pgup", BX_KEY_PAGE_UP},
-      };
       char buf[1024];
       strncpy(buf, keyscript, sizeof(buf) - 1);
       buf[sizeof(buf) - 1] = 0;
@@ -540,12 +620,9 @@ void bx_sdl_gui_c::handle_events(void) {
           continue;
         *colon = 0;
         Uint64 at = (Uint64)(atof(tok) * 1000.0);
-        for (const auto &m : ks_map) {
-          if (!strcmp(colon + 1, m.name)) {
-            ks_events.push_back({at, m.key});
-            break;
-          }
-        }
+        u32 k = sdl_debug_key_lookup(colon + 1);
+        if (k)
+          ks_events.push_back({at, k});
       }
       printf("%%SDL-I-KEYSCRIPT: %zu scripted key events armed.\n",
              ks_events.size());
@@ -558,6 +635,45 @@ void bx_sdl_gui_c::handle_events(void) {
       theKeyboard->gen_scancode(k);
       theKeyboard->gen_scancode(k | BX_KEY_RELEASED);
       ks_next++;
+    }
+  }
+
+  // Debug aid: AXPBOX_KEYPIPE=<file> injects named keys appended to <file>
+  // while the emulator runs (interactive headless menu navigation):
+  //   echo "f2 down enter" >> keys.txt
+  // Tokens are whitespace-separated key names (same names as
+  // AXPBOX_KEYSCRIPT); each token is pressed+released ~120 ms apart.
+  static const char *keypipe = getenv("AXPBOX_KEYPIPE");
+  if (keypipe && theKeyboard) {
+    static long kp_offset = 0;
+    static Uint64 kp_last = 0;
+    Uint64 kp_now = SDL_GetTicks();
+    if (kp_now - kp_last >= 120) {
+      FILE *f = fopen(keypipe, "rb");
+      if (f) {
+        fseek(f, 0, SEEK_END);
+        long size = ftell(f);
+        if (size > kp_offset) {
+          fseek(f, kp_offset, SEEK_SET);
+          char tok[64];
+          // consume exactly one token per poll so keys pace out
+          if (fscanf(f, "%63s", tok) == 1) {
+            kp_offset = ftell(f);
+            kp_last = kp_now;
+            u32 k = sdl_debug_key_lookup(tok);
+            if (k) {
+              printf("%%SDL-I-KEYPIPE: injecting \"%s\"\n", tok);
+              theKeyboard->gen_scancode(k);
+              theKeyboard->gen_scancode(k | BX_KEY_RELEASED);
+            } else {
+              printf("%%SDL-W-KEYPIPE: unknown key \"%s\"\n", tok);
+            }
+          } else {
+            kp_offset = size;
+          }
+        }
+        fclose(f);
+      }
     }
   }
 
@@ -583,6 +699,12 @@ void bx_sdl_gui_c::handle_events(void) {
       break;
 
     case SDL_EVENT_MOUSE_MOTION:
+      // Debug aid: AXPBOX_MOUSE_DEBUG=1 traces every host motion event and
+      // grab transition to stderr (diagnoses host-side delivery problems).
+      if (getenv("AXPBOX_MOUSE_DEBUG"))
+        fprintf(stderr, "MOUSEDBG motion xrel=%d yrel=%d grab=%d\n",
+                (int)sdl_event.motion.xrel, (int)sdl_event.motion.yrel,
+                sdl_grab);
       if (sdl_grab) {
         // PS/2 mouse Y is positive-up, SDL is positive-down; hence the
         // baseline Y negation. invert_x/y flip on top of that.
@@ -954,11 +1076,17 @@ void bx_sdl_gui_c::adjust_window_scale(int delta) {
 }
 
 void bx_sdl_gui_c::mouse_enabled_changed_specific(bool val) {
+  if (getenv("AXPBOX_MOUSE_DEBUG"))
+    fprintf(stderr, "MOUSEDBG grab -> %d (window=%p)\n", (int)val,
+            (void *)sdl_window);
   if (val) {
     SDL_HideCursor();
     if (sdl_window) {
+      if (!SDL_SetWindowRelativeMouseMode(sdl_window, true) &&
+          getenv("AXPBOX_MOUSE_DEBUG"))
+        fprintf(stderr, "MOUSEDBG relative-mode enable failed: %s\n",
+                SDL_GetError());
       SDL_SetWindowKeyboardGrab(sdl_window, true);
-      SDL_SetWindowRelativeMouseMode(sdl_window, true);
       SDL_SetWindowTitle(sdl_window, sdl_title_grabbed);
     }
   } else {
