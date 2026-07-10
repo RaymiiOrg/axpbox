@@ -1,33 +1,26 @@
 # AXPbox Alpha emulator
 
-AXPbox is a fork of the discontinued es40 emulator. It could theoretically used for running any operating system that runs on the OpenVMS or Tru64 PALcode (e.g. OpenVMS, Tru64 UNIX, Linux, NetBSD), however as of now only OpenVMS and some versions of NetBSD can be installed (for more details see [Guest support](https://github.com/lenticularis39/axpbox/wiki/Guest-support)).
+AXPbox is a fork of the discontinued es40 emulator. It could theoretically used for running any operating system that runs on the OpenVMS or Tru64 PALcode (e.g. OpenVMS, Windows 2000, Tru64 UNIX, Linux, NetBSD),).
 
-The emulator supports SCSI, IDE, serial ports, Ethernet (using PCAP) and [VGA graphics](https://github.com/lenticularis39/axpbox/wiki/VGA) (using SDL).
+The emulator supports SCSI, sound, IDE, serial ports, Ethernet (using PCAP) and [VGA graphics](https://github.com/lenticularis39/axpbox/wiki/VGA) (using SDL).
 
-![OpenVMS 8.4 desktop](https://i.ibb.co/zQh35hm/Sn-mek-z-2021-01-24-14-18-41.png)
+A lot of newer features are ported from [ES40-Emu/es40](https://github.com/ES40-Emu/es40) using Claude. You should check out that fork if you do not want to use AI code.
+
+![OpenVMS 8.4 desktop](screenshots/openvms.png)
+
 
 OpenVMS 8.4 desktop in AXPbox. [Here is a wiki page showing you how to get this CDE desktop running](https://github.com/lenticularis39/axpbox/wiki/GUI-Desktop-Environment-(CDE))
 
+![Windows 2000](screenshots/win2000.png)
+
+Windows 2000 build 2128 running on AXPbox. [Full guide to install Windows 2000 here](https://web.archive.org/web/20260705122517/https://www.zx.net.nz/computers/dec/axpemu-es40.shtml)
+
+
 ## Getting AXPbox
 
-Pre-built binaries for generic Linux amd64, Windows 10 amd64 and macOS amd64 are available for each release, and also as artifacts produced for each commit in CI. T2 SDE has an [official package](http://t2sde.org/packages/axpbox) for AXPbox, and openSUSE's Emulators project has an [AXPbox package](https://build.opensuse.org/package/show/Emulators/axpbox), too. The former gets updated the same day when a release happens, while requests are submitted now the latter that undergo approval of Emulators maintainers.
+Pre-built binaries for generic Linux amd64, Windows 11 amd64 and macOS amd64 are available for each release, and also as artifacts produced for each commit in CI. T2 SDE has an [official package](http://t2sde.org/packages/axpbox) for AXPbox, and openSUSE's Emulators project has an [AXPbox package](https://build.opensuse.org/package/show/Emulators/axpbox), too. The former gets updated the same day when a release happens, while requests are submitted now the latter that undergo approval of Emulators maintainers.
 
 You can also build from source using CMake; you need a C++17 compiler, optional dependencies are PCAP for networking and SDL3 or X11 for graphics support.
-
-### x86-64 JIT
-
-An optional JIT (ported from [ES40-Emu/es40](https://github.com/ES40-Emu/es40), based on asmjit) can be enabled at build time on x86-64 hosts:
-
-```
-git clone https://github.com/asmjit/asmjit third_party/asmjit
-git -C third_party/asmjit checkout 0bd5787b54b575ed94bf32ac452153b34385c514
-cmake -B build -DCMAKE_BUILD_TYPE=Release -DES40_DISABLE_ASMJIT=OFF
-cmake --build build
-```
-
-### S3 Trio64 graphics / ARC / Windows NT
-
-The S3 Trio64 emulation uses the real S3 VGA BIOS; obtain `86c764x1.bin` from the [86Box ROM set](https://github.com/86Box/roms/tree/master/video/s3) and point the s3 config section at it (see the sample es40.cfg). This is required for the ARC/AlphaBIOS console and Windows NT-family guests: flash AlphaBIOS from the Alpha Systems Firmware v7.3 CD, then enter `arc` at the SRM prompt.
 
 ## Usage
 
@@ -41,6 +34,26 @@ axpbox run
 ```
 
 Please read the [Installation Guide](https://github.com/lenticularis39/axpbox/wiki/OpenVMS-installation-guide) for information to get OpenVMS installed in the emulator. A guide for NetBSD is [also available on the Wiki](https://github.com/lenticularis39/axpbox/wiki/NetBSD-9.2-install-guide)
+
+
+
+### x86-64 JIT
+
+An optional JIT (ported from [ES40-Emu/es40](https://github.com/ES40-Emu/es40), based on asmjit) can be enabled at build time on x86-64 hosts:
+
+```
+git clone https://github.com/lenticularis39/axpbox
+cd axpbox # repo folder
+git clone https://github.com/asmjit/asmjit third_party/asmjit
+git -C third_party/asmjit checkout 0bd5787b54b575ed94bf32ac452153b34385c514
+cmake -B build -DCMAKE_BUILD_TYPE=Release -DES40_DISABLE_ASMJIT=OFF
+cmake --build build
+```
+
+### S3 Trio64 graphics / ARC / Windows NT
+
+The S3 Trio64 emulation (ported from [ES40-Emu/es40](https://github.com/ES40-Emu/es40) uses the real S3 VGA BIOS; obtain `86c764x1.bin` from the [86Box ROM set](https://github.com/86Box/roms/tree/master/video/s3) and point the s3 config section at it (see the sample es40.cfg). This is required for the ARC/AlphaBIOS console and Windows NT-family guests: flash AlphaBIOS from the Alpha Systems Firmware v7.3 CD, then enter `arc` at the SRM prompt.
+
 
 ### Serial consoles, networking, and sound
 
@@ -56,7 +69,7 @@ Please read the [Installation Guide](https://github.com/lenticularis39/axpbox/wi
   `\Device\NPF_{...}` name (Windows/npcap). On Linux, grant the binary
   capture permission once:
   ```
-  sudo setcap cap_net_raw,cap_net_admin+eip ./build/axpbox
+  sudo setcap cap_net_raw,cap_net_admin+eip ./axpbox
   ```
   otherwise startup fails with "Error opening adapter". Don't leave
   `adapter` unset on unattended runs — the emulator interactively asks
@@ -75,7 +88,7 @@ Please read the [Installation Guide](https://github.com/lenticularis39/axpbox/wi
 
 ### Headless testing and input-injection hooks
 
-For automated or headless testing (CI, scripted firmware navigation, driving
+For automated or headless testing (CI, AI, scripted firmware navigation, driving
 the emulator over SSH), the SDL GUI honors a set of debug environment
 variables. They are read at startup; unset means disabled. Combined with
 `SDL_VIDEO_DRIVER=offscreen` the whole GUI stack runs without any visible
