@@ -133,6 +133,10 @@ static int sdl_mouse_button_state = 0;
 // events so multipliers < 1.0 don't drop slow movement.
 static double sdl_mouse_accum_x = 0.0;
 static double sdl_mouse_accum_y = 0.0;
+// Re-grab bookkeeping for compositors that bounce focus on grab (WSLg):
+// when a focus loss forces an ungrab, take the mouse back on focus gain.
+static bool sdl_regrab_on_focus = false;
+static int sdl_regrab_attempts = 0;
 static bool sdl_swallow_keys = false;
 static bool sdl_swallow_end_release = false;
 static bool sdl_swallow_home_release = false;
@@ -729,6 +733,7 @@ void bx_sdl_gui_c::handle_events(void) {
       if (!sdl_grab) {
         if (sdl_event.type == SDL_EVENT_MOUSE_BUTTON_DOWN &&
             sdl_event.button.button == SDL_BUTTON_LEFT) {
+          sdl_regrab_attempts = 0; // fresh user grab: reset the bounce budget
           bx_gui->mouse_enabled_changed(true);
         }
         break;
@@ -770,8 +775,30 @@ void bx_sdl_gui_c::handle_events(void) {
       }
       break;
     case SDL_EVENT_WINDOW_FOCUS_LOST: {
-      if (sdl_grab)
+      if (getenv("AXPBOX_MOUSE_DEBUG"))
+        fprintf(stderr, "MOUSEDBG focus lost (grab=%d)\n", sdl_grab);
+      if (sdl_grab) {
+        // Some compositors (WSLg/Wayland) bounce window focus when the
+        // grab is engaged; releasing here and never coming back left the
+        // mouse permanently dead after the first click. Remember that the
+        // guest owned the mouse and re-grab when focus returns (bounded,
+        // so a compositor that always rejects the grab can't ping-pong).
+        if (sdl_regrab_attempts < 8) {
+          sdl_regrab_on_focus = true;
+          sdl_regrab_attempts++;
+        }
         bx_gui->mouse_enabled_changed(false);
+      }
+      break;
+    }
+    case SDL_EVENT_WINDOW_FOCUS_GAINED: {
+      if (getenv("AXPBOX_MOUSE_DEBUG"))
+        fprintf(stderr, "MOUSEDBG focus gained (regrab=%d)\n",
+                (int)sdl_regrab_on_focus);
+      if (sdl_regrab_on_focus) {
+        sdl_regrab_on_focus = false;
+        bx_gui->mouse_enabled_changed(true);
+      }
       break;
     }
     case SDL_EVENT_KEY_DOWN:
@@ -814,6 +841,9 @@ void bx_sdl_gui_c::handle_events(void) {
         theKeyboard->gen_scancode(BX_KEY_CTRL_L | BX_KEY_RELEASED);
         theKeyboard->gen_scancode(BX_KEY_CTRL_R | BX_KEY_RELEASED);
 
+        // deliberate toggle: forget any pending focus re-grab
+        sdl_regrab_on_focus = false;
+        sdl_regrab_attempts = 0;
         bx_gui->mouse_enabled_changed(!sdl_grab);
         sdl_swallow_keys = true; // eat subsequent releases
         break;
