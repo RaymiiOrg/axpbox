@@ -371,6 +371,29 @@ inline u64 ufdiv64(u64 dvd, u64 dvr, u32 prec, u32 *sticky) {
   return quo;                /* return quotient */
 }
 
+/* SoftFloat estimateDiv128To64: approximate (a0:a1)/b to 64 bits; the
+   result is never greater than the true quotient and within 2 of it.
+   Requires b > a0 (guaranteed by fsqrt64: b has bit 63 set beyond a0). */
+inline u64 udiv128to64(u64 a0, u64 a1, u64 b) {
+  u64 b0, b1, rem0, rem1, term0, term1, z;
+  if (b <= a0)
+    return X64_QUAD;
+  b0 = b >> 32;
+  z = ((b0 << 32) <= a0) ? U64(0xffffffff00000000) : (a0 / b0) << 32;
+  term1 = uemul64(b, z, &term0);              /* term0:term1 = b*z */
+  rem0 = a0 - term0 - ((a1 < term1) ? 1 : 0); /* a0:a1 - term0:term1 */
+  rem1 = a1 - term1;
+  while (Q_GETSIGN(rem0) != 0) {
+    z -= U64(0x100000000);
+    b1 = b << 32;
+    rem1 = (rem1 + b1) & X64_QUAD;
+    rem0 = (rem0 + b0 + ((rem1 < b1) ? 1 : 0)) & X64_QUAD;
+  }
+  rem0 = (rem0 << 32) | (rem1 >> 32);
+  z |= ((b0 << 32) <= rem0) ? U64(0xffffffff) : rem0 / b0;
+  return z;
+}
+
 /* Fraction square root routine - code from SoftFloat */
 inline u64 fsqrt64(u64 asig, s32 exp) {
   static const u32 sqrtOdd[] = {0x0004, 0x0022, 0x005D, 0x00B1, 0x011D, 0x019F,
@@ -419,11 +442,14 @@ inline u64 fsqrt64(u64 asig, s32 exp) {
    (that is, the rounding bits are close to midpoint).  If so, make
    sure that the result^2 is <below> the input operand */
   asig = asig >> ((exp & 1) ? 3 : 2); /* leave 2b guard */
-  zsig =
-      ufdiv64(asig, zsig << 32, 64, NULL) + (zsig << 30); /* Newton iteration */
-  if ((zsig & 0x1FF) <= 5) {                              /* close to even? */
-    remh = uemul64(zsig, zsig, &reml);                    /* result^2 */
-    remh = (asig - remh - (reml ? 1 : 0)) & X64_QUAD;     /* arg - result^2 */
+  /* Newton iteration: asig*2^64 / (zsig*2^32), per SoftFloat.
+     ufdiv64 was wrong here: with zsig >= 2^31 (always, on the even-exp path)
+     its divisor has bit 63 set, the shifted dividend wraps past 2^64, and the
+     garbage estimate sends the correction loop below walking ~2^60 ULPs */
+  zsig = udiv128to64(asig, 0, zsig << 32) + (zsig << 30);
+  if ((zsig & 0x1FF) <= 5) {                          /* close to even? */
+    remh = uemul64(zsig, zsig, &reml);                /* result^2 */
+    remh = (asig - remh - (reml ? 1 : 0)) & X64_QUAD; /* arg - result^2 */
     reml = NEG_Q(reml);
     while (Q_GETSIGN(remh) != 0) {      /* if arg < result^2 */
       zsig = (zsig - 1) & X64_QUAD;     /* decr result */
