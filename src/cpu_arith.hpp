@@ -37,6 +37,12 @@
 #define DO_CMPLT RCV = ((s64)RAV < (s64)RBV) ? 1 : 0;
 #define DO_CMPLE RCV = ((s64)RAV <= (s64)RBV) ? 1 : 0;
 
+#ifdef DEBUG_ARITH_TRAP
+#define ARITH_TRAP_PRINTF(...) printf(__VA_ARGS__)
+#else
+#define ARITH_TRAP_PRINTF(...) ((void)0)
+#endif
+
 /* addition */
 #define DO_ADDQ RCV = RAV + RBV;
 #define DO_S4ADDQ RCV = (RAV * 4) + RBV;
@@ -51,9 +57,9 @@
     /* test for integer overflow */                                            \
     if (((~rav ^ rbv) & (rav ^ RCV)) & Q_SIGN) {                               \
       ARITH_TRAP_I(TRAP_IOV, RC);                                              \
-      printf("ADDQ_V %016" PRIx64 " + %016" PRIx64 " = %016" PRIx64            \
-             " + TRAP.\n",                                                     \
-             rav, rbv, RCV);                                                   \
+      ARITH_TRAP_PRINTF("ADDQ_V %016" PRIx64 " + %016" PRIx64 " = %016" PRIx64 \
+                        " + TRAP.\n",                                          \
+                        rav, rbv, RCV);                                        \
     }                                                                          \
   }
 
@@ -70,9 +76,9 @@
     /* test for integer overflow */                                            \
     if (((~rav ^ rbv) & (rav ^ RCV)) & L_SIGN) {                               \
       ARITH_TRAP_I(TRAP_IOV, RC);                                              \
-      printf("ADDL_V %016" PRIx64 " + %016" PRIx64 " = %016" PRIx64            \
-             " + TRAP.\n",                                                     \
-             rav, rbv, RCV);                                                   \
+      ARITH_TRAP_PRINTF("ADDL_V %016" PRIx64 " + %016" PRIx64 " = %016" PRIx64 \
+                        " + TRAP.\n",                                          \
+                        rav, rbv, RCV);                                        \
     }                                                                          \
   }
 
@@ -181,9 +187,9 @@ __forceinline static unsigned __int64 alpha_popcnt64(unsigned __int64 x) {
     RCV = sext_u64_32(sr);                                                     \
     if ((RCV ^ sr) & U64(0xffffffff00000000)) {                                \
       ARITH_TRAP_I(TRAP_IOV, RC);                                              \
-      printf("MULL_V %016" PRIx64 " * %016" PRIx64 " = %016" PRIx64            \
-             " + TRAP.\n",                                                     \
-             rav, rbv, RCV);                                                   \
+      ARITH_TRAP_PRINTF("MULL_V %016" PRIx64 " * %016" PRIx64 " = %016" PRIx64 \
+                        " + TRAP.\n",                                          \
+                        rav, rbv, RCV);                                        \
     }                                                                          \
   }
 
@@ -201,9 +207,9 @@ __forceinline static unsigned __int64 alpha_popcnt64(unsigned __int64 x) {
       t64 -= rav;                                                              \
     if (Q_GETSIGN(RCV) ? (t64 != X64_QUAD) : (t64 != 0)) {                     \
       ARITH_TRAP_I(TRAP_IOV, RC);                                              \
-      printf("MULQ_V %016" PRIx64 " * %016" PRIx64 " = %016" PRIx64            \
-             " + TRAP.\n",                                                     \
-             rav, rbv, RCV);                                                   \
+      ARITH_TRAP_PRINTF("MULQ_V %016" PRIx64 " * %016" PRIx64 " = %016" PRIx64 \
+                        " + TRAP.\n",                                          \
+                        rav, rbv, RCV);                                        \
     }                                                                          \
   }
 
@@ -223,9 +229,9 @@ __forceinline static unsigned __int64 alpha_popcnt64(unsigned __int64 x) {
     /* test for integer overflow */                                            \
     if (((rav ^ rbv) & (rav ^ RCV)) & Q_SIGN) {                                \
       ARITH_TRAP_I(TRAP_IOV, RC);                                              \
-      printf("SUBQ_V %016" PRIx64 " - %016" PRIx64 " = %016" PRIx64            \
-             " + TRAP.\n",                                                     \
-             rav, rbv, RCV);                                                   \
+      ARITH_TRAP_PRINTF("SUBQ_V %016" PRIx64 " - %016" PRIx64 " = %016" PRIx64 \
+                        " + TRAP.\n",                                          \
+                        rav, rbv, RCV);                                        \
     }                                                                          \
   }
 
@@ -242,8 +248,8 @@ __forceinline static unsigned __int64 alpha_popcnt64(unsigned __int64 x) {
     /* test for integer overflow */                                            \
     if (((rav ^ rbv) & (rav ^ RCV)) & L_SIGN) {                                \
       ARITH_TRAP_I(TRAP_IOV, RC);                                              \
-      printf("SUBL_V %016" PRIx64 " - %016" PRIx64 " = %016" PRIx64            \
-             " + TRAP.\n",                                                     \
-             rav, rbv, RCV);                                                   \
+      ARITH_TRAP_PRINTF("SUBL_V %016" PRIx64 " - %016" PRIx64 " = %016" PRIx64 \
+                        " + TRAP.\n",                                          \
+                        rav, rbv, RCV);                                        \
     }                                                                          \
   }

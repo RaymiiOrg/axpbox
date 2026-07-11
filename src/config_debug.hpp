@@ -69,6 +69,9 @@
 // Define to 1 if you want to enable Floating Point load/store debugging
 #undef DEBUG_FP_LOADSTORE
 
+// Define to enable integer arithmetic trap logging
+#undef DEBUG_ARITH_TRAP
+
 // Define to if you want to enable General NIC debugging
 //#define DEBUG_NIC
 
@@ -131,8 +134,8 @@
 // Define to 1 if you want to enable backtrace on SIGSEGV debugging
 #undef DEBUG_BACKTRACE
 
-// Define to 1 if you want to enable mutex debugging
-#undef DEBUG_LOCKS
+// Define to if you want to enable mutex debugging
+//#define DEBUG_LOCKS
 
 // Define to 1 if you want to enable SDL Key translation debugging
 #undef DEBUG_SDL_KEY
