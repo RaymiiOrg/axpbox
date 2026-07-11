@@ -265,6 +265,21 @@ leave both alone). Trailer:
   (2026-07-09): JIT 0.75.1 + timing bundle, BIN/CUE, DEC21143 lock,
   Sym53C810 disconnect, configurator warnings, SDL mouse options,
   AXPbox rebrand + banner. Next port starts at upstream `7140555`.
+- `7140555..9f7554d` (v0.75.1→0.75.4) — 4 commits (2026-07-11):
+  DEBUG_ARITH_TRAP printf gating, LL/SC reservation invalidation on
+  PCI DMA writes (cpu_llsc_dma_gate reader/writer gate + guards in
+  interpreter/vmspal/JIT paths + DEBUG_INSTALL_PAL_TRAP hook), fsqrt64
+  udiv128to64 fix (Tru64), and upstream's REVERT of the DEC21143
+  register mutex (myRegLock removed again — follow upstream, do not
+  re-add). Skipped: version bumps, configure.ac/m4, build.yml macOS
+  pcap logic. Next port starts at upstream `9f7554d`.
+  NOTE: the DEC21143/NetworkBackend area diverges from ES40-Emu since
+  the lenticularis TAP/TUN merge (NetworkPcap/NetworkTap/NetworkFilter
+  live only in axpbox+lenticularis) — port upstream DEC21143 pcap
+  changes into src/NetworkPcap.cpp instead.
+- Pitfall: piping `bash test.sh | tail` can hang even after the test
+  finishes (a lingering child keeps the pipe open) — redirect test.sh
+  output to a file instead, then read the file.
 - Post-port axpbox-only additions (2026-07-10, keep across future
   ports): input-injection/diagnostic hooks (AXPBOX_KEYPIPE,
   AXPBOX_AUTOMOUSE, AXPBOX_MOUSE_DEBUG + aux-cmd trace in
