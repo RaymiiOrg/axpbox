@@ -178,6 +178,29 @@ public:
   u64 get_c_dim(int ProcNum);
   void set_c_dim(int ProcNum, u64 value);
 
+  class CLLSCDRAMGuard {
+  public:
+    CLLSCDRAMGuard(CSystem *system, bool active);
+    ~CLLSCDRAMGuard();
+    CLLSCDRAMGuard(const CLLSCDRAMGuard &) = delete;
+    CLLSCDRAMGuard &operator=(const CLLSCDRAMGuard &) = delete;
+
+  private:
+    CSystem *system;
+  };
+
+  class CPCIDMAWriteGuard {
+  public:
+    CPCIDMAWriteGuard(CSystem *system, bool active);
+    ~CPCIDMAWriteGuard();
+    CPCIDMAWriteGuard(const CPCIDMAWriteGuard &) = delete;
+    CPCIDMAWriteGuard &operator=(const CPCIDMAWriteGuard &) = delete;
+    void invalidate(u64 address, size_t bytes);
+
+  private:
+    CSystem *system;
+  };
+
   // LDx_L: record locked range + loaded value
   void cpu_lock(int cpuid, u64 address, u64 value);
   bool cpu_take_lock(int cpuid, u64 address, u64 *expected, bool *same_address);
@@ -214,6 +237,19 @@ private:
   int iNumCPUs;
   u64 cpu_lock_value[4]; // per-CPU LDx_L value, for same-address STx_C
 
+  // writer bit + active LL/SC operation count
+  std::atomic<u32> cpu_llsc_dma_gate{0};
+
+  void cpu_llsc_enter();
+  void cpu_llsc_leave();
+  void pci_dma_write_enter();
+  void pci_dma_write_leave();
+
+public:
+  // Model the EV68 invalidating probe for reservation lines touched by DMA.
+  void cpu_clear_external_locks(u64 address, size_t bytes);
+
+private:
   /// The state structure contains all elements that need to be saved to the
   /// statefile.
   struct SSys_state {

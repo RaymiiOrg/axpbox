@@ -37,6 +37,8 @@
 #include <signal.h>
 #include <stdlib.h>
 
+#include <thread>
+
 #define CLOCK_RATIO 10000
 
 #if defined(LS_MASTER) || defined(LS_SLAVE)
@@ -341,6 +343,78 @@ static inline bool cpu_lock_matches(u64 locked_address, u64 address) {
   return !((locked_address ^ address) & CPU_LOCK_MATCH_MASK);
 }
 
+static constexpr u32 CPU_LLSC_DMA_WRITER = 0x80000000U;
+static constexpr u32 CPU_LLSC_DMA_READERS = 0x7fffffffU;
+
+// EV68 HRM 4.6 requires an external writer to invalidate the locked cache
+// line. The gate makes the invalidating probe and RAM write atomic with
+// respect to the load/publish and test/store portions of LDx_L/STx_C.
+CSystem::CLLSCDRAMGuard::CLLSCDRAMGuard(CSystem *sys, bool active)
+    : system(active ? sys : nullptr) {
+  if (system)
+    system->cpu_llsc_enter();
+}
+
+CSystem::CLLSCDRAMGuard::~CLLSCDRAMGuard() {
+  if (system)
+    system->cpu_llsc_leave();
+}
+
+CSystem::CPCIDMAWriteGuard::CPCIDMAWriteGuard(CSystem *sys, bool active)
+    : system(active ? sys : nullptr) {
+  if (system)
+    system->pci_dma_write_enter();
+}
+
+CSystem::CPCIDMAWriteGuard::~CPCIDMAWriteGuard() {
+  if (system)
+    system->pci_dma_write_leave();
+}
+
+void CSystem::CPCIDMAWriteGuard::invalidate(u64 address, size_t bytes) {
+  if (system)
+    system->cpu_clear_external_locks(address, bytes);
+}
+
+void CSystem::cpu_llsc_enter() {
+  u32 gate = cpu_llsc_dma_gate.load(std::memory_order_acquire);
+  for (;;) {
+    if (!(gate & CPU_LLSC_DMA_WRITER) &&
+        (gate & CPU_LLSC_DMA_READERS) != CPU_LLSC_DMA_READERS &&
+        cpu_llsc_dma_gate.compare_exchange_weak(gate, gate + 1,
+                                                std::memory_order_acquire,
+                                                std::memory_order_relaxed))
+      return;
+    std::this_thread::yield();
+    gate = cpu_llsc_dma_gate.load(std::memory_order_acquire);
+  }
+}
+
+void CSystem::cpu_llsc_leave() {
+  cpu_llsc_dma_gate.fetch_sub(1, std::memory_order_release);
+}
+
+void CSystem::pci_dma_write_enter() {
+  u32 gate = cpu_llsc_dma_gate.load(std::memory_order_acquire);
+  for (;;) {
+    if (!(gate & CPU_LLSC_DMA_WRITER) &&
+        cpu_llsc_dma_gate.compare_exchange_weak(
+            gate, gate | CPU_LLSC_DMA_WRITER, std::memory_order_acquire,
+            std::memory_order_relaxed))
+      break;
+    std::this_thread::yield();
+    gate = cpu_llsc_dma_gate.load(std::memory_order_acquire);
+  }
+
+  while (cpu_llsc_dma_gate.load(std::memory_order_acquire) &
+         CPU_LLSC_DMA_READERS)
+    std::this_thread::yield();
+}
+
+void CSystem::pci_dma_write_leave() {
+  cpu_llsc_dma_gate.store(0, std::memory_order_release);
+}
+
 // --- Load-locked / store-conditional (HRM 4.2) -----------------------------
 // Keep the original CAS-backed model for same-address LL/SC sequences, because
 // it provides the emulator's MP atomicity. Some Alpha code stores
@@ -376,6 +450,28 @@ bool CSystem::cpu_take_lock(int cpuid, u64 address, u64 *expected,
  **/
 void CSystem::cpu_clear_lock(int cpuid) {
   state.cpu_lock_flags &= ~(1 << cpuid); // atomic fetch_and
+}
+
+/** Model the EV68 invalidating probe for every reservation line touched by
+ * DMA. **/
+void CSystem::cpu_clear_external_locks(u64 address, size_t bytes) {
+  if (!bytes)
+    return;
+
+  const u64 first_line = (address & U64(0x00000807ffffffff)) & ~U64(63);
+  const u64 last_line =
+      ((address & U64(0x00000807ffffffff)) + bytes - 1) & ~U64(63);
+  int clear_mask = 0;
+  const int flags = state.cpu_lock_flags.load(std::memory_order_relaxed);
+  for (int i = 0; i < iNumCPUs; i++) {
+    if (!(flags & (1 << i)))
+      continue;
+    const u64 locked_line = state.cpu_lock_address[i] & CPU_LOCK_MATCH_MASK;
+    if (locked_line >= first_line && locked_line <= last_line)
+      clear_mask |= 1 << i;
+  }
+  if (clear_mask)
+    state.cpu_lock_flags.fetch_and(~clear_mask, std::memory_order_relaxed);
 }
 
 /**

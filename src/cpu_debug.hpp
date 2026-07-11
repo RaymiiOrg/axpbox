@@ -37,6 +37,12 @@
 #define ES40_EXECUTE_END() goto _next_instruction
 #endif
 
+#if defined(DEBUG_INSTALL_VMFAULT)
+#define DEBUG_INSTALL_PAL_TRAP(offset) debug_trace_user_pal_trap(offset)
+#else
+#define DEBUG_INSTALL_PAL_TRAP(offset) ((void)0)
+#endif
+
 #if defined(IDB)
 extern const char *PAL_NAME[];
 extern const char *IPR_NAME[];
@@ -66,6 +72,7 @@ void handle_debug_string(char *s);
       dbg_strptr += strlen(dbg_strptr);                                        \
     }                                                                          \
     handle_debug_string(dbg_string);                                           \
+    DEBUG_INSTALL_PAL_TRAP(offset);                                            \
     state.exc_addr = state.current_pc;                                         \
     set_pc(state.pal_base | offset | 1);                                       \
     /* HRM 4.2.4: a taken exception/interrupt clears lock_flag so a pending    \
@@ -90,6 +97,7 @@ void handle_debug_string(char *s);
 
 #define GO_PAL(offset)                                                         \
   {                                                                            \
+    DEBUG_INSTALL_PAL_TRAP(offset);                                            \
     state.exc_addr = state.current_pc;                                         \
     set_pc(state.pal_base | offset | 1);                                       \
     /* HRM 4.2.4: clear lock_flag on taken exception/interrupt (fail a         \

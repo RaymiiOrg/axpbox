@@ -60,6 +60,11 @@ static void diag_printf(const char *fmt, ...) {
 
 #define DEBUG_PCI 0
 
+static bool pci_dma_targets_ram(CSystem *system, u64 phys_addr, size_t bytes) {
+  return bytes && system->PtrToMem(phys_addr) &&
+         system->PtrToMem(phys_addr + bytes - 1);
+}
+
 static size_t pci_dma_chunk_limit(u64 phys_addr, size_t remaining) {
   const size_t dma_page = 8192;
   size_t page_remaining = dma_page - (size_t)(phys_addr & (dma_page - 1));
@@ -587,6 +592,10 @@ void CPCIDevice::do_pci_read(u32 address, void *dest, size_t element_size,
 
   // if there is only one element to read, this is a simple ReadMem operation.
   if (element_count == 1) {
+    const bool writes_ram =
+        pci_dma_targets_ram(cSystem, phys_addr, element_size);
+    CSystem::CPCIDMAWriteGuard dma_guard(cSystem, writes_ram);
+    dma_guard.invalidate(phys_addr, element_size);
     switch (element_size) {
     case 1:
       *(u8 *)dest = (u8)cSystem->ReadMem(phys_addr, 8, this);
@@ -696,6 +705,10 @@ void CPCIDevice::do_pci_write(u32 address, void *source, size_t element_size,
 
   // if there is only one element to read, this is a simple ReadMem operation.
   if (element_count == 1) {
+    const bool writes_ram =
+        pci_dma_targets_ram(cSystem, phys_addr, element_size);
+    CSystem::CPCIDMAWriteGuard dma_guard(cSystem, writes_ram);
+    dma_guard.invalidate(phys_addr, element_size);
     switch (element_size) {
     case 1:
       cSystem->WriteMem(phys_addr, 8, *(u8 *)source, this);
@@ -735,10 +748,17 @@ void CPCIDevice::do_pci_write(u32 address, void *source, size_t element_size,
       // physical memory beyond the current page.
       // Also, make sure we aren't trying to copy past allocated memory.
       if (memptr && memptr2) {
+        CSystem::CPCIDMAWriteGuard dma_guard(cSystem, true);
+        dma_guard.invalidate(cur_phys, chunk);
         memcpy(memptr, src, chunk);
       } else {
-        for (el = 0; el < chunk; el++)
-          cSystem->WriteMem(cur_phys + el, 8, (u8)src[el], this);
+        for (el = 0; el < chunk; el++) {
+          const u64 byte_phys = cur_phys + el;
+          const bool writes_ram = pci_dma_targets_ram(cSystem, byte_phys, 1);
+          CSystem::CPCIDMAWriteGuard dma_guard(cSystem, writes_ram);
+          dma_guard.invalidate(byte_phys, 1);
+          cSystem->WriteMem(byte_phys, 8, (u8)src[el], this);
+        }
       }
 
       src += chunk;
@@ -755,6 +775,9 @@ void CPCIDevice::do_pci_write(u32 address, void *source, size_t element_size,
   switch (element_size) {
   case 1: {
     for (el = 0; el < element_count; el++) {
+      const bool writes_ram = pci_dma_targets_ram(cSystem, phys_addr, 1);
+      CSystem::CPCIDMAWriteGuard dma_guard(cSystem, writes_ram);
+      dma_guard.invalidate(phys_addr, 1);
       cSystem->WriteMem(phys_addr, 8, *(u8 *)src, this);
       src++;
       phys_addr++;
@@ -763,6 +786,9 @@ void CPCIDevice::do_pci_write(u32 address, void *source, size_t element_size,
   }
 
   case 2: {
+    const bool writes_ram = pci_dma_targets_ram(cSystem, phys_addr, 2);
+    CSystem::CPCIDMAWriteGuard dma_guard(cSystem, writes_ram);
+    dma_guard.invalidate(phys_addr, 2);
     cSystem->WriteMem(phys_addr, 16, endian_16(*(u16 *)src), this);
     src += 2;
     phys_addr += 2;
@@ -770,6 +796,9 @@ void CPCIDevice::do_pci_write(u32 address, void *source, size_t element_size,
   }
 
   case 4: {
+    const bool writes_ram = pci_dma_targets_ram(cSystem, phys_addr, 4);
+    CSystem::CPCIDMAWriteGuard dma_guard(cSystem, writes_ram);
+    dma_guard.invalidate(phys_addr, 4);
     cSystem->WriteMem(phys_addr, 32, endian_32(*(u32 *)src), this);
     src += 4;
     phys_addr += 4;

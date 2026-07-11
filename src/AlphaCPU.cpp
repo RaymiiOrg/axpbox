@@ -1646,6 +1646,7 @@ int CAlphaCPU::jit_read_locked(CAlphaCPU *cpu, u64 va, int size_bits,
       cpu->dram_size) // MMIO: interpreter handles the I/O-space locked path
     return 1;
 
+  CSystem::CLLSCDRAMGuard llsc_guard(cpu->cSystem, true);
   if (cpu->m_jit_vreplay) {
     if (va != cpu->m_jit_vaddr[cpu->m_jit_vlog_i]) {
       static int n = 0;
@@ -1935,6 +1936,7 @@ u64 CAlphaCPU::jit_stc(CAlphaCPU *cpu, u64 va, int size_bits, u64 value) {
 
   u64 expected = 0;
   bool same_address = false;
+  CSystem::CLLSCDRAMGuard llsc_guard(cpu->cSystem, phys < cpu->dram_size);
   if (!cpu->cSystem->cpu_take_lock(cpu->state.iProcNum, phys, &expected,
                                    &same_address))
     return 0; // lock lost -> SC fails

@@ -346,12 +346,15 @@
     break;                                                                     \
                                                                                \
   case 2: /* longword physical locked */                                       \
+  {                                                                            \
     phys_address = state.r[REG_2] + DISP_12;                                   \
+    CSystem::CLLSCDRAMGuard _llsc_guard(cSystem, phys_address < dram_size);    \
     state.r[REG_1] = READ_PHYS_NT(32);                                         \
     state.r[REG_1] = sext_u64_32(                                              \
         state.r[REG_1]); /* HW_LDL canonical longword (vmspal hw_ldl*/         \
     cSystem->cpu_lock(state.iProcNum, phys_address, state.r[REG_1]);           \
     break;                                                                     \
+  }                                                                            \
                                                                                \
   case 4: /* longword virtual VPTE (HRM 6.4.1 TYPE 0102: LD_VPTE) --           \
            * page-table-entry fetch; access checked against KERNEL             \
@@ -407,10 +410,13 @@
     break;                                                                     \
                                                                                \
   case 3: /* quadword physical locked */                                       \
+  {                                                                            \
     phys_address = state.r[REG_2] + DISP_12;                                   \
+    CSystem::CLLSCDRAMGuard _llsc_guard(cSystem, phys_address < dram_size);    \
     state.r[REG_1] = READ_PHYS_NT(64);                                         \
     cSystem->cpu_lock(state.iProcNum, phys_address, state.r[REG_1]);           \
     break;                                                                     \
+  }                                                                            \
                                                                                \
   case 5: /* quadword virtual VPTE (HRM 6.4.1 TYPE 0102: LD_VPTE) --           \
            * see HW_LDL case 4 for full notes. */                              \
@@ -454,6 +460,7 @@
     {                                                                          \
       u64 _stc_exp = 0;                                                        \
       bool _stc_same_address = false;                                          \
+      CSystem::CLLSCDRAMGuard _llsc_guard(cSystem, phys_address < dram_size);  \
       if (cSystem->cpu_take_lock(state.iProcNum, phys_address, &_stc_exp,      \
                                  &_stc_same_address)) {                        \
         if (phys_address < dram_size) {                                        \
@@ -504,6 +511,7 @@
     {                                                                          \
       u64 _stc_exp = 0;                                                        \
       bool _stc_same_address = false;                                          \
+      CSystem::CLLSCDRAMGuard _llsc_guard(cSystem, phys_address < dram_size);  \
       if (cSystem->cpu_take_lock(state.iProcNum, phys_address, &_stc_exp,      \
                                  &_stc_same_address)) {                        \
         if (phys_address < dram_size) {                                        \
