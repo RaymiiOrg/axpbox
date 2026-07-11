@@ -26,32 +26,10 @@
  * serve the general public.
  */
 
-/* Copyright notice from Simh/alpha/alpha_fpi.c and alpha_fpv.c:
-
-   Copyright (c) 2003-2006, Robert M Supnik
-
-   Permission is hereby granted, free of charge, to any person obtaining a
-   copy of this software and associated documentation files (the "Software"),
-   to deal in the Software without restriction, including without limitation
-   the rights to use, copy, modify, merge, publish, distribute, sublicense,
-   and/or sell copies of the Software, and to permit persons to whom the
-   Software is furnished to do so, subject to the following conditions:
-
-   The above copyright notice and this permission notice shall be included in
-   all copies or substantial portions of the Software.
-
-   THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-   IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-   FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
-   ROBERT M SUPNIK BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER
-   IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
-   CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
-
-   Except as contained in this notice, the name of Robert M Supnik shall not be
-   used in advertising or otherwise to promote the sale, use or other dealings
-   in this Software without prior written authorization from Robert M Supnik.
-*/
-
+/**
+ * \file
+ * Contains some macro definitions and some inline functions for the Alpha CPU.
+ **/
 #if !defined(__CPU_DEFS__)
 #define __CPU_DEFS__
 
@@ -194,6 +172,71 @@
 #define FDR_GETFRAC(x) ((x)&FDR_FRAC)
 #define D_BIAS 0x80
 
+static inline u64 dram_read(const char *dram_ptr, u64 phys, int dsize) {
+  const char *p = dram_ptr + phys;
+  switch (dsize) {
+  case 8:
+    return *(const u8 *)p;
+  case 16:
+    return *(const u16 *)p;
+  case 32:
+    return *(const u32 *)p;
+  case 64:
+    return *(const u64 *)p;
+  default:
+    return 0; // unreachable in practice
+  }
+}
+
+static inline void dram_write(char *dram_ptr, u64 phys, int dsize, u64 data) {
+  char *p = dram_ptr + phys;
+  switch (dsize) {
+  case 8:
+    *(u8 *)p = (u8)data;
+    break;
+  case 16:
+    *(u16 *)p = (u16)data;
+    break;
+  case 32:
+    *(u32 *)p = (u32)data;
+    break;
+  case 64:
+    *(u64 *)p = data;
+    break;
+  }
+}
+
+/* Atomic compare-and-swap on a DRAM location for the emulator's MP LL/SC model.
+ * Used only when STx_C targets the same physical address as the matching LDx_L.
+ */
+#if defined(_MSC_VER)
+#include <intrin.h>
+static inline bool dram_cas32(char *p, u32 expected, u32 desired) {
+  return (u32)_InterlockedCompareExchange((volatile long *)p, (long)desired,
+                                          (long)expected) == expected;
+}
+static inline bool dram_cas64(char *p, u64 expected, u64 desired) {
+  return (u64)_InterlockedCompareExchange64((volatile long long *)p,
+                                            (long long)desired,
+                                            (long long)expected) == expected;
+}
+#else
+static inline bool dram_cas32(char *p, u32 expected, u32 desired) {
+  return __atomic_compare_exchange_n((u32 *)p, &expected, desired, false,
+                                     __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST);
+}
+static inline bool dram_cas64(char *p, u64 expected, u64 desired) {
+  return __atomic_compare_exchange_n((u64 *)p, &expected, desired, false,
+                                     __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST);
+}
+#endif
+static inline bool dram_cas(char *dram_ptr, u64 phys, u64 expected, u64 desired,
+                            int size) {
+  char *p = dram_ptr + phys;
+  return (size == 32) ? dram_cas32(p, (u32)expected, (u32)desired)
+                      : dram_cas64(p, expected, desired);
+}
+
 /* Unpacked floating point number */
 struct ufp {
   u32 sign;
@@ -254,6 +297,19 @@ typedef struct ufp UFP;
 
 /* 64b * 64b unsigned multiply */
 inline u64 uemul64(u64 a, u64 b, u64 *hi) {
+#if defined(_MSC_VER) && defined(_M_X64)
+  /* Full 128b product in one MULX; bit-identical to the portable path below. */
+  u64 h;
+  const u64 lo = _umul128(a, b, &h);
+  if (hi)
+    *hi = h;
+  return lo;
+#elif defined(__SIZEOF_INT128__)
+  const unsigned __int128 p = (unsigned __int128)a * (unsigned __int128)b;
+  if (hi)
+    *hi = (u64)(p >> 64);
+  return (u64)p;
+#else
   u64 ahi;
 
   u64 alo;
@@ -290,6 +346,7 @@ inline u64 uemul64(u64 a, u64 b, u64 *hi) {
   if (hi)
     *hi = rhi & X64_QUAD;
   return rlo;
+#endif
 }
 
 /* 64b / 64b unsigned fraction divide */
@@ -312,6 +369,29 @@ inline u64 ufdiv64(u64 dvd, u64 dvr, u32 prec, u32 *sticky) {
   if (sticky)
     *sticky = (dvd ? 1 : 0); /* set sticky bit */
   return quo;                /* return quotient */
+}
+
+/* SoftFloat estimateDiv128To64: approximate (a0:a1)/b to 64 bits; the
+   result is never greater than the true quotient and within 2 of it.
+   Requires b > a0 (guaranteed by fsqrt64: b has bit 63 set beyond a0). */
+inline u64 udiv128to64(u64 a0, u64 a1, u64 b) {
+  u64 b0, b1, rem0, rem1, term0, term1, z;
+  if (b <= a0)
+    return X64_QUAD;
+  b0 = b >> 32;
+  z = ((b0 << 32) <= a0) ? U64(0xffffffff00000000) : (a0 / b0) << 32;
+  term1 = uemul64(b, z, &term0);              /* term0:term1 = b*z */
+  rem0 = a0 - term0 - ((a1 < term1) ? 1 : 0); /* a0:a1 - term0:term1 */
+  rem1 = a1 - term1;
+  while (Q_GETSIGN(rem0) != 0) {
+    z -= U64(0x100000000);
+    b1 = b << 32;
+    rem1 = (rem1 + b1) & X64_QUAD;
+    rem0 = (rem0 + b0 + ((rem1 < b1) ? 1 : 0)) & X64_QUAD;
+  }
+  rem0 = (rem0 << 32) | (rem1 >> 32);
+  z |= ((b0 << 32) <= rem0) ? U64(0xffffffff) : rem0 / b0;
+  return z;
 }
 
 /* Fraction square root routine - code from SoftFloat */
@@ -362,11 +442,14 @@ inline u64 fsqrt64(u64 asig, s32 exp) {
    (that is, the rounding bits are close to midpoint).  If so, make
    sure that the result^2 is <below> the input operand */
   asig = asig >> ((exp & 1) ? 3 : 2); /* leave 2b guard */
-  zsig =
-      ufdiv64(asig, zsig << 32, 64, NULL) + (zsig << 30); /* Newton iteration */
-  if ((zsig & 0x1FF) <= 5) {                              /* close to even? */
-    remh = uemul64(zsig, zsig, &reml);                    /* result^2 */
-    remh = (asig - remh - (reml ? 1 : 0)) & X64_QUAD;     /* arg - result^2 */
+  /* Newton iteration: asig*2^64 / (zsig*2^32), per SoftFloat.
+     ufdiv64 was wrong here: with zsig >= 2^31 (always, on the even-exp path)
+     its divisor has bit 63 set, the shifted dividend wraps past 2^64, and the
+     garbage estimate sends the correction loop below walking ~2^60 ULPs */
+  zsig = udiv128to64(asig, 0, zsig << 32) + (zsig << 30);
+  if ((zsig & 0x1FF) <= 5) {                          /* close to even? */
+    remh = uemul64(zsig, zsig, &reml);                /* result^2 */
+    remh = (asig - remh - (reml ? 1 : 0)) & X64_QUAD; /* arg - result^2 */
     reml = NEG_Q(reml);
     while (Q_GETSIGN(remh) != 0) {      /* if arg < result^2 */
       zsig = (zsig - 1) & X64_QUAD;     /* decr result */
@@ -411,42 +494,93 @@ inline u64 fsqrt64(u64 asig, s32 exp) {
 /** Implementation version [HRM p 2-38; ARM p D-5] */
 #define CPU_IMPLVER 2
 
-/** Architecture mask [HRM p 2-38; ARM p D-4]; FIX not implemented */
-#define CPU_AMASK U64(0x1305)
+/** Architecture mask [HRM p 2-38; ARM p D-4]; BWX|FIX|CIX|MVI|TRAP|PREFETCH */
+#define CPU_AMASK U64(0x1307)
 #define DISP_12 (sext_u64_12(ins))
 #define DISP_13 (sext_u64_13(ins))
 #define DISP_16 (sext_u64_16(ins))
 #define DISP_21 (sext_u64_21(ins))
 
 #define DATA_PHYS_NT(addr, flags)                                              \
-  if (virt2phys(addr, &phys_address, flags, NULL, ins))                        \
-    return;
+  {                                                                            \
+    u64 _dpc_va = (addr);                                                      \
+    if constexpr (((flags) & ~ACCESS_WRITE) == 0) {                            \
+      /* Normal read/write — try data page cache. The hit must match the     \
+         current mode (cm) and data ASN (asn0): a hit bypasses virt2phys, so   \
+         the per-mode protection check and ASN tag are only safe to skip when  \
+         both are unchanged from fill time (HRM: protection is per-mode, per   \
+         address space). */                                                    \
+      int _dpc_rw = (flags)&ACCESS_WRITE;                                      \
+      u64 _dpc_vp = _dpc_va & ~U64(0x1FFF);                                    \
+      SDataPageCache &_dpc = data_page_cache[_dpc_rw][dpc_index(_dpc_va)];     \
+      if (_dpc.valid && _dpc.virt_page == _dpc_vp && _dpc.cm == state.cm &&    \
+          _dpc.asn == state.asn0) {                                            \
+        phys_address = _dpc.phys_base | (_dpc_va & U64(0x1FFF));               \
+      } else {                                                                 \
+        if (virt2phys(_dpc_va, &phys_address, flags, NULL, ins))               \
+          ES40_EXECUTE_END();                                                  \
+        _dpc.virt_page = _dpc_vp;                                              \
+        _dpc.phys_base = phys_address & ~U64(0x1FFF);                          \
+        _dpc.host_base = ((phys_address | U64(0x1FFF)) < dram_size)            \
+                             ? ((u64)dram_ptr + (phys_address & ~U64(0x1FFF))) \
+                             : 0;                                              \
+        _dpc.cm = state.cm;                                                    \
+        _dpc.asn = state.asn0;                                                 \
+        _dpc.valid = true;                                                     \
+      }                                                                        \
+    } else {                                                                   \
+      /* PAL privileged access (NO_CHECK, VPTE, ALT, etc) — skip cache */    \
+      if (virt2phys(_dpc_va, &phys_address, flags, NULL, ins))                 \
+        ES40_EXECUTE_END();                                                    \
+    }                                                                          \
+  }
 
 #define ALIGN_PHYS(a) (phys_address & ~((u64)((a)-1)))
 
-/* Increase memory access page alignment checking to 8KB instead of
-   4KB, 8KB minimum on AXP. Potentially should be dynamic in future,
-   resolves OpenVMS installation problems. Source:
-   https://www.openvmshobbyist.com/forum/viewthread.php?forum_id=161&thread_id=2801
+#define ALPHA_BASE_PAGE_MASK U64(0x1fff)
+#define TB_INDEX_DATA 0
+#define TB_INDEX_ITB 1
 
-   https://github.com/gdwnldsKSC/es40/commit/dad191fb2f279164122654aba6da53acc1040d97
-*/
+#if defined(DEBUG_UNALIGN)
+#define TRACE_UNALIGN(flags, align)                                            \
+  printf("unaligned access %d, %d -> trap! exc_sum=0x%04" PRIx64               \
+         ", fault_va=0x%016" PRIx64 ", mm_stat=0x%03" PRIx64 "\n",             \
+         (flags), (align), state.exc_sum, state.fault_va, state.mm_stat)
+#else
+#define TRACE_UNALIGN(flags, align)
+#endif
 
 #define DATA_PHYS(addr, flags, align)                                          \
   if ((addr) & (align)) {                                                      \
     u64 a1 = (addr);                                                           \
     u64 a2 = (addr) + (align);                                                 \
-    if ((a1 ^ a2) & ~U64(0x1fff)) /* 8K page boundary crossed*/                \
-    {                                                                          \
-      state.fault_va = addr;                                                   \
-      state.exc_sum = ((REG_1 &0x1f) << 8);                                    \
-      state.mm_stat = (I_GETOP(ins) << 4) | ((flags & ACCESS_WRITE) ? 1 : 0);  \
-      printf("unaligned addess %d, %d -> trap! ",flags,align);                 \
-      printf("exc_sum = 0x%04" PRId64 "x, fault_va = 0x%016" PRId64            \
-          "x, mm_stat = 0x%03" PRId64 "x.\n",state.exc_sum, state.fault_va,    \
-          state.mm_stat);                                                      \
-      GO_PAL(UNALIGN);                                                         \
-      return;                                                                  \
+    if ((a1 ^ a2) & ~ALPHA_BASE_PAGE_MASK) {                                   \
+      /*                                                                       \
+       * Trap on unaligned access only when crossing the effective page        \
+       * boundary. Use TB keep_mask when available (captures current page      \
+       * granularity), otherwise fall back to 8KB base page behavior.          \
+       */                                                                      \
+      u64 page_mask = ALPHA_BASE_PAGE_MASK;                                    \
+      int tb_i = FindTBEntry(addr, flags);                                     \
+      int tb_t =                                                               \
+          TB_INDEX_DATA; /* DATA_PHYS is used for D-stream accesses only. */   \
+      if (tb_i >= 0)                                                           \
+        page_mask = state.tb[tb_t][tb_i].keep_mask;                            \
+      if ((a1 ^ a2) & ~page_mask) {                                            \
+        u32 _ua_opcode = I_GETOP(ins);                                         \
+        state.fault_va = (addr);                                               \
+        state.va_form_va = (addr);                                             \
+        state.exc_sum = ((REG_1 & 0x1f) << 8);                                 \
+        state.mm_stat =                                                        \
+            ((_ua_opcode == 0x1b || _ua_opcode == 0x1f) ? _ua_opcode - 0x18    \
+                                                        : _ua_opcode)          \
+                << 4 |                                                         \
+            ((flags & ACCESS_WRITE) ? 1 : 0) |                                 \
+            2; /* ACV (matches brokenpipe AlphaFault_Alignment -> accvio) */   \
+        TRACE_UNALIGN(flags, align);                                           \
+        GO_PAL(UNALIGN);                                                       \
+        ES40_EXECUTE_END();                                                    \
+      }                                                                        \
     }                                                                          \
   }                                                                            \
   DATA_PHYS_NT(addr, flags) // use the define above instead of duplicating
@@ -466,7 +600,8 @@ inline u64 fsqrt64(u64 asig, s32 exp) {
 #endif
 
 #define READ_PHYS(size)                                                        \
-  cSystem->ReadMem(phys_address, size, this);                                  \
+  (phys_address < dram_size ? dram_read(dram_ptr, phys_address, size)          \
+                            : cSystem->ReadMem(phys_address, size, this));     \
   LLR
 
 #define READ_VIRT(va, size, dest)                                              \
@@ -480,22 +615,30 @@ inline u64 fsqrt64(u64 asig, s32 exp) {
       dest |= (cSystem->ReadMem(phys_address, 8, this) << (ii * 8));           \
     }                                                                          \
   } else {                                                                     \
-    dest = cSystem->ReadMem(phys_address, size, this);                         \
+    dest = (phys_address < dram_size                                           \
+                ? dram_read(dram_ptr, phys_address, size)                      \
+                : cSystem->ReadMem(phys_address, size, this));                 \
   }
 
 #define READ_VIRT_LOCK(va, size, dest)                                         \
-  pbc = false;                                                                 \
-  DATA_PHYS(va, ACCESS_READ, (size / 8) - 1);                                  \
-  LLR;                                                                         \
-  cSystem->cpu_lock(state.iProcNum, phys_address);                             \
-  if (pbc) {                                                                   \
-    dest = 0;                                                                  \
-    for (int ii = 0; ii < (size / 8); ii++) {                                  \
-      DATA_PHYS(va + ii, ACCESS_READ, 0);                                      \
-      dest |= (cSystem->ReadMem(phys_address, 8, this) << (ii * 8));           \
+  {                                                                            \
+    pbc = false;                                                               \
+    DATA_PHYS(va, ACCESS_READ, (size / 8) - 1);                                \
+    LLR;                                                                       \
+    CSystem::CLLSCDRAMGuard _llsc_guard(cSystem,                               \
+                                        !pbc && phys_address < dram_size);     \
+    if (pbc) {                                                                 \
+      dest = 0;                                                                \
+      for (int ii = 0; ii < (size / 8); ii++) {                                \
+        DATA_PHYS(va + ii, ACCESS_READ, 0);                                    \
+        dest |= (cSystem->ReadMem(phys_address, 8, this) << (ii * 8));         \
+      }                                                                        \
+    } else {                                                                   \
+      dest = (phys_address < dram_size                                         \
+                  ? dram_read(dram_ptr, phys_address, size)                    \
+                  : cSystem->ReadMem(phys_address, size, this));               \
     }                                                                          \
-  } else {                                                                     \
-    dest = cSystem->ReadMem(phys_address, size, this);                         \
+    cSystem->cpu_lock(state.iProcNum, phys_address, dest);                     \
   }
 
 #define READ_VIRT_F(va, size, dest, f)                                         \
@@ -510,23 +653,31 @@ inline u64 fsqrt64(u64 asig, s32 exp) {
     }                                                                          \
     dest = f(aa);                                                              \
   } else {                                                                     \
-    dest = f(cSystem->ReadMem(phys_address, size, this));                      \
+    dest = f((phys_address < dram_size                                         \
+                  ? dram_read(dram_ptr, phys_address, size)                    \
+                  : cSystem->ReadMem(phys_address, size, this)));              \
   }
 
 #define READ_VIRT_LOCK_F(va, size, dest, f)                                    \
-  pbc = false;                                                                 \
-  DATA_PHYS(va, ACCESS_READ, (size / 8) - 1);                                  \
-  LLR;                                                                         \
-  cSystem->cpu_lock(state.iProcNum, phys_address);                             \
-  if (pbc) {                                                                   \
-    u64 aa = 0;                                                                \
-    for (int ii = 0; ii < (size / 8); ii++) {                                  \
-      DATA_PHYS(va + ii, ACCESS_READ, 0);                                      \
-      aa |= (cSystem->ReadMem(phys_address, 8, this) << (ii * 8));             \
+  {                                                                            \
+    pbc = false;                                                               \
+    DATA_PHYS(va, ACCESS_READ, (size / 8) - 1);                                \
+    LLR;                                                                       \
+    CSystem::CLLSCDRAMGuard _llsc_guard(cSystem,                               \
+                                        !pbc && phys_address < dram_size);     \
+    if (pbc) {                                                                 \
+      u64 aa = 0;                                                              \
+      for (int ii = 0; ii < (size / 8); ii++) {                                \
+        DATA_PHYS(va + ii, ACCESS_READ, 0);                                    \
+        aa |= (cSystem->ReadMem(phys_address, 8, this) << (ii * 8));           \
+      }                                                                        \
+      dest = f(aa);                                                            \
+    } else {                                                                   \
+      dest = f((phys_address < dram_size                                       \
+                    ? dram_read(dram_ptr, phys_address, size)                  \
+                    : cSystem->ReadMem(phys_address, size, this)));            \
     }                                                                          \
-    dest = f(aa);                                                              \
-  } else {                                                                     \
-    dest = f(cSystem->ReadMem(phys_address, size, this));                      \
+    cSystem->cpu_lock(state.iProcNum, phys_address, dest);                     \
   }
 
 /**
@@ -536,7 +687,10 @@ inline u64 fsqrt64(u64 asig, s32 exp) {
  * just perform the write as requested using the unaligned address.
  **/
 #define WRITE_PHYS(data, size)                                                 \
-  cSystem->WriteMem(phys_address, size, data, this);                           \
+  if (phys_address < dram_size) {                                              \
+    dram_write(dram_ptr, phys_address, size, data);                            \
+  } else                                                                       \
+    cSystem->WriteMem(phys_address, size, data, this);                         \
   LWR
 
 #define WRITE_VIRT(va, size, src)                                              \
@@ -547,11 +701,48 @@ inline u64 fsqrt64(u64 asig, s32 exp) {
     u64 aa = src;                                                              \
     for (int ii = 0; ii < (size / 8); ii++) {                                  \
       DATA_PHYS(va + ii, ACCESS_WRITE, 0);                                     \
-      cSystem->WriteMem(phys_address, 8, aa, this);                            \
+      if (phys_address < dram_size) {                                          \
+        dram_write(dram_ptr, phys_address, 8, aa);                             \
+      } else                                                                   \
+        cSystem->WriteMem(phys_address, 8, aa, this);                          \
       aa >>= 8;                                                                \
     }                                                                          \
   } else {                                                                     \
-    cSystem->WriteMem(phys_address, size, src, this);                          \
+    if (phys_address < dram_size) {                                            \
+      dram_write(dram_ptr, phys_address, size, src);                           \
+    } else                                                                     \
+      cSystem->WriteMem(phys_address, size, src, this);                        \
+  }
+
+#define WRITE_VIRT_COND(va, size, src, dest)                                   \
+  {                                                                            \
+    u64 _stc_va = (va);                                                        \
+    u64 _stc_data = (src);                                                     \
+    u64 _stc_exp = 0;                                                          \
+    bool _stc_same_address = false;                                            \
+    pbc = false;                                                               \
+    DATA_PHYS(_stc_va, ACCESS_WRITE, (size / 8) - 1);                          \
+    CSystem::CLLSCDRAMGuard _llsc_guard(cSystem,                               \
+                                        !pbc && phys_address < dram_size);     \
+    if (cSystem->cpu_take_lock(state.iProcNum, phys_address, &_stc_exp,        \
+                               &_stc_same_address) &&                          \
+        !pbc) {                                                                \
+      LWR;                                                                     \
+      if (phys_address < dram_size) {                                          \
+        if (_stc_same_address)                                                 \
+          dest = dram_cas(dram_ptr, phys_address, _stc_exp, _stc_data, size)   \
+                     ? 1                                                       \
+                     : 0;                                                      \
+        else {                                                                 \
+          dram_write(dram_ptr, phys_address, size, _stc_data);                 \
+          dest = 1;                                                            \
+        }                                                                      \
+      } else {                                                                 \
+        cSystem->WriteMem(phys_address, size, _stc_data, this);                \
+        dest = 1;                                                              \
+      }                                                                        \
+    } else                                                                     \
+      dest = 0;                                                                \
   }
 
 /**
@@ -561,7 +752,9 @@ inline u64 fsqrt64(u64 asig, s32 exp) {
  * address.
  **/
 #define READ_PHYS_NT(size)                                                     \
-  cSystem->ReadMem(ALIGN_PHYS((size) / 8), size, this);                        \
+  (ALIGN_PHYS((size) / 8) < dram_size                                          \
+       ? dram_read(dram_ptr, ALIGN_PHYS((size) / 8), size)                     \
+       : cSystem->ReadMem(ALIGN_PHYS((size) / 8), size, this));                \
   LLR;
 
 /**
@@ -572,11 +765,23 @@ inline u64 fsqrt64(u64 asig, s32 exp) {
  **/
 #if defined(IDB)
 #define WRITE_PHYS_NT(data, size)                                              \
-  cSystem->WriteMem(ALIGN_PHYS((size) / 8), size, data, this);                 \
+  {                                                                            \
+    u64 _pa = ALIGN_PHYS((size) / 8);                                          \
+    if (_pa < dram_size) {                                                     \
+      dram_write(dram_ptr, _pa, size, data);                                   \
+    } else                                                                     \
+      cSystem->WriteMem(_pa, size, data, this);                                \
+  }                                                                            \
   LWR
 #else
 #define WRITE_PHYS_NT(data, size)                                              \
-  cSystem->WriteMem(ALIGN_PHYS((size) / 8), size, data, this)
+  {                                                                            \
+    u64 _pa = ALIGN_PHYS((size) / 8);                                          \
+    if (_pa < dram_size) {                                                     \
+      dram_write(dram_ptr, _pa, size, data);                                   \
+    } else                                                                     \
+      cSystem->WriteMem(_pa, size, data, this);                                \
+  }
 #endif
 
 #define REG_1 RREG(I_GETRA(ins))
@@ -601,6 +806,7 @@ inline u64 fsqrt64(u64 asig, s32 exp) {
 #define VPTE 8
 #define FAKE 16
 #define ALT 32
+#define WRCHK 64 /* HW_LD WrChk variants: also check write protection */
 #define RECUR 128
 #define PROBE 256
 #define PROBEW 512

@@ -31,6 +31,11 @@
  *  Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307 USA
  */
 
+/**
+ * \file
+ * Contains the definitions for the bx_keymap_c class used for keyboard
+ * interfacing with SDL and other device interfaces.
+ **/
 #include "../Configurator.hpp"
 
 // In case of unknown symbol

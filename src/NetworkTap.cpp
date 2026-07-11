@@ -22,17 +22,17 @@
 
 #if defined(__linux__)
 
-#include "NetworkTap.hpp"
 #include "Configurator.hpp"
+#include "NetworkTap.hpp"
 
 #include <arpa/inet.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <linux/if_tun.h>
 #include <net/if.h>
 #include <string.h>
 #include <sys/ioctl.h>
 #include <sys/socket.h>
-#include <linux/if_tun.h>
 
 // For bridge ioctl
 #include <linux/sockios.h>
@@ -123,8 +123,8 @@ bool CNetworkTap::bring_up_interface(const char *devid_string,
                                      const char *iface) {
   int sock = socket(AF_INET, SOCK_DGRAM, 0);
   if (sock < 0) {
-    printf("%s: Cannot create socket for interface control: %s\n",
-           devid_string, strerror(errno));
+    printf("%s: Cannot create socket for interface control: %s\n", devid_string,
+           strerror(errno));
     return false;
   }
 
@@ -299,8 +299,8 @@ bool CNetworkTap::bridge_add_interface(const char *devid_string,
   return true;
 }
 
-bool CNetworkTap::tap_setup_bridge(const char *devid_string,
-                                   const char *bridge, const char *uplink) {
+bool CNetworkTap::tap_setup_bridge(const char *devid_string, const char *bridge,
+                                   const char *uplink) {
   // Create bridge if it doesn't exist
   if (!bridge_create(devid_string, bridge))
     return false;
@@ -405,14 +405,11 @@ int CNetworkTap::receive(const u8 **data, int *len) {
   return -1; // error
 }
 
-void CNetworkTap::set_filter(u8 mac_list[][6], int num_macs,
-                              bool promiscuous) {
+void CNetworkTap::set_filter(const NetworkFilter &filter) {
   // TAP devices deliver only frames destined for this interface,
   // so hardware-level filtering is not needed. The guest OS driver
   // handles MAC filtering via the emulated NIC's filter setup.
-  (void)mac_list;
-  (void)num_macs;
-  (void)promiscuous;
+  (void)filter;
 }
 
 void CNetworkTap::close() {

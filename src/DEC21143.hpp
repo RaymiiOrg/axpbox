@@ -29,14 +29,19 @@
  * Anders Gavare.  All rights reserved.
  */
 
+/**
+ * \file
+ * Contains the definitions for the emulated DEC 21143 NIC device.
+ **/
 #if !defined(INCLUDED_DEC21143_H_)
 #define INCLUDED_DEC21143_H_
 
 #include "DEC21143_mii.hpp"
 #include "DEC21143_tulipreg.hpp"
-#include "PCIDevice.hpp"
 #include "Ethernet.hpp"
 #include "NetworkBackend.hpp"
+#include "PCIDevice.hpp"
+#include "base/Semaphore.hpp"
 
 /**
  * \brief Emulated DEC 21143 NIC device.
@@ -52,7 +57,9 @@ class CDEC21143 : public CPCIDevice {
 public:
   virtual int SaveState(FILE *f);
   virtual int RestoreState(FILE *f);
+  void instant_tick();
 
+  //    void interrupt(int number);
   virtual void check_state();
   virtual void WriteMem_Bar(int func, int bar, u32 address, int dsize,
                             u32 data);
@@ -64,10 +71,11 @@ public:
   void ResetNIC();
   void SetupFilter();
   void receive_process();
-  void run();
+  virtual void run();
   virtual void init();
   virtual void start_threads();
   virtual void stop_threads();
+  void update_irq();
 
 private:
   static int nic_num;
@@ -75,20 +83,28 @@ private:
   std::unique_ptr<std::thread> myThread;
   std::atomic_bool myThreadDead{false};
   bool StopThread;
+  CSemaphore mySemaphore;
+  /** serializes NIC thread vs CPU-thread CSR access (recursive: nic_read /
+   * nic_write paths may re-enter through the interrupt plumbing) */
 
   u32 nic_read(u32 address, int dsize);
   void nic_write(u32 address, int dsize, u32 data);
   void mii_access(uint32_t oldreg, uint32_t idata);
   void srom_access(uint32_t oldreg, uint32_t idata);
+  void complete_sia_autoneg();
+  void trace_packet(const char *dir, const u8 *frame, int len);
 
   int dec21143_rx();
   int dec21143_tx();
   void set_tx_state(int tx_state);
   void set_rx_state(int rx_state);
 
+  inline u32 bswap32_local(u32 v);
+
   CPacketQueue *rx_queue;
   CNetworkBackend *net_backend;
   bool calc_crc;
+  bool trace_packets;
 
   /// The state structure contains all elements that need to be saved to the
   /// statefile.
@@ -125,8 +141,6 @@ private:
       u32 cur_addr;
       unsigned char *cur_buf;
       int cur_buf_len;
-      int idling;
-      int idling_threshold;
       bool suspend;
     } tx;
 
@@ -140,4 +154,4 @@ private:
     } rx;
   } state;
 };
-#endif // !defined(INCLUDED_DEC21143_H)
+#endif // !defined(INCLUDED_DEC21143_H_)

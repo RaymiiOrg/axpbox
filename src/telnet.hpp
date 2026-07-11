@@ -139,3 +139,7 @@ inline int inet_aton(const char *name, struct in_addr *addr) {
 }
 #endif
 #endif // !defined(INCLUDED_TELNET_H)
+
+#if !defined(TELOPT_BINARY)
+#define TELOPT_BINARY 0 /* binary data path */
+#endif

@@ -26,6 +26,10 @@
  * serve the general public.
  */
 
+/**
+ * \file
+ * Contains the definitions for the emulated Ali M1543C IDE chipset part.
+ **/
 #if !defined(INCLUDED_ALIM1543C_IDE_H_)
 #define INCLUDED_ALIM1543C_IDE_H_
 
@@ -46,6 +50,14 @@
 #include "PCIDevice.hpp"
 #include "SCSIBus.hpp"
 #include "SCSIDevice.hpp"
+
+#include <shared_mutex>
+
+// Scoped reader/writer locks for the per-controller register state.
+#define SCOPED_READ_LOCK(m)                                                    \
+  std::shared_lock<std::shared_mutex> scoped_lock_##__LINE__(m)
+#define SCOPED_WRITE_LOCK(m)                                                   \
+  std::unique_lock<std::shared_mutex> scoped_lock_##__LINE__(m)
 
 #define MAX_MULTIPLE_SECTORS 128
 
@@ -97,9 +109,14 @@ private:
   void ide_control_write(int channel, u32 address, u32 data);
   u32 ide_busmaster_read(int channel, u32 address, int dsize);
   void ide_busmaster_write(int channel, u32 address, u32 data, int dsize);
+  u8 ide_busmaster_status(int channel);
   int do_dma_transfer(int index, u8 *buffer, u32 size, bool direction);
+  u32 get_disk_lba(int index);
+  void advance_disk_address(int index, int sectors);
 
   void raise_interrupt(int channel);
+  void deassert_interrupt(int channel);
+  bool channel_is_native(int channel);
   void set_signature(int channel, int id);
   u8 get_status(int index);
   void command_aborted(int index, u8 command);
@@ -108,14 +125,13 @@ private:
 
   void execute(int index);
 
-  std::unique_ptr<std::thread> thrController[2];
-  std::atomic_bool thrControllerDead[2] = {{false}, {false}};
-  CSemaphore *semController[2];      // controller start/stop
-  CSemaphore *semControllerReady[2]; // controller ready
-  CSemaphore *semBusMaster[2];       // bus master start/stop
-  CSemaphore *semBusMasterReady[2];  // bus master ready
-  CRWLock *mtRegisters[2];           // main registers
-  CRWLock *mtBusMaster[2];           // busmaster registers
+  std::unique_ptr<std::thread>
+      thrController[2]; // one thread per controller chip
+  std::atomic_bool myThreadDead{false};
+  CSemaphore *semController[2];     // controller start/stop
+  CSemaphore *semBusMaster[2];      // bus master start/stop
+  std::shared_mutex mtRegisters[2]; // main registers
+  std::shared_mutex mtBusMaster[2]; // busmaster registers
   bool StopThread;
 
   bool usedma;

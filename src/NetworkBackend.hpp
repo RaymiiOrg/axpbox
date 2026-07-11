@@ -26,6 +26,23 @@
 class CConfigurator;
 
 /**
+ * \brief Packet filtering state derived from the emulated NIC's CSR6 bits
+ * and setup frame.
+ *
+ * Backends map this onto whatever host-side filtering they support; pcap
+ * compiles it into a BPF expression, tap ignores it (the guest driver's
+ * filter is authoritative there).
+ */
+struct NetworkFilter {
+  u8 mac_list[16][6];  ///< perfect-filter entries (all-zero = unused slot)
+  bool promiscuous;    ///< CSR6 PR: accept all packets
+  bool receive_all;    ///< CSR6 RA: pass all packets regardless of filtering
+  bool pass_multicast; ///< CSR6 PM: pass all multicast packets
+  bool inverse;        ///< CSR6 IF: invert the perfect-filter match
+  u8 own_mac[6];       ///< NIC MAC, fallback before a setup frame arrives
+};
+
+/**
  * \brief Abstract network backend interface.
  *
  * Separates the emulated NIC (DEC21143) from the host networking method.
@@ -57,12 +74,9 @@ public:
   virtual int receive(const u8 **data, int *len) = 0;
 
   /**
-   * Set up MAC-based packet filtering.
-   * mac_list contains num_macs MAC addresses (6 bytes each).
-   * If promiscuous is true, accept all packets.
+   * Set up MAC-based packet filtering from the NIC's filtering state.
    */
-  virtual void set_filter(u8 mac_list[][6], int num_macs,
-                          bool promiscuous) = 0;
+  virtual void set_filter(const NetworkFilter &filter) = 0;
 
   /**
    * Close the backend and release resources.

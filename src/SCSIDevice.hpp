@@ -26,10 +26,14 @@
  * serve the general public.
  */
 
+/**
+ * \file
+ * Contains definitions for the SCSI device base class.
+ **/
 #if !defined(__SCSIDEVICE__H__)
 #define __SCSIDEVICE__H__
 
-#include "StdAfx.hpp"
+#include <cstddef>
 
 /**
  * \brief Base class for emulated SCSI devices.
@@ -62,8 +66,8 @@ public:
 
 protected:
   class CSCSIBus *scsi_bus[10]; /**< SCSI busses this device connects to. Disks
-                        connect to 1 bus only, controllers can have
-                        several SCSI busses. **/
+                          connect to 1 bus only, controllers can have
+                          several SCSI busses. **/
   int scsi_initiator_id[10];    /**< Main SCSI id of this device on each of the
                                    busses. **/
 };

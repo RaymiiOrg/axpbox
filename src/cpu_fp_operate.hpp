@@ -26,7 +26,13 @@
  * serve the general public.
  */
 
-#if defined(HAVE_NEW_FP)
+/**
+ * \file
+ * Contains code macros for the processor floating-point operate instructions.
+ * Based on ARM chapter 4.10.
+ **/
+#define FP_IS_ZERO(val) (((val) & ~FPR_SIGN) == 0)
+#define FP_IS_NEGATIVE(val) (((val)&FPR_SIGN) != 0)
 
 /* copy sign */
 #define DO_CPYS                                                                \
@@ -44,132 +50,163 @@
   state.f[FREG_3] = (state.f[FREG_1] & (FPR_SIGN | FPR_EXP)) |                 \
                     (state.f[FREG_2] & ~(FPR_SIGN | FPR_EXP));
 
-/* conditional move */
+/* conditional moves */
+
+/* FCMOVEQ: move if equal to zero */
 #define DO_FCMOVEQ                                                             \
   FPSTART;                                                                     \
-  if ((state.f[FREG_1] & ~FPR_SIGN) == 0)                                      \
+  if (FP_IS_ZERO(state.f[FREG_1]))                                             \
     state.f[FREG_3] = state.f[FREG_2];
 
+/* FCMOVGE - move if greater than or equal to zero */
 #define DO_FCMOVGE                                                             \
   FPSTART;                                                                     \
-  if (state.f[FREG_1] <= FPR_SIGN)                                             \
+  if (!FP_IS_NEGATIVE(state.f[FREG_1]) || FP_IS_ZERO(state.f[FREG_1]))         \
     state.f[FREG_3] = state.f[FREG_2];
 
+/* FCMOVGT - move if greater than zero */
 #define DO_FCMOVGT                                                             \
   FPSTART;                                                                     \
-  if (!FPR_GETSIGN(state.f[FREG_1]) && (state.f[FREG_1] != 0))                 \
+  if (!FP_IS_NEGATIVE(state.f[FREG_1]) && !FP_IS_ZERO(state.f[FREG_1]))        \
     state.f[FREG_3] = state.f[FREG_2];
 
+/* FCMOVLE - move if less than or equal to zero */
 #define DO_FCMOVLE                                                             \
   FPSTART;                                                                     \
-  if (FPR_GETSIGN(state.f[FREG_1]) || (state.f[FREG_1] == 0))                  \
+  if (FP_IS_NEGATIVE(state.f[FREG_1]) || FP_IS_ZERO(state.f[FREG_1]))          \
     state.f[FREG_3] = state.f[FREG_2];
 
+/* FCMOVLT - move if less than zero */
 #define DO_FCMOVLT                                                             \
   FPSTART;                                                                     \
-  if (state.f[FREG_1] > FPR_SIGN)                                              \
+  if (FP_IS_NEGATIVE(state.f[FREG_1]) && !FP_IS_ZERO(state.f[FREG_1]))         \
     state.f[FREG_3] = state.f[FREG_2];
 
+/* FCMOVNE: move if not equal to zero */
 #define DO_FCMOVNE                                                             \
   FPSTART;                                                                     \
-  if ((state.f[FREG_1] & ~FPR_SIGN) != 0)                                      \
+  if (!FP_IS_ZERO(state.f[FREG_1]))                                            \
     state.f[FREG_3] = state.f[FREG_2];
 
 /* floating-point control register */
 #define DO_MF_FPCR                                                             \
   FPSTART;                                                                     \
-  state.f[FREG_1] = state.fpcr;
+  state.f[FREG_1] = read_fpcr_arch();
 
 #define DO_MT_FPCR                                                             \
   FPSTART;                                                                     \
-  state.fpcr = state.f[FREG_1] & U64(0x7fff800000000000);                      \
-  if (state.fpcr & U64(0x03f0000000000000))                                    \
-    state.fpcr |= U64(0x8000000000000000); /* SUM */
+  write_fpcr_arch(state.f[FREG_1]);
 
 /* add */
 #define DO_ADDG                                                                \
   FPSTART;                                                                     \
-  state.f[FREG_3] = vax_fadd(state.f[FREG_1], state.f[FREG_2], ins, DT_G, 0);
+  state.f[FREG_3] =                                                            \
+      vax_fadd(state.f[FREG_1], state.f[FREG_2], ins, DT_G, /*sub=*/false);
 
 #define DO_ADDF                                                                \
   FPSTART;                                                                     \
-  state.f[FREG_3] = vax_fadd(state.f[FREG_1], state.f[FREG_2], ins, DT_F, 0);
+  state.f[FREG_3] =                                                            \
+      vax_fadd(state.f[FREG_1], state.f[FREG_2], ins, DT_F, /*sub=*/false);
 
 #define DO_ADDT                                                                \
   FPSTART;                                                                     \
-  state.f[FREG_3] = ieee_fadd(state.f[FREG_1], state.f[FREG_2], ins, DT_T, 0);
+  state.f[FREG_3] =                                                            \
+      ieee_fadd(state.f[FREG_1], state.f[FREG_2], ins, DT_T, /*sub=*/false);
 
 #define DO_ADDS                                                                \
   FPSTART;                                                                     \
-  state.f[FREG_3] = ieee_fadd(state.f[FREG_1], state.f[FREG_2], ins, DT_S, 0);
+  state.f[FREG_3] =                                                            \
+      ieee_fadd(state.f[FREG_1], state.f[FREG_2], ins, DT_S, /*sub=*/false);
 
 /* subtract */
 #define DO_SUBG                                                                \
   FPSTART;                                                                     \
-  state.f[FREG_3] = vax_fadd(state.f[FREG_1], state.f[FREG_2], ins, DT_G, 1);
+  state.f[FREG_3] =                                                            \
+      vax_fadd(state.f[FREG_1], state.f[FREG_2], ins, DT_G, /*sub=*/true);
 
 #define DO_SUBF                                                                \
   FPSTART;                                                                     \
-  state.f[FREG_3] = vax_fadd(state.f[FREG_1], state.f[FREG_2], ins, DT_F, 1);
+  state.f[FREG_3] =                                                            \
+      vax_fadd(state.f[FREG_1], state.f[FREG_2], ins, DT_F, /*sub=*/true);
 
 #define DO_SUBT                                                                \
   FPSTART;                                                                     \
-  state.f[FREG_3] = ieee_fadd(state.f[FREG_1], state.f[FREG_2], ins, DT_T, 1);
+  state.f[FREG_3] =                                                            \
+      ieee_fadd(state.f[FREG_1], state.f[FREG_2], ins, DT_T, /*sub=*/true);
 
 #define DO_SUBS                                                                \
   FPSTART;                                                                     \
-  state.f[FREG_3] = ieee_fadd(state.f[FREG_1], state.f[FREG_2], ins, DT_S, 1);
+  state.f[FREG_3] =                                                            \
+      ieee_fadd(state.f[FREG_1], state.f[FREG_2], ins, DT_S, /*sub=*/true);
 
 /* comparison */
 #define DO_CMPGEQ                                                              \
   FPSTART;                                                                     \
-  state.f[FREG_3] =                                                            \
-      (vax_fcmp(state.f[FREG_1], state.f[FREG_2], ins) == 0) ? FP_TRUE : 0;
+  {                                                                            \
+    int c = vax_fcmp(state.f[FREG_1], state.f[FREG_2], ins);                   \
+    state.f[FREG_3] = (c == 0) ? U64(0x4000000000000000) : 0;                  \
+  }
 
 #define DO_CMPGLE                                                              \
   FPSTART;                                                                     \
-  state.f[FREG_3] =                                                            \
-      (vax_fcmp(state.f[FREG_1], state.f[FREG_2], ins) <= 0) ? FP_TRUE : 0;
+  {                                                                            \
+    int c = vax_fcmp(state.f[FREG_1], state.f[FREG_2], ins);                   \
+    state.f[FREG_3] = (c <= 0) ? U64(0x4000000000000000) : 0;                  \
+  }
 
 #define DO_CMPGLT                                                              \
   FPSTART;                                                                     \
-  state.f[FREG_3] =                                                            \
-      (vax_fcmp(state.f[FREG_1], state.f[FREG_2], ins) < 0) ? FP_TRUE : 0;
+  {                                                                            \
+    int c = vax_fcmp(state.f[FREG_1], state.f[FREG_2], ins);                   \
+    state.f[FREG_3] = (c < 0) ? U64(0x4000000000000000) : 0;                   \
+  }
 
+/* HRM Table A-11: CMPTLT/CMPTLE raise INV on ANY NaN (incl. quiet); CMPTEQ
+   (like CMPTUN) is quiet -- only a signaling NaN raises INV, via ieee_unpack.
+ */
 #define DO_CMPTEQ                                                              \
   FPSTART;                                                                     \
-  state.f[FREG_3] = (ieee_fcmp(state.f[FREG_1], state.f[FREG_2], ins, 0) == 0) \
-                        ? FP_TRUE                                              \
-                        : 0;
+  {                                                                            \
+    int c = ieee_fcmp(state.f[FREG_1], state.f[FREG_2], ins, 0);               \
+    state.f[FREG_3] = (c == 0) ? U64(0x4000000000000000) : 0;                  \
+  }
 
 #define DO_CMPTLE                                                              \
   FPSTART;                                                                     \
-  state.f[FREG_3] = (ieee_fcmp(state.f[FREG_1], state.f[FREG_2], ins, 1) <= 0) \
-                        ? FP_TRUE                                              \
-                        : 0;
+  {                                                                            \
+    int c = ieee_fcmp(state.f[FREG_1], state.f[FREG_2], ins, 1);               \
+    state.f[FREG_3] = (c <= 0) ? U64(0x4000000000000000) : 0;                  \
+  }
 
 #define DO_CMPTLT                                                              \
   FPSTART;                                                                     \
-  state.f[FREG_3] =                                                            \
-      (ieee_fcmp(state.f[FREG_1], state.f[FREG_2], ins, 1) < 0) ? FP_TRUE : 0;
+  {                                                                            \
+    int c = ieee_fcmp(state.f[FREG_1], state.f[FREG_2], ins, 1);               \
+    state.f[FREG_3] = (c < 0) ? U64(0x4000000000000000) : 0;                   \
+  }
 
+/* CMPTUN is quiet: only sNaN raises INV (handled inside ieee_unpack via the
+   QNAN-bit check). qNaN inputs return TRUE without raising. */
 #define DO_CMPTUN                                                              \
   FPSTART;                                                                     \
-  state.f[FREG_3] = ((ieee_unpack(state.f[FREG_1], &ufp1, ins) == UFT_NAN) ||  \
-                     (ieee_unpack(state.f[FREG_2], &ufp2, ins) == UFT_NAN))    \
-                        ? FP_TRUE                                              \
-                        : 0;
+  {                                                                            \
+    int c = ieee_fcmp(state.f[FREG_1], state.f[FREG_2], ins, 0);               \
+    state.f[FREG_3] = (c == 2) ? U64(0x4000000000000000) : 0;                  \
+  }
 
 /* format conversions */
 #define DO_CVTQL                                                               \
   FPSTART;                                                                     \
-  state.f[FREG_3] = ((state.f[FREG_2] & 0xC0000000) << 32) |                   \
-                    ((state.f[FREG_2] & 0x3FFFFFFF) << 29);                    \
-  if (FPR_GETSIGN(state.f[FREG_2])                                             \
-          ? (state.f[FREG_2] < U64(0xFFFFFFFF80000000))                        \
-          : (state.f[FREG_2] > U64(0x000000007FFFFFFF))) {                     \
-    if (ins & I_FTRP_V)                                                        \
-      vax_trap(TRAP_IOV, ins);                                                 \
+  {                                                                            \
+    u64 cvtql_src = state.f[FREG_2];                                           \
+    state.f[FREG_3] =                                                          \
+        ((cvtql_src & 0xC0000000) << 32) | ((cvtql_src & 0x3FFFFFFF) << 29);   \
+    if (FPR_GETSIGN(cvtql_src) ? (cvtql_src < U64(0xFFFFFFFF80000000))         \
+                               : (cvtql_src > U64(0x000000007FFFFFFF))) {      \
+      write_fpcr_arch(state.fpcr | FPCR_IOV);                                  \
+      if (ins & I_FTRP_V)                                                      \
+        vax_trap(TRAP_IOV, ins);                                               \
+    }                                                                          \
   }
 
 #define DO_CVTLQ                                                               \
@@ -224,26 +261,61 @@
   FPSTART;                                                                     \
   state.f[FREG_3] = ieee_cvtts(state.f[FREG_2], ins);
 
-/* float <-> integer register moves */
+/* float <-> integer register moves
+ * Alpha requires Rb == 31 for these bit-pattern moves.
+ * QEMU enforces this with REQUIRE_REG_31; we use GO_PAL(OPCDEC). */
 #define DO_FTOIS                                                               \
   FPSTART;                                                                     \
-  state.r[REG_3] = ieee_sts(state.f[FREG_1]);
+  do {                                                                         \
+    if (REG_2 != 31) {                                                         \
+      GO_PAL(OPCDEC);                                                          \
+    } else {                                                                   \
+      state.r[REG_3] = sext_u64_32(ieee_sts(state.f[FREG_1]));                 \
+    }                                                                          \
+  } while (0)
 
 #define DO_FTOIT                                                               \
   FPSTART;                                                                     \
-  state.r[REG_3] = state.f[FREG_1];
+  do {                                                                         \
+    if (REG_2 != 31) {                                                         \
+      GO_PAL(OPCDEC);                                                          \
+    } else {                                                                   \
+      state.r[REG_3] = state.f[FREG_1];                                        \
+    }                                                                          \
+  } while (0)
 
+/* ITOFT: raw 64-bit move into the FP reg */
 #define DO_ITOFT                                                               \
   FPSTART;                                                                     \
-  state.f[FREG_3] = state.r[REG_1];
+  do {                                                                         \
+    if (REG_2 != 31) {                                                         \
+      GO_PAL(OPCDEC);                                                          \
+    } else {                                                                   \
+      state.f[FREG_3] = state.r[REG_1];                                        \
+    }                                                                          \
+  } while (0)
 
+/* ITOFS: build an S-format value from the low 32 bits */
 #define DO_ITOFS                                                               \
   FPSTART;                                                                     \
-  state.f[FREG_3] = ieee_lds((u32)state.r[REG_1]);
+  do {                                                                         \
+    if (REG_2 != 31) {                                                         \
+      GO_PAL(OPCDEC);                                                          \
+    } else {                                                                   \
+      state.f[FREG_3] = ieee_lds((u32)state.r[REG_1]);                         \
+    }                                                                          \
+  } while (0)
 
+/* ITOFF: build a VAX F-format value from the low 32 bits */
 #define DO_ITOFF                                                               \
   FPSTART;                                                                     \
-  state.f[FREG_3] = vax_ldf(SWAP_VAXF((u32)state.r[REG_1]));
+  do {                                                                         \
+    if (REG_2 != 31) {                                                         \
+      GO_PAL(OPCDEC);                                                          \
+    } else {                                                                   \
+      state.f[FREG_3] = vax_ldf(SWAP_VAXF((u32)state.r[REG_1]));               \
+    }                                                                          \
+  } while (0)
 
 /* Multiply */
 #define DO_MULG                                                                \
@@ -282,242 +354,40 @@
 /* Square-root */
 #define DO_SQRTG                                                               \
   FPSTART;                                                                     \
-  state.f[FREG_3] = vax_sqrt(state.f[FREG_2], ins, DT_G);
+  do {                                                                         \
+    if (REG_1 != 31) {                                                         \
+      GO_PAL(OPCDEC);                                                          \
+    } else {                                                                   \
+      state.f[FREG_3] = vax_sqrt(state.f[FREG_2], ins, DT_G);                  \
+    }                                                                          \
+  } while (0)
 
 #define DO_SQRTF                                                               \
   FPSTART;                                                                     \
-  state.f[FREG_3] = vax_sqrt(state.f[FREG_2], ins, DT_F);
+  do {                                                                         \
+    if (REG_1 != 31) {                                                         \
+      GO_PAL(OPCDEC);                                                          \
+    } else {                                                                   \
+      state.f[FREG_3] = vax_sqrt(state.f[FREG_2], ins, DT_F);                  \
+    }                                                                          \
+  } while (0)
 
 #define DO_SQRTT                                                               \
   FPSTART;                                                                     \
-  state.f[FREG_3] = ieee_sqrt(state.f[FREG_2], ins, DT_T);
+  do {                                                                         \
+    if (REG_1 != 31) {                                                         \
+      GO_PAL(OPCDEC);                                                          \
+    } else {                                                                   \
+      state.f[FREG_3] = ieee_sqrt(state.f[FREG_2], ins, DT_T);                 \
+    }                                                                          \
+  } while (0)
 
 #define DO_SQRTS                                                               \
   FPSTART;                                                                     \
-  state.f[FREG_3] = ieee_sqrt(state.f[FREG_2], ins, DT_S);
-
-#else
-#define DO_CPYS                                                                \
-  FPSTART;                                                                     \
-  state.f[FREG_3] = (state.f[FREG_1] & U64(0x8000000000000000)) |              \
-                    (state.f[FREG_2] & U64(0x7fffffffffffffff));
-
-#define DO_CPYSN                                                               \
-  FPSTART;                                                                     \
-  state.f[FREG_3] =                                                            \
-      (state.f[FREG_1] & U64(0x8000000000000000) ^ U64(0x8000000000000000)) |  \
-      (state.f[FREG_2] & U64(0x7fffffffffffffff));
-
-#define DO_CPYSE                                                               \
-  FPSTART;                                                                     \
-  state.f[FREG_3] = (state.f[FREG_1] & U64(0xfff0000000000000)) |              \
-                    (state.f[FREG_2] & U64(0x000fffffffffffff));
-
-#define DO_CVTQL                                                               \
-  FPSTART;                                                                     \
-  state.f[FREG_3] = ((state.f[FREG_2] & U64(0x00000000c0000000)) << 32) |      \
-                    ((state.f[FREG_2] & U64(0x000000003fffffff)) << 29);
-
-#define DO_CVTLQ                                                               \
-  FPSTART;                                                                     \
-  state.f[FREG_3] =                                                            \
-      sext_u64_32(((state.f[FREG_2] >> 32) & U64(0x00000000c0000000)) |        \
-                  ((state.f[FREG_2] >> 29) & U64(0x000000003fffffff)));
-
-#define DO_FCMOVEQ                                                             \
-  FPSTART;                                                                     \
-  if (state.f[FREG_1] == U64(0x0000000000000000) ||                            \
-      state.f[FREG_1] == U64(0x8000000000000000))                              \
-    state.f[FREG_3] = state.f[FREG_2];
-#define DO_FCMOVGE                                                             \
-  FPSTART;                                                                     \
-  if (!(state.f[FREG_1] & U64(0x8000000000000000)) ||                          \
-      state.f[FREG_1] == U64(0x8000000000000000))                              \
-    state.f[FREG_3] = state.f[FREG_2];
-#define DO_FCMOVGT                                                             \
-  FPSTART;                                                                     \
-  if (!(state.f[FREG_1] & U64(0x8000000000000000)) &&                          \
-      state.f[FREG_1] != U64(0x0000000000000000))                              \
-    state.f[FREG_3] = state.f[FREG_2];
-#define DO_FCMOVLE                                                             \
-  FPSTART;                                                                     \
-  if ((state.f[FREG_1] & U64(0x8000000000000000)) ||                           \
-      state.f[FREG_1] == U64(0x0000000000000000))                              \
-    state.f[FREG_3] = state.f[FREG_2];
-#define DO_FCMOVLT                                                             \
-  FPSTART;                                                                     \
-  if ((state.f[FREG_1] & U64(0x8000000000000000)) &&                           \
-      state.f[FREG_1] != U64(0x8000000000000000))                              \
-    state.f[FREG_3] = state.f[FREG_2];
-#define DO_FCMOVNE                                                             \
-  FPSTART;                                                                     \
-  if (state.f[FREG_1] != U64(0x0000000000000000) &&                            \
-      state.f[FREG_1] != U64(0x8000000000000000))                              \
-    state.f[FREG_3] = state.f[FREG_2];
-
-#define DO_MF_FPCR                                                             \
-  FPSTART;                                                                     \
-  state.f[FREG_1] = state.fpcr;
-#define DO_MT_FPCR                                                             \
-  FPSTART;                                                                     \
-  state.fpcr = state.f[FREG_1];
-
-#define DO_ADDG                                                                \
-  FPSTART;                                                                     \
-  state.f[FREG_3] = host2g(g2host(state.f[FREG_1]) + g2host(state.f[FREG_2]));
-#define DO_ADDF                                                                \
-  FPSTART;                                                                     \
-  state.f[FREG_3] = host2f(f2host(state.f[FREG_1]) + f2host(state.f[FREG_2]));
-#define DO_ADDT                                                                \
-  FPSTART;                                                                     \
-  state.f[FREG_3] = host2t(t2host(state.f[FREG_1]) + t2host(state.f[FREG_2]));
-#define DO_ADDS                                                                \
-  FPSTART;                                                                     \
-  state.f[FREG_3] = host2s(s2host(state.f[FREG_1]) + s2host(state.f[FREG_2]));
-
-#define DO_SUBG                                                                \
-  FPSTART;                                                                     \
-  state.f[FREG_3] = host2g(g2host(state.f[FREG_1]) - g2host(state.f[FREG_2]));
-#define DO_SUBF                                                                \
-  FPSTART;                                                                     \
-  state.f[FREG_3] = host2f(f2host(state.f[FREG_1]) - f2host(state.f[FREG_2]));
-#define DO_SUBT                                                                \
-  FPSTART;                                                                     \
-  state.f[FREG_3] = host2t(t2host(state.f[FREG_1]) - t2host(state.f[FREG_2]));
-#define DO_SUBS                                                                \
-  FPSTART;                                                                     \
-  state.f[FREG_3] = host2s(s2host(state.f[FREG_1]) - s2host(state.f[FREG_2]));
-
-#define DO_CMPGEQ                                                              \
-  FPSTART;                                                                     \
-  state.f[FREG_3] = (g2host(state.f[FREG_1]) == g2host(state.f[FREG_2]))       \
-                        ? U64(0x4000000000000000)                              \
-                        : 0;
-#define DO_CMPGLE                                                              \
-  FPSTART;                                                                     \
-  state.f[FREG_3] = (g2host(state.f[FREG_1]) <= g2host(state.f[FREG_2]))       \
-                        ? U64(0x4000000000000000)                              \
-                        : 0;
-#define DO_CMPGLT                                                              \
-  FPSTART;                                                                     \
-  state.f[FREG_3] = (g2host(state.f[FREG_1]) < g2host(state.f[FREG_2]))        \
-                        ? U64(0x4000000000000000)                              \
-                        : 0;
-
-#define DO_CMPTEQ                                                              \
-  FPSTART;                                                                     \
-  state.f[FREG_3] = (t2host(state.f[FREG_1]) == t2host(state.f[FREG_2]))       \
-                        ? U64(0x4000000000000000)                              \
-                        : 0;
-#define DO_CMPTLE                                                              \
-  FPSTART;                                                                     \
-  state.f[FREG_3] = (t2host(state.f[FREG_1]) <= t2host(state.f[FREG_2]))       \
-                        ? U64(0x4000000000000000)                              \
-                        : 0;
-#define DO_CMPTLT                                                              \
-  FPSTART;                                                                     \
-  state.f[FREG_3] = (t2host(state.f[FREG_1]) < t2host(state.f[FREG_2]))        \
-                        ? U64(0x4000000000000000)                              \
-                        : 0;
-#define DO_CMPTUN                                                              \
-  FPSTART;                                                                     \
-  state.f[FREG_3] = (i_isnan(state.f[FREG_1]) || i_isnan(state.f[FREG_2]))     \
-                        ? U64(0x4000000000000000)                              \
-                        : 0;
-
-#define DO_CVTGQ                                                               \
-  FPSTART;                                                                     \
-  state.f[FREG_3] = (u64)((s64)g2host(state.f[FREG_2]));
-#define DO_CVTQG                                                               \
-  FPSTART;                                                                     \
-  state.f[FREG_3] = host2g((double)((s64)state.f[FREG_2]));
-#define DO_CVTQF                                                               \
-  FPSTART;                                                                     \
-  state.f[FREG_3] = host2f((double)((s64)state.f[FREG_2]));
-
-#define DO_CVTTQ                                                               \
-  FPSTART;                                                                     \
-  state.f[FREG_3] = (u64)((s64)t2host(state.f[FREG_2]));
-#define DO_CVTQT                                                               \
-  FPSTART;                                                                     \
-  state.f[FREG_3] = host2t((double)((s64)state.f[FREG_2]));
-#define DO_CVTQS                                                               \
-  FPSTART;                                                                     \
-  state.f[FREG_3] = host2s((double)((s64)state.f[FREG_2]));
-#define DO_CVTGD                                                               \
-  FPSTART;                                                                     \
-  state.f[FREG_3] = host2d(g2host(state.f[FREG_2]));
-#define DO_CVTDG                                                               \
-  FPSTART;                                                                     \
-  state.f[FREG_3] = host2g(d2host(state.f[FREG_2]));
-#define DO_CVTGF                                                               \
-  FPSTART;                                                                     \
-  state.f[FREG_3] = host2f(g2host(state.f[FREG_2]));
-
-#define DO_FTOIS                                                               \
-  FPSTART;                                                                     \
-  temp_64 = state.f[FREG_1];                                                   \
-  state.r[REG_3] =                                                             \
-      (temp_64 & U64(0x000000003fffffff)) |                                    \
-      ((temp_64 & U64(0xc000000000000000)) >> 32) |                            \
-      (((temp_64 & U64(0x8000000000000000)) >> 31) * U64(0xffffffff));
-
-#define DO_FTOIT                                                               \
-  FPSTART;                                                                     \
-  state.r[REG_3] = state.f[FREG_1];
-#define DO_ITOFT                                                               \
-  FPSTART;                                                                     \
-  state.f[FREG_3] = state.r[REG_1];
-#define DO_ITOFS                                                               \
-  FPSTART;                                                                     \
-  state.f[FREG_3] = load_s((u32)state.r[REG_1]);
-#define DO_ITOFF                                                               \
-  FPSTART;                                                                     \
-  state.f[FREG_3] = itof_f(state.r[REG_1]);
-
-#define DO_MULG                                                                \
-  FPSTART;                                                                     \
-  state.f[FREG_3] = host2g(g2host(state.f[FREG_1]) * g2host(state.f[FREG_2]));
-#define DO_MULF                                                                \
-  FPSTART;                                                                     \
-  state.f[FREG_3] = host2f(f2host(state.f[FREG_1]) * f2host(state.f[FREG_2]));
-#define DO_MULT                                                                \
-  FPSTART;                                                                     \
-  state.f[FREG_3] = host2t(t2host(state.f[FREG_1]) * t2host(state.f[FREG_2]));
-#define DO_MULS                                                                \
-  FPSTART;                                                                     \
-  state.f[FREG_3] = host2s(s2host(state.f[FREG_1]) * s2host(state.f[FREG_2]));
-
-#define DO_DIVG                                                                \
-  FPSTART;                                                                     \
-  state.f[FREG_3] = host2g(g2host(state.f[FREG_1]) / g2host(state.f[FREG_2]));
-#define DO_DIVF                                                                \
-  FPSTART;                                                                     \
-  state.f[FREG_3] = host2f(f2host(state.f[FREG_1]) / f2host(state.f[FREG_2]));
-#define DO_DIVT                                                                \
-  FPSTART;                                                                     \
-  state.f[FREG_3] = host2t(t2host(state.f[FREG_1]) / t2host(state.f[FREG_2]));
-#define DO_DIVS                                                                \
-  FPSTART;                                                                     \
-  state.f[FREG_3] = host2s(s2host(state.f[FREG_1]) / s2host(state.f[FREG_2]));
-
-#define DO_SQRTG                                                               \
-  FPSTART;                                                                     \
-  state.f[FREG_3] = host2g(sqrt(g2host(state.f[FREG_2])));
-#define DO_SQRTF                                                               \
-  FPSTART;                                                                     \
-  state.f[FREG_3] = host2f(sqrt(f2host(state.f[FREG_2])));
-#define DO_SQRTT                                                               \
-  FPSTART;                                                                     \
-  state.f[FREG_3] = host2t(sqrt(t2host(state.f[FREG_2])));
-#define DO_SQRTS                                                               \
-  FPSTART;                                                                     \
-  state.f[FREG_3] = host2s(sqrt(s2host(state.f[FREG_2])));
-
-#define DO_CVTST                                                               \
-  FPSTART;                                                                     \
-  state.f[FREG_3] = host2t(s2host(state.f[FREG_2]));
-#define DO_CVTTS                                                               \
-  FPSTART;                                                                     \
-  state.f[FREG_3] = host2s(t2host(state.f[FREG_2]));
-#endif
+  do {                                                                         \
+    if (REG_1 != 31) {                                                         \
+      GO_PAL(OPCDEC);                                                          \
+    } else {                                                                   \
+      state.f[FREG_3] = ieee_sqrt(state.f[FREG_2], ins, DT_S);                 \
+    }                                                                          \
+  } while (0)

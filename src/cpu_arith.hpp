@@ -26,10 +26,22 @@
  * serve the general public.
  */
 
+/**
+ * \file
+ * Contains code macros for the processor integer arithmetic instructions.
+ * Based on ARM chapter 4.4.
+ **/
+
 /* comparison */
 #define DO_CMPEQ RCV = (RAV == RBV) ? 1 : 0;
 #define DO_CMPLT RCV = ((s64)RAV < (s64)RBV) ? 1 : 0;
 #define DO_CMPLE RCV = ((s64)RAV <= (s64)RBV) ? 1 : 0;
+
+#ifdef DEBUG_ARITH_TRAP
+#define ARITH_TRAP_PRINTF(...) printf(__VA_ARGS__)
+#else
+#define ARITH_TRAP_PRINTF(...) ((void)0)
+#endif
 
 /* addition */
 #define DO_ADDQ RCV = RAV + RBV;
@@ -45,9 +57,9 @@
     /* test for integer overflow */                                            \
     if (((~rav ^ rbv) & (rav ^ RCV)) & Q_SIGN) {                               \
       ARITH_TRAP_I(TRAP_IOV, RC);                                              \
-      printf("ADDQ_V %016" PRIu64 "x + %016" PRIu64 "x = %016" PRIu64          \
-             "x + TRAP.\n",                                                    \
-             rav, rbv, RCV);                                                   \
+      ARITH_TRAP_PRINTF("ADDQ_V %016" PRIx64 " + %016" PRIx64 " = %016" PRIx64 \
+                        " + TRAP.\n",                                          \
+                        rav, rbv, RCV);                                        \
     }                                                                          \
   }
 
@@ -64,12 +76,13 @@
     /* test for integer overflow */                                            \
     if (((~rav ^ rbv) & (rav ^ RCV)) & L_SIGN) {                               \
       ARITH_TRAP_I(TRAP_IOV, RC);                                              \
-      printf("ADDL_V %016" PRIu64 "x + %016" PRIu64 "x = %016" PRIu64          \
-             "x + TRAP.\n",                                                    \
-             rav, rbv, RCV);                                                   \
+      ARITH_TRAP_PRINTF("ADDL_V %016" PRIx64 " + %016" PRIx64 " = %016" PRIx64 \
+                        " + TRAP.\n",                                          \
+                        rav, rbv, RCV);                                        \
     }                                                                          \
   }
 
+#ifndef _MSC_VER
 #define DO_CTLZ                                                                \
   temp_64 = 0;                                                                 \
   temp_64_2 = RBV;                                                             \
@@ -97,6 +110,68 @@
     else                                                                       \
       temp_64++;                                                               \
   RCV = temp_64;
+#else
+/* === Fast bit-ops: use x86-64/MSVC intrinsics when available === */
+#if defined(_MSC_VER) && defined(_M_X64)
+
+#include <intrin.h>
+
+__forceinline static unsigned __int64 alpha_clz64(unsigned __int64 x) {
+  unsigned long idx;
+  return _BitScanReverse64(&idx, x) ? (unsigned __int64)(63u - idx) : 64ull;
+}
+
+__forceinline static unsigned __int64 alpha_ctz64(unsigned __int64 x) {
+  unsigned long idx;
+  return _BitScanForward64(&idx, x) ? (unsigned __int64)idx : 64ull;
+}
+
+__forceinline static unsigned __int64 alpha_popcnt64(unsigned __int64 x) {
+  return (unsigned __int64)__popcnt64(x);
+}
+
+#define ES40_HAVE_FAST_BITOPS 1
+#else
+/* Portable fallbacks */
+__forceinline static unsigned __int64 alpha_clz64(unsigned __int64 x) {
+  if (!x)
+    return 64ull;
+  unsigned __int64 n = 0;
+  for (int i = 63; i >= 0; --i) {
+    if ((x >> i) & 1)
+      break;
+    else
+      ++n;
+  }
+  return n;
+}
+__forceinline static unsigned __int64 alpha_ctz64(unsigned __int64 x) {
+  if (!x)
+    return 64ull;
+  unsigned __int64 n = 0;
+  for (int i = 0; i < 64; ++i) {
+    if ((x >> i) & 1)
+      break;
+    else
+      ++n;
+  }
+  return n;
+}
+__forceinline static unsigned __int64 alpha_popcnt64(unsigned __int64 x) {
+  unsigned __int64 n = 0;
+  for (int i = 0; i < 64; ++i) {
+    n += (x >> i) & 1;
+  }
+  return n;
+}
+#endif
+/* ================================================================= */
+#define DO_CTLZ RCV = alpha_clz64((u64)RBV);
+
+#define DO_CTPOP RCV = alpha_popcnt64((u64)RBV);
+
+#define DO_CTTZ RCV = alpha_ctz64((u64)RBV);
+#endif
 
 #define DO_CMPULT RCV = ((u64)RAV < (u64)RBV) ? 1 : 0;
 #define DO_CMPULE RCV = ((u64)RAV <= (u64)RBV) ? 1 : 0;
@@ -112,9 +187,9 @@
     RCV = sext_u64_32(sr);                                                     \
     if ((RCV ^ sr) & U64(0xffffffff00000000)) {                                \
       ARITH_TRAP_I(TRAP_IOV, RC);                                              \
-      printf("MULL_V %016" PRIu64 "x * %016" PRIu64 "x = %016" PRIu64          \
-             "x + TRAP.\n",                                                    \
-             rav, rbv, RCV);                                                   \
+      ARITH_TRAP_PRINTF("MULL_V %016" PRIx64 " * %016" PRIx64 " = %016" PRIx64 \
+                        " + TRAP.\n",                                          \
+                        rav, rbv, RCV);                                        \
     }                                                                          \
   }
 
@@ -132,9 +207,9 @@
       t64 -= rav;                                                              \
     if (Q_GETSIGN(RCV) ? (t64 != X64_QUAD) : (t64 != 0)) {                     \
       ARITH_TRAP_I(TRAP_IOV, RC);                                              \
-      printf("MULQ_V %016" PRIu64 "x * %016" PRIu64 "x = %016" PRIu64          \
-             "x + TRAP.\n",                                                    \
-             rav, rbv, RCV);                                                   \
+      ARITH_TRAP_PRINTF("MULQ_V %016" PRIx64 " * %016" PRIx64 " = %016" PRIx64 \
+                        " + TRAP.\n",                                          \
+                        rav, rbv, RCV);                                        \
     }                                                                          \
   }
 
@@ -154,9 +229,9 @@
     /* test for integer overflow */                                            \
     if (((rav ^ rbv) & (rav ^ RCV)) & Q_SIGN) {                                \
       ARITH_TRAP_I(TRAP_IOV, RC);                                              \
-      printf("SUBQ_V %016" PRIu64 "x - %016" PRIu64 "x = %016" PRIu64          \
-             "x + TRAP.\n",                                                    \
-             rav, rbv, RCV);                                                   \
+      ARITH_TRAP_PRINTF("SUBQ_V %016" PRIx64 " - %016" PRIx64 " = %016" PRIx64 \
+                        " + TRAP.\n",                                          \
+                        rav, rbv, RCV);                                        \
     }                                                                          \
   }
 
@@ -173,8 +248,8 @@
     /* test for integer overflow */                                            \
     if (((rav ^ rbv) & (rav ^ RCV)) & L_SIGN) {                                \
       ARITH_TRAP_I(TRAP_IOV, RC);                                              \
-      printf("SUBL_V %016" PRIu64 "x - %016" PRIu64 "x = %016" PRIu64          \
-             "x + TRAP.\n",                                                    \
-             rav, rbv, RCV);                                                   \
+      ARITH_TRAP_PRINTF("SUBL_V %016" PRIx64 " - %016" PRIx64 " = %016" PRIx64 \
+                        " + TRAP.\n",                                          \
+                        rav, rbv, RCV);                                        \
     }                                                                          \
   }

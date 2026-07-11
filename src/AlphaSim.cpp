@@ -30,11 +30,12 @@
 #include "Flash.hpp"
 #include "StdAfx.hpp"
 #include "System.hpp"
+#include "banner.hpp"
 
 #include "lockstep.hpp"
 
 #if defined(HAVE_SDL)
-#include "SDL/SDL.h"
+#include "SDL3/SDL.h"
 #endif
 
 /// "standard" locations for a configuration file.  This will be port specific.
@@ -101,6 +102,8 @@ void segv_handler(int signum) {
 int main_sim(int argc, char *argv[]) {
   const char *filename = 0;
   FILE *f;
+
+  print_axpbox_banner("AXPbox Alpha Emulator");
 
 #ifdef HAS_BACKTRACE
   signal(SIGSEGV, &segv_handler);
@@ -197,12 +200,14 @@ int main_sim(int argc, char *argv[]) {
         if (PROFILE_BUCKET(p_i) > p_max)
           p_max = PROFILE_BUCKET(p_i);
       }
-      fprintf(p_fp, "p_max = %10" PRId64 "; %10" PRId64 " profiled instructions.\n\n",
+      fprintf(p_fp,
+              "p_max = %10" PRId64 "; %10" PRId64 " profiled instructions.\n\n",
               p_max, profiled_insts);
       for (p_i = PROFILE_FROM; p_i < PROFILE_TO;
            p_i += (4 * PROFILE_BUCKSIZE)) {
         if (PROFILE_BUCKET(p_i)) {
-          fprintf(p_fp, "%016" PRIx64 ": %10" PRId64 " ", p_i, PROFILE_BUCKET(p_i));
+          fprintf(p_fp, "%016" PRIx64 ": %10" PRId64 " ", p_i,
+                  PROFILE_BUCKET(p_i));
           for (p_j = 0;
                p_j < (((float)PROFILE_BUCKET(p_i) / (float)p_max) * 100); p_j++)
             fprintf(p_fp, "*");

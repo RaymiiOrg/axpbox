@@ -26,6 +26,10 @@
  * serve the general public.
  */
 
+/**
+ * \file
+ * Contains the definitions for the emulated Flash ROM devices.
+ **/
 #if !defined(INCLUDED_FLASH_H)
 #define INCLUDED_FLASH_H
 
@@ -45,14 +49,21 @@ public:
   virtual ~CFlash();
   virtual int SaveState(FILE *f);
   virtual int RestoreState(FILE *f);
+  virtual void check_state();
   void SaveStateF();
   void RestoreStateF();
   void SaveStateF(char *fn);
   void RestoreStateF(char *fn);
 
+  // Boot-firmware helpers (persistent flash-backed firmware)
+  bool HasBootFirmware() const;
+  const u8 *GetFlashBytes() const; // 2MB dense image
+  void FlushIfDirty();
+
 protected:
-  /// The state structure contains all elements that need to be saved to the
-  /// statefile.
+  bool dirty = false;
+  time_t last_dirty = 0; // wall-clock when dirty was last (re)set
+
   struct SFlash_state {
     u8 Flash[2 * 1024 * 1024];
     int mode;

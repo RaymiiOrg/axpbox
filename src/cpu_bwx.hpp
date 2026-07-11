@@ -26,6 +26,11 @@
  * serve the general public.
  */
 
+/**
+ * \file
+ * Contains code macros for the processor BWX (byte and word extension)
+ *instructions. Based on ARM chapter 4.6.
+ **/
 #define DO_CMPBGE                                                              \
   state.r[REG_3] =                                                             \
       (((u8)(state.r[REG_1] & 0xff) >= (u8)(V_2 & 0xff)) ? 1 : 0) |            \

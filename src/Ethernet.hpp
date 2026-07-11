@@ -29,6 +29,10 @@
  * Anders Gavare.  All rights reserved.
  */
 
+/**
+ * \file
+ * Contains the definitions for the packet queue and other NIC support routines.
+ **/
 #if !defined(INCLUDED_ETHERNET_H)
 #define INCLUDED_ETHERNET_H
 

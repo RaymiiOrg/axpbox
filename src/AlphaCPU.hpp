@@ -26,12 +26,20 @@
  * might serve the general public.
  */
 
+/**
+ * \file
+ * Contains the definitions for the emulated DecChip 21264CB EV68 Alpha
+ *processor.
+ **/
 #if !defined(INCLUDED_ALPHACPU_H)
 #define INCLUDED_ALPHACPU_H
+
+#include <atomic>
 
 #include "System.hpp"
 #include "SystemComponent.hpp"
 #include "cpu_defs.hpp"
+class CJitEngine; // JIT block-cache engine (ES40_JIT builds)
 
 /// Number of entries in the Instruction Cache
 #define ICACHE_ENTRIES 1024
@@ -40,12 +48,13 @@
 /** These bits should match to have an Instruction Cache hit.
     This includes bit 0, because it indicates PALmode . */
 #define ICACHE_MATCH_MASK (u64)(U64(0x1) - (ICACHE_LINE_SIZE * 4))
-/// DWORD (instruction) number of an address in an ICache entry.
+                  /// DWORD (instruction) number of an address in an ICache
+                  /// entry.
 #define ICACHE_INDEX_MASK (u64)(ICACHE_LINE_SIZE - U64(0x1))
 /// Byte numer of an address in an ICache entry.
 #define ICACHE_BYTE_MASK (u64)(ICACHE_INDEX_MASK << 2)
 /// Number of entries in each Translation Buffer
-#define TB_ENTRIES 16
+#define TB_ENTRIES 16 // real EV68 has 128
 
 /**
  * \brief Emulated CPU.
@@ -70,7 +79,7 @@ public:
   int get_cpuid();
   void flush_icache();
 
-  void run();
+  virtual void run(); // Poco Thread entry point
   void execute();
   void release_threads();
 
@@ -117,6 +126,7 @@ public:
   virtual void init();
   virtual void start_threads();
   virtual void stop_threads();
+  void ResetForSystemReset();
 
 private:
   std::unique_ptr<std::thread> myThread;
@@ -126,12 +136,14 @@ private:
 
   int get_icache(u64 address, u32 *data);
   int FindTBEntry(u64 virt, int flags);
-  void add_tb(u64 virt, u64 pte_phys, u64 pte_flags, int flags);
+  int initiate_acv_fault(u64 virt, int flags, u32 instruction);
+  void add_tb(u64 virt, u64 pte_phys, u64 pte_flags, int flags, int asn);
   void add_tb_i(u64 virt, u64 pte);
-  void add_tb_d(u64 virt, u64 pte);
+  void add_tb_d(u64 virt, u64 pte, int dtb);
   void tbia(int flags);
   void tbiap(int flags);
   void tbis(u64 virt, int flags);
+  void tbis_d(u64 virt, int asn);
 
   /* Floating Point routines */
   u64 ieee_lds(u32 op);
@@ -233,56 +245,221 @@ private:
   int vmspal_int_initiate_exception();
   int vmspal_int_initiate_interrupt();
 
+  // New FP helpers.....
+  void write_fpcr_arch(u64 arch_val);
+  u64 read_fpcr_arch() const;
+
   bool icache_enabled;
-  bool skip_memtest_hack;
-  int skip_memtest_counter;
+  bool skip_memtest_hack = false;
+  // Host-recursion depth of native VMS-PAL exception initiation. Nested
+  // initiations (exception while delivering an exception) fall back to the
+  // guest's real PALcode instead of recursing on the host stack.
+  int vmspal_exc_depth = 0;
+  bool vmspal_lle_enabled;
 
   // ... ... ...
   u64 cc_large;
   u64 start_icount;
   u64 start_cc;
-  CTimestamp start_time;
+  std::chrono::steady_clock::time_point start_time;
   u64 prev_icount;
   u64 prev_cc;
   u64 prev_time;
   u64 cc_per_instruction;
-  u64 ins_per_timer_int;
-  u64 next_timer_int;
   u64 cpu_hz;
+
+  // Wall-clock-paced Cchip interval timer (b_irq<2>).  CPU 0 fires once
+  // per period as it passes batch-flush boundaries.  Avoids cross-thread
+  // edge coalescing seen with AliM1543C-thread firing.  next_timer_fire is
+  // the count-preserving schedule (+= period per fire); tick_last_fire paces
+  // catch-up so backlog repays at no more than 2x the nominal rate.
+  std::chrono::steady_clock::time_point next_timer_fire;
+  std::chrono::steady_clock::time_point tick_last_fire;
+
+  // Wall-clock RPCC: state.cc advances by real elapsed time * cpu_hz so it
+  // tracks the configured CPU frequency regardless of how fast/bursty the JIT
+  // runs. This is the last sync timestamp; the delta since it (when cc_ena) is
+  // added to state.cc each jit_run, then it's reset to now.
+  std::chrono::steady_clock::time_point cc_last_sync;
+
+  // DRAM fast-path cache
+  char *dram_ptr; // cSystem->PtrToMem(0) - host pointer to base es40 ram array
+                  // thingy
+  u64 dram_size; // 1ULL << cSystem->get_memory_bits() — size of DRAM in bytes
+
+  // Sequential icache fast path
+  // Tracks position within current icache line for back-to-back sequential
+  // fetches.
+  u32 *seq_line_ptr; // pointer to current icache line data[]
+  int seq_offset;    // next word offset within the line
+  int seq_remaining; // words left in this line
+  u64 seq_next_pc;   // expected PC for sequential hit
+
+  inline void break_seq_icache() {
+    seq_remaining = 0;
+    // Also drop the icache-disabled fetch cursor: compiled JIT blocks write
+    // state.pc natively, so pc_phys/rem_ins_in_page are stale after a
+    // native pass and the next interpreted fetch must retranslate.
+    state.rem_ins_in_page = 0;
+  }
+
+  // Data page translation cache: direct-mapped by virtual page (kDpcEntries
+  // slots/dir) so a multi-page access pattern doesn't thrash a single slot. The
+  // inline load checks one slot.
+  static constexpr int kDpcBits = 6; // 64 slots/dir (8KB pages -> 512KB)
+  static constexpr int kDpcEntries = 1 << kDpcBits;
+  static constexpr u64 kDpcMask = (u64)kDpcEntries - 1;
+  static inline u64 dpc_index(u64 va) { return (va >> 13) & kDpcMask; }
+  struct SDataPageCache {
+    u64 virt_page; // va & ~0x1FFF
+    u64 phys_base; // pa & ~0x1FFF
+    u64 host_base; // dram_ptr + phys_base for DRAM pages, 0 for MMIO (JIT
+                   // inline fast path)
+    int cm;        // current mode (CM) at fill time
+    int asn;       // data ASN (asn0) at fill time
+    bool valid;
+  } data_page_cache[2][kDpcEntries]; // [rw][dpc_index(va)]; [0]=read, [1]=write
+
+  inline void flush_data_page_cache() {
+    for (int i = 0; i < kDpcEntries; i++) {
+      data_page_cache[0][i].valid = false;
+      data_page_cache[1][i].valid = false;
+      data_page_cache[0][i].host_base =
+          0; // valid==false => host_base==0, so the JIT can drop its valid load
+      data_page_cache[1][i].host_base = 0;
+    }
+  }
+
+  // ASN switch: bump the chain epoch so compiled chain edges revalidate through
+  // the asn-keyed lookup paths (the chain guard checks tag+epoch only). No-op
+  // in non-JIT builds.
+  void jit_note_asn_change();
+
+#ifdef ES40_JIT
+  // JIT block-discovery engine (per-CPU), allocated in init().
+  CJitEngine *m_jit = nullptr;
+  s64 m_jit_budget = 0; // instruction ceiling for a compiled chain
+  void *m_link_from =
+      nullptr; // JitBlock* whose successor link the dispatcher should patch
+  void jit_run(int budget);    // drives the ES40_JIT lane via the interpreter
+  void jit_flush_blocks();     // invalidate all discovered JIT blocks
+  void jit_flush_blocks_asm(); // invalidate only !asm_global blocks (preserve
+                               // global PAL across ASN flush)
+  // Compiled-block memory helpers: load size_bits from va into *out / store
+  // value to va. Return 0 on success, 1 on fault/unaligned (caller bails to the
+  // interpreter).
+  static int jit_read(CAlphaCPU *cpu, u64 va, int size_bits, u64 *out);
+  static int jit_read_phys(CAlphaCPU *cpu, u64 phys, int size_bits,
+                           u64 *out); // HW_LD physical: no translation
+  static int jit_read_locked(CAlphaCPU *cpu, u64 va, int size_bits,
+                             u64 *out); // LDx_L: load + establish LL/SC lock
+  static int jit_read_vpte(CAlphaCPU *cpu, u64 va, int size_bits,
+                           u64 *out); // HW_LD VPTE: kernel-checked virtual read
+  static int
+  jit_read_wchk(CAlphaCPU *cpu, u64 va, int size_bits,
+                u64 *out); // HW_LD func 0xa: longword virtual + WrChk
+  static int jit_write(CAlphaCPU *cpu, u64 va, int size_bits, u64 value);
+  static int jit_write_phys(CAlphaCPU *cpu, u64 phys, int size_bits,
+                            u64 value); // HW_ST physical: no translation
+  static int jit_fp_read(CAlphaCPU *cpu, u64 va, u32 fa,
+                         u32 descr); // LDS/LDT: f[fa] = convert(MEM[va])
+  static int jit_fp_write(CAlphaCPU *cpu, u64 va, u32 fa,
+                          u32 descr); // STS/STT: MEM[va] = convert(f[fa])
+  static u64 jit_stc(CAlphaCPU *cpu, u64 va, int size_bits,
+                     u64 value); // STx_C: store-conditional
+  // CALL_PAL OPCDEC trap (privileged func in user mode): GO_PAL(OPCDEC) incl.
+  // cpu_clear_lock.
+  static void jit_opcdec(CAlphaCPU *cpu, u64 cpc);
+  // HW_MFPR (PALmode): return the IPR named in ins; the caller (compiled
+  // codegen) writes Ra.
+  static u64 jit_hw_mfpr(CAlphaCPU *cpu, u32 ins, u64 cur);
+  // HW_MTPR (PALmode): store value (Rb) to the side-effect-free IPR named by
+  // function.
+  static void jit_hw_mtpr(CAlphaCPU *cpu, u32 function, u64 value);
+  // Indirect jump (JMP/HW_RET): look up the target block; return its chained
+  // re-entry or null.
+  static void *jit_indirect(CAlphaCPU *cpu, u64 target);
+  // MISC (0x18) state reads: sel 0=RPCC (cycle counter), 1=RC, 2=RS (read
+  // interrupt flag + clear/set). Value the verify can't re-derive -> replayed
+  // from the load log like a load.
+  static u64 jit_misc(CAlphaCPU *cpu, u32 sel);
+  // Int<->FP register moves (ITOFx / FTOIx). fmt: 0=T raw, 1=S, 2=F. Return 1 =
+  // FEN-trap bail.
+  static int jit_itof(CAlphaCPU *cpu, u32 fc, u64 value, u32 fmt);
+  static int jit_ftoi(CAlphaCPU *cpu, u32 fa, u32 fmt, u64 *out);
+  // FLTL (0x17) non-arithmetic: FPCR moves, CPYSx, FCMOVx, CVTLQ/QL. Return 1 =
+  // FEN-trap bail.
+  static int jit_fltl(CAlphaCPU *cpu, u32 ins);
+  // FLTV (0x15) VAX arith/convert/compare. Return 0 ok / 1 FEN-trap bail / 2
+  // arith trap (exc_sum set).
+  static int jit_fltv(CAlphaCPU *cpu, u32 ins);
+  // Verify support: the interpreter pass records each value it loads, and the
+  // compiled pass replays them instead of re-reading memory - false mismatch
+  // fix
+  bool m_jit_vreplay =
+      false;            // compiled pass: replay recorded loads, don't re-read
+  u32 m_jit_vlog_i = 0; // replay cursor
+  u64 m_jit_vlog[64];   // values the interpreter pass loaded (<= prefix_len)
+  u64 m_jit_vaddr[64];  // diagnostic: load addresses the interpreter computed
+  // Store verify: the interpreter pass records each store (addr,value); the
+  // compiled pass compares against it (stores touch memory, not GPRs, so the
+  // GPR check can't see them).
+  u32 m_jit_slog_i = 0;       // store-compare cursor
+  u64 m_jit_slog_addr[64];    // store addresses the interpreter pass wrote
+  u64 m_jit_slog_val[64];     // store values the interpreter pass wrote
+  u64 m_jit_slog_success[64]; // STx_C outcome (1/0) the interp pass got; 1 for
+                              // ordinary stores
+#endif
 
   /// The state structure contains all elements that need to be saved to the
   /// statefile
   struct SCPU_state {
+    u64 pc;         /**< Program counter */
+    u64 current_pc; /**< Virtual address of current instruction */
+    u64 pc_phys;
+    u64 cc;                /**< IPR CC: Cycle counter [HRM p 5-3] */
+    u64 instruction_count; /**< Number of times doclock has been called */
+    bool cc_ena;           /**< IPR CC_CTL: Cycle counter enabled [HRM p 5-3] */
+    std::atomic<bool> check_int;    /**< Interrupt maybe pending; raised
+                                       cross-thread by irq_h() */
+    std::atomic<bool> check_timers; /**< Delayed-irq countdown pending; set
+                                       cross-thread by irq_h() */
+    bool fpen; /**< IPR PCTX: fpe (floating point enable) [HRM p 5-21..23] */
+    int cm;    /**< IPR IER_CM: cm (current mode) [HRM p 5-9..10] */
+    int asn0;  /**< IPR DTB_ASN0: data ASN [HRM p 5-28]. Kept right after cm so
+                  the JIT dpc  check loads {cm,asn0} as one 8-byte compare vs the
+                  slot's {cm,asn}. */
+    int asn;   /**< IPR PCTX: asn (address space number) [HRM p 5-21..22] */
+    u64 exc_addr; /**< IPR EXC_ADDR: address of last exception [HRM p 5-8] */
+
+    u64 r[64]; /**< Integer registers (0-31 normal, 32-63 shadow) */
+
+    u64 f[64]; /**< Floating point registers (0-31 normal, 32-63 shadow) */
+
     bool wait_for_start;
     u64 pal_base; /**< IPR PAL_BASE [HRM: p 5-15] */
-    u64 pc;       /**< Program counter */
-    u64 cc;       /**< IPR CC: Cycle counter [HRM p 5-3] */
-    u64 r[64];    /**< Integer registers (0-31 normal, 32-63 shadow) */
     u64 dc_stat;  /**< IPR DC_STAT: Dcache status [HRM p 5-31..32] */
     bool ppcen; /**< IPR PCTX: ppce (proc perf counting enable) [HRM p 5-21..23]
                  */
     u64 i_stat; /**< IPR I_STAT: Ibox status [HRM p 5-18..20] */
     u64 pctr_ctl;  /**< IPR PCTR_CTL [HRM p 5-23..25] */
-    bool cc_ena;   /**< IPR CC_CTL: Cycle counter enabled [HRM p 5-3] */
     u32 cc_offset; /**< IPR CC: Cycle counter offset [HRM p 5-3] */
     u64 dc_ctl;    /**< IPR DC_CTL: Dcache control [HRM p 5-30..31] */
     int alt_cm;    /**< IPR DTB_ALTMODE: alternative cm for HW_LD/HW_ST [HRM p
                       5-26..27] */
-    int smc; /**< IPR M_CTL: smc (speculative miss control) [HRM p 5-29..30] */
-    bool fpen;    /**< IPR PCTX: fpe (floating point enable) [HRM p 5-21..23] */
-    bool sde;     /**< IPR I_CTL: sde[1] (PALshadow enable) [HRM p 5-15..18] */
-    u64 fault_va; /**< IPR VA: virtual address of last Dstream miss or fault
-                     [HRM p 5-4] */
-    u64 exc_sum;  /**< IPR EXC_SUM: exception summary [HRM p 5-13..15] */
+    int smc;  /**< IPR M_CTL: smc (speculative miss control) [HRM p 5-29..30] */
+    bool sde; /**< IPR I_CTL: sde[1] (PALshadow enable) [HRM p 5-15..18] */
+    u64 fault_va;   /**< IPR VA: virtual address of last Dstream miss or fault
+                       [HRM p 5-4] */
+    u64 va_form_va; /**< Address used for VA_FORM computation (may differ from
+                       VA for VPTE) */
+    u64 exc_sum;    /**< IPR EXC_SUM: exception summary [HRM p 5-13..15] */
     int i_ctl_va_mode;  /**< IPR I_CTL: (va_form_32 + va_48) [HRM p 5-15..17] */
     int va_ctl_va_mode; /**< IPR VA_CTL: (va_form_32 + va_48) [HRM p 5-4] */
     u64 i_ctl_vptb;     /**< IPR I_CTL: vptb (virtual page table base) [HRM p
                            5-15..16] */
     u64 va_ctl_vptb; /**< IPR VA_CTL: vptb (virtual page table base) [HRM p 5-4]
                       */
-    int cm;          /**< IPR IER_CM: cm (current mode) [HRM p 5-9..10] */
-    int asn;   /**< IPR PCTX: asn (address space number) [HRM p 5-21..22] */
-    int asn0;  /**< IPR DTB_ASN0: asn (address space number) [HRM p 5-28] */
     int asn1;  /**< IPR DTB_ASN1: asn (address space number) [HRM p 5-28] */
     int eien;  /**< IPR IER_CM: eien (external interrupt enable) [HRM p 5-9..10]
                 */
@@ -296,7 +473,8 @@ private:
                 */
     int asten; /**< IPR IER_CM: asten (AST interrupt enable) [HRM p 5-9..10] */
     int sir; /**< IPR SIRR: sir (software interrupt request) [HRM p 5-10..11] */
-    int eir; /**< external interrupt request */
+    std::atomic<int>
+        eir; /**< external interrupt request; raised cross-thread by irq_h() */
     int slr; /**< serial line interrupt request */
     int crr; /**< corrected read error interrupt */
     int pcr; /**< perf counter interrupt */
@@ -311,11 +489,9 @@ private:
                       5-29..30] */
     int i_ctl_spe; /**< IPR I_CTL: spe (Super Page mode enabled) [HRM p
                       5-15..18] */
-    u64 exc_addr;  /**< IPR EXC_ADDR: address of last exception [HRM p 5-8] */
     u64 pmpc;
     u64 fpcr; /**< Floating-Point Control Register [HRM p 2-36] */
     bool bIntrFlag;
-    u64 current_pc; /**< Virtual address of current instruction */
 
     /**
      * \brief Instruction cache entry.
@@ -349,27 +525,26 @@ private:
                          phys address*/
       int asn;        /**< Address Space Number*/
       int asm_bit;    /**< Address Space Match bit*/
-      int access[2][4];  /**< Access permitted [read/write][current mode]*/
-      int fault[3];      /**< Fault on access [read/write/execute]*/
-      bool valid;        /**< Valid entry*/
-    } tb[2][TB_ENTRIES]; /**< Translation buffer entries */
+      int access[2][4]; /**< Access permitted [read/write][current mode]*/
+      int fault[3];     /**< Fault on access [read/write/execute]*/
+      bool valid;       /**< Valid entry*/
+    } tb[2]
+        [TB_ENTRIES]; /**< Unified Dstream TB model plus Istream TB entries */
 
     int next_tb[2]; /**< Number of next translation buffer entry to use */
     int last_found_tb[2]
                      [2]; /**< Number of last translation buffer entry found */
     u32 rem_ins_in_page;  /**< Number of instructions remaining in current page
                            */
-    u64 pc_phys;
-    u64 f[64];    /**< Floating point registers (0-31 normal, 32-63 shadow) */
-    int iProcNum; /**< number of the current processor (0 in a 1-processor
-                     system) */
-    u64 instruction_count; /**< Number of times doclock has been called */
-    u64 last_tb_virt;
+    int iProcNum;     /**< number of the current processor (0 in a 1-processor
+                         system) */
+    u64 last_tb_virt; /**< ITB_TAG staging register for ITB_PTE writes */
     bool pal_vms; /**< True if the PALcode base is 0x8000 (=VMS PALcode base) */
-    bool check_int;     /**< True if an interrupt may be pending */
     int irq_h_timer[6]; /**< Timers for delayed IRQ_H[0:5] assertion */
-    bool check_timers;
   } state; /**< Determines CPU state that needs to be saved to the state file */
+
+  u64 last_dtb_virt[2]; /**< DTB_TAG0/1 staging registers for DTB_PTE0/1 writes
+                         */
 
 #ifdef IDB
   u64 current_pc_physical; /**< Physical address of current instruction */
@@ -377,8 +552,6 @@ private:
   u64 last_read_loc;
   u64 last_write_loc;
 #endif
-
-  void skip_memtest();
 };
 
 /** Translate raw register (0..31) number to a number that takes PALshadow
@@ -392,18 +565,16 @@ private:
  **/
 inline void CAlphaCPU::flush_icache() {
   if (icache_enabled) {
-
-    //  memset(state.icache,0,sizeof(state.icache));
-    int i;
-    for (i = 0; i < ICACHE_ENTRIES; i++) {
+    for (int i = 0; i < ICACHE_ENTRIES; i++) {
       state.icache[i].valid = false;
-
-      //    state.icache[i].asm_bit = true;
     }
-
-    state.next_icache = 0;
+    state.next_icache = 0; // old version, may be relied on elsewhere
     state.last_found_icache = 0;
   }
+  break_seq_icache();
+#ifdef ES40_JIT
+  jit_flush_blocks();
+#endif
 }
 
 /**
@@ -416,6 +587,11 @@ inline void CAlphaCPU::flush_icache_asm() {
       if (!state.icache[i].asm_bit)
         state.icache[i].valid = false;
   }
+  break_seq_icache();
+#ifdef ES40_JIT
+  jit_flush_blocks_asm(); // preserve global (ASM-bit) JIT blocks, matching the
+                          // icache ASM-bit rule
+#endif
 }
 
 /**
@@ -424,7 +600,39 @@ inline void CAlphaCPU::flush_icache_asm() {
  **/
 inline void CAlphaCPU::set_PAL_BASE(u64 pb) {
   state.pal_base = pb;
-  state.pal_vms = (pb == U64(0x8000));
+  bool was_vms = state.pal_vms;
+
+  // VMS PALcode uses base 0x8000
+  state.pal_vms = (pb == U64(0x8000)) && !vmspal_lle_enabled;
+  // state.pal_vms = false;
+
+#ifdef DEBUG_PAL
+  printf("%%CPU-I-PALSWITCH: PAL=%016" PRIx64 " p21=%016" PRIx64
+         " p22=%016" PRIx64 " r22=%016" PRIx64 "\n",
+         pb, state.r[53], state.r[54], state.r[22]);
+  // Dump PAL scratch area contents for non-VMS PAL
+  if (!state.pal_vms && state.r[53] != 0) {
+
+    u64 scratch = U64(0x7cf420);
+
+    printf("%%CPU-I-PALSCR: Scratch area at %016" PRIx64 ":\n", scratch);
+    printf("%%CPU-I-PALSCR:   +0x00 VPTB = %016" PRIx64 "\n",
+           cSystem->ReadMem(scratch + 0x00, 64, this));
+    printf("%%CPU-I-PALSCR:   +0x08 PTBR = %016" PRIx64 "\n",
+           cSystem->ReadMem(scratch + 0x08, 64, this));
+    printf("%%CPU-I-PALSCR:   +0x10 PCBB = %016" PRIx64 "\n",
+           cSystem->ReadMem(scratch + 0x10, 64, this));
+    printf("%%CPU-I-PALSCR:   +0x18 KSP  = %016" PRIx64 "\n",
+           cSystem->ReadMem(scratch + 0x18, 64, this));
+    printf("%%CPU-I-PALSCR:   +0x98 WHAMI= %016" PRIx64 "\n",
+           cSystem->ReadMem(scratch + 0x98, 64, this));
+    printf("%%CPU-I-PALSCR:   +0x170 SCBB= %016" PRIx64 "\n",
+           cSystem->ReadMem(scratch + 0x170, 64, this));
+  } else if (!state.pal_vms && state.r[53] == 0) {
+    printf(
+        "%%CPU-W-NOP21: PAL switched but p21=0! Scratch area not available.\n");
+  }
+#endif
 }
 
 /**
@@ -448,44 +656,40 @@ inline void CAlphaCPU::set_PAL_BASE(u64 pb) {
  * remain in the cache.
  **/
 inline int CAlphaCPU::get_icache(u64 address, u32 *data) {
-  int i = state.last_found_icache;
+  // Direct-map the icache: 2 KiB lines (ICACHE_LINE_SIZE * 4 == 2048 bytes).
+  // Use VA[...:11] as the set index. The PAL bit (VA<0>) remains part of the
+  // tag.
+  const u64 kLineShift = 11;
+  const u64 v_aligned = address & ~U64(0x3);
+  const int i = (int)((v_aligned >> kLineShift) & (ICACHE_ENTRIES - 1));
   u64 v_a;
   u64 p_a;
   int result;
   bool asm_bit;
 
   if (icache_enabled) {
+    // ---- Fast hit probe
     if (state.icache[i].valid &&
         (state.icache[i].asn == state.asn || state.icache[i].asm_bit) &&
         state.icache[i].address == (address & ICACHE_MATCH_MASK)) {
+
       *data =
           endian_32(state.icache[i].data[(address >> 2) & ICACHE_INDEX_MASK]);
+
+      // keep debug/pc_phys coherent even when icache is enabled
+      state.pc_phys = state.icache[i].p_address + (address & ICACHE_BYTE_MASK);
+
 #ifdef IDB
-      current_pc_physical =
-          state.icache[i].p_address + (address & ICACHE_BYTE_MASK);
+      current_pc_physical = state.pc_phys;
 #endif
+      state.last_found_icache = i;
       return 0;
     }
 
-    for (i = 0; i < ICACHE_ENTRIES; i++) {
-      if (state.icache[i].valid &&
-          (state.icache[i].asn == state.asn || state.icache[i].asm_bit) &&
-          state.icache[i].address == (address & ICACHE_MATCH_MASK)) {
-        state.last_found_icache = i;
-        *data =
-            endian_32(state.icache[i].data[(address >> 2) & ICACHE_INDEX_MASK]);
-
-#ifdef IDB
-        current_pc_physical =
-            state.icache[i].p_address + (address & ICACHE_BYTE_MASK);
-#endif
-        return 0;
-      }
-    }
-
+    // ---- Miss: translate + fill
     v_a = address & ICACHE_MATCH_MASK;
-
     if (address & 1) {
+      // PALmode: VA<0> is PAL marker; physical is VA with bit0 cleared
       p_a = v_a & ~U64(0x1);
       asm_bit = true;
     } else {
@@ -494,30 +698,49 @@ inline int CAlphaCPU::get_icache(u64 address, u32 *data) {
         return result;
     }
 
-    memcpy(state.icache[state.next_icache].data, cSystem->PtrToMem(p_a),
-           ICACHE_LINE_SIZE * 4);
+    // Attempt to get a pointer into DRAM. If this is PIO (e.g., TIG flash),
+    // PtrToMem returns null and we must *not* try to memcpy from it.
+    char *mem = cSystem->PtrToMem(p_a);
+    if (mem && cSystem->PtrToMem(p_a + ((ICACHE_LINE_SIZE * 4) - 1))) {
+      // DRAM-backed: fill the direct-mapped icache line.
+      memcpy(state.icache[i].data, mem, ICACHE_LINE_SIZE * 4);
+      state.icache[i].valid = true;
+      state.icache[i].asn = state.asn;
+      state.icache[i].asm_bit = asm_bit;
+      state.icache[i].address = address & ICACHE_MATCH_MASK;
+      state.icache[i].p_address = p_a;
 
-    state.icache[state.next_icache].valid = true;
-    state.icache[state.next_icache].asn = state.asn;
-    state.icache[state.next_icache].asm_bit = asm_bit;
-    state.icache[state.next_icache].address = address & ICACHE_MATCH_MASK;
-    state.icache[state.next_icache].p_address = p_a;
+      *data =
+          endian_32(state.icache[i].data[(address >> 2) & ICACHE_INDEX_MASK]);
 
-    *data = endian_32(state.icache[state.next_icache]
-                          .data[(address >> 2) & ICACHE_INDEX_MASK]);
-
+      // same pc_phys update on fill
+      state.pc_phys = p_a + (address & ICACHE_BYTE_MASK);
 #ifdef IDB
-    current_pc_physical = state.icache[state.next_icache].p_address +
-                          (address & ICACHE_BYTE_MASK);
+      current_pc_physical = state.pc_phys;
 #endif
-    state.last_found_icache = state.next_icache;
-    state.next_icache++;
-    if (state.next_icache == ICACHE_ENTRIES)
-      state.next_icache = 0;
-    return 0;
+      state.last_found_icache = i;
+      return 0;
+    } else {
+      // PIO/TIG-backed: cannot fill icache lines.
+      // Read exactly the requested instruction as 4 byte reads via the system
+      // bus.
+      const u64 p_instr = p_a + (address & ICACHE_BYTE_MASK);
+      u32 ins = 0;
+      ins |= (u8)cSystem->ReadMem(p_instr + 0, 8, this);
+      ins |= ((u8)cSystem->ReadMem(p_instr + 1, 8, this)) << 8;
+      ins |= ((u8)cSystem->ReadMem(p_instr + 2, 8, this)) << 16;
+      ins |= ((u8)cSystem->ReadMem(p_instr + 3, 8, this)) << 24;
+      *data = ins; // already in target little-endian form
+
+      state.pc_phys = p_instr;
+#ifdef IDB
+      current_pc_physical = state.pc_phys;
+#endif
+      return 0;
+    }
   }
 
-  // icache disabled
+  // ---- Icache disabled (unchanged)
   if (address & 1) {
     state.pc_phys = address & ~U64(0x3);
     state.rem_ins_in_page = 1;
@@ -627,6 +850,7 @@ inline void CAlphaCPU::next_pc() {
 inline void CAlphaCPU::set_pc(u64 p_pc) {
   state.pc = p_pc;
   state.rem_ins_in_page = 0;
+  seq_remaining = 0;
 }
 
 /**
@@ -635,6 +859,7 @@ inline void CAlphaCPU::set_pc(u64 p_pc) {
 inline void CAlphaCPU::add_pc(u64 a_pc) {
   state.pc += a_pc;
   state.rem_ins_in_page = 0;
+  seq_remaining = 0;
 }
 
 /**

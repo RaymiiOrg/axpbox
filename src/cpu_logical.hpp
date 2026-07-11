@@ -26,6 +26,11 @@
  * serve the general public.
  */
 
+/**
+ * \file
+ * Contains code macros for the processor logical instructions.
+ * Based on ARM chapter 4.5.
+ **/
 #define DO_AND state.r[REG_3] = state.r[REG_1] & V_2;
 #define DO_BIC state.r[REG_3] = state.r[REG_1] & ~V_2;
 #define DO_BIS state.r[REG_3] = state.r[REG_1] | V_2;

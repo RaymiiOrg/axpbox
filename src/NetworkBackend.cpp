@@ -18,9 +18,9 @@
  * USA.
  */
 
-#include "StdAfx.hpp"
 #include "NetworkBackend.hpp"
 #include "Configurator.hpp"
+#include "StdAfx.hpp"
 
 #if defined(HAVE_PCAP)
 #include "NetworkPcap.hpp"

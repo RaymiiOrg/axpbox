@@ -31,6 +31,12 @@
  *  Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307 USA
  */
 
+/**
+ * \file
+ * Contains code for the bx_gui_c base class used for interfacing with
+ * SDL and other device interfaces.
+ **/
+
 //#define DEBUG_LOCKS
 //#define NO_LOCK_TIMEOUTS
 
@@ -39,6 +45,8 @@
 #include <signal.h>
 
 #include "gui.hpp"
+
+#include "../Keyboard.hpp"
 
 bx_gui_c *bx_gui = NULL;
 
@@ -79,6 +87,7 @@ bx_gui_c::~bx_gui_c() {
   if (framebuffer != NULL) {
     delete[] framebuffer;
   }
+  delete guiMutex;
 }
 
 void bx_gui_c::init(unsigned tilewidth, unsigned tileheight) {
@@ -110,6 +119,8 @@ u32 get_user_key(char *key) {
 }
 
 void bx_gui_c::mouse_enabled_changed(bool val) {
+  if (theKeyboard)
+    theKeyboard->set_mouse_capture(val);
 
   // This is only called when SIM->get_init_done is 1.  Note that VAL
   // is the new value of mouse_enabled, which may not match the old
@@ -260,6 +271,37 @@ void bx_gui_c::graphics_tile_update_in_place(unsigned x0, unsigned y0,
       }
 
       graphics_tile_update(tile, xc, yc);
+    }
+  }
+}
+
+void bx_gui_c::graphics_frame_update(const u32 *pixels, unsigned width,
+                                     unsigned height) {
+  u8 tile[X_TILESIZE * Y_TILESIZE * 4];
+
+  for (unsigned y = 0; y < height; y += Y_TILESIZE) {
+    for (unsigned x = 0; x < width; x += X_TILESIZE) {
+      const unsigned tw =
+          (x + X_TILESIZE <= width) ? (unsigned)X_TILESIZE : (width - x);
+      const unsigned th =
+          (y + Y_TILESIZE <= height) ? (unsigned)Y_TILESIZE : (height - y);
+
+      u8 *dst = tile;
+      for (unsigned row = 0; row < th; row++) {
+        const u32 *src_row = pixels + (size_t)(y + row) * width + x;
+        memcpy(dst, src_row, tw * sizeof(u32));
+        // Pad partial tile columns with black
+        if (tw < (unsigned)X_TILESIZE)
+          memset(dst + tw * 4, 0, ((unsigned)X_TILESIZE - tw) * 4);
+        dst += X_TILESIZE * 4;
+      }
+      // Pad partial tile rows with black
+      for (unsigned row = th; row < (unsigned)Y_TILESIZE; row++) {
+        memset(dst, 0, X_TILESIZE * 4);
+        dst += X_TILESIZE * 4;
+      }
+
+      graphics_tile_update(tile, x, y);
     }
   }
 }

@@ -29,6 +29,11 @@
  *  Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307 USA
  */
 
+/**
+ * \file
+ * Contains the code for the bx_sdl_gui_c class used for interfacing with
+ * SDL.
+ **/
 #include "../StdAfx.hpp"
 
 #if defined(HAVE_SDL)
@@ -37,8 +42,12 @@
 #include "gui.hpp"
 #include "keymap.hpp"
 
+//#include "../AliM1543C.hpp"
 #include "../Configurator.hpp"
 #include "../Keyboard.hpp"
+
+#include "../Disk.hpp"
+#include "../DiskFile.hpp"
 
 #define _MULTI_THREAD
 
@@ -47,41 +56,52 @@
 // is used to know when we are exporting symbols and when we are importing.
 #define BX_PLUGGABLE
 
-#include <SDL/SDL.h>
-#include <SDL/SDL_endian.h>
-#include <SDL/SDL_thread.h>
+#include <SDL3/SDL.h>
 #include <stdlib.h>
+#include <string.h>
 
 #include "sdl_fonts.hpp"
 
 /**
- * \brief GUI implementation using SDL.
+ * \brief GUI implementation using SDL3.
  **/
 class bx_sdl_gui_c : public bx_gui_c {
 public:
   bx_sdl_gui_c(CConfigurator *cfg);
-  virtual void specific_init(unsigned x_tilesize, unsigned y_tilesize);
+  virtual void specific_init(unsigned x_tilesize, unsigned y_tilesize) override;
   virtual void text_update(u8 *old_text, u8 *new_text, unsigned long cursor_x,
                            unsigned long cursor_y, bx_vga_tminfo_t tm_info,
-                           unsigned rows);
-  virtual void graphics_tile_update(u8 *snapshot, unsigned x, unsigned y);
-  virtual void handle_events(void);
-  virtual void flush(void);
-  virtual void clear_screen(void);
+                           unsigned rows) override {}
+  virtual void graphics_tile_update(u8 *snapshot, unsigned x,
+                                    unsigned y) override;
+  virtual void handle_events(void) override;
+  virtual void flush(void) override;
+  virtual void clear_screen(void) override;
   virtual bool palette_change(unsigned index, unsigned red, unsigned green,
-                              unsigned blue);
+                              unsigned blue) override;
   virtual void dimension_update(unsigned x, unsigned y, unsigned fheight = 0,
-                                unsigned fwidth = 0, unsigned bpp = 8);
-  virtual void mouse_enabled_changed_specific(bool val);
-  virtual void exit(void);
-  virtual bx_svga_tileinfo_t *graphics_tile_info(bx_svga_tileinfo_t *info);
+                                unsigned fwidth = 0, unsigned bpp = 8) override;
+  virtual void mouse_enabled_changed_specific(bool val) override;
+  virtual void exit(void) override;
+  virtual bx_svga_tileinfo_t *
+  graphics_tile_info(bx_svga_tileinfo_t *info) override;
   virtual u8 *graphics_tile_get(unsigned x, unsigned y, unsigned *w,
-                                unsigned *h);
+                                unsigned *h) override;
   virtual void graphics_tile_update_in_place(unsigned x, unsigned y, unsigned w,
-                                             unsigned h);
+                                             unsigned h) override;
+  void graphics_frame_update(const u32 *pixels, unsigned w,
+                             unsigned h) override;
 
 private:
   CConfigurator *myCfg;
+  unsigned int vid_scale = 0;
+  bool vid_linear = true;
+  bool vid_scale_change_enable = false;
+  double mouse_speed = 1.0;
+  bool mouse_invert_x = false;
+  bool mouse_invert_y = false;
+  void reset_window_size();
+  void adjust_window_scale(int delta);
 };
 
 // declare one instance of the gui object and call macro to insert the
@@ -92,947 +112,852 @@ static unsigned prev_cursor_x = 0;
 static unsigned prev_cursor_y = 0;
 static u32 convertStringToSDLKey(const char *string);
 
-SDL_Thread *sdl_thread;
-SDL_Surface *sdl_screen;
+static SDL_Window *sdl_window = NULL;
+static SDL_Renderer *sdl_renderer = NULL;
+static SDL_Texture *sdl_texture = NULL;
+
 SDL_Event sdl_event;
-int sdl_grab;
-unsigned res_x, res_y;
+int sdl_grab = 0;
+unsigned res_x = 0, res_y = 0;
 unsigned half_res_x, half_res_y;
-static unsigned int text_cols = 80, text_rows = 25;
-u8 h_panning = 0, v_panning = 0;
-u16 line_compare = 1023;
-int fontwidth = 8, fontheight = 16;
-static unsigned vga_bpp = 8;
-unsigned tilewidth, tileheight;
-u32 palette[256];
+static int last_driven_w = 0, last_driven_h = 0;
+static int runtime_scale_override =
+    0; // 0 = inactive; >0 = use this integer scale
+static const int runtime_scale_min = 1;
+static const int runtime_scale_max = 8;
 u8 old_mousebuttons = 0, new_mousebuttons = 0;
 int old_mousex = 0, new_mousex = 0;
 int old_mousey = 0, new_mousey = 0;
-bool just_warped = false;
+static int sdl_mouse_button_state = 0;
+// Fractional motion left over after scaling by mouse.speed; carried across
+// events so multipliers < 1.0 don't drop slow movement.
+static double sdl_mouse_accum_x = 0.0;
+static double sdl_mouse_accum_y = 0.0;
+// Re-grab bookkeeping for compositors that bounce focus on grab (WSLg):
+// when a focus loss forces an ungrab, take the mouse back on focus gain.
+static bool sdl_regrab_on_focus = false;
+static int sdl_regrab_attempts = 0;
+static bool sdl_swallow_keys = false;
+static bool sdl_swallow_end_release = false;
+static bool sdl_swallow_home_release = false;
+static bool sdl_swallow_pageup_release = false;
+static bool sdl_swallow_pagedown_release = false;
+static const char *sdl_title = "AXPbox Alpha Emulator - Ctrl+Alt+End sends "
+                               "Ctrl+Alt+Del - Ctrl+Alt+Home resets window";
+static const char *sdl_title_grabbed =
+    "AXPbox Alpha Emulator - Ctrl+F10 releases mouse - Ctrl+Alt+End sends "
+    "Ctrl+Alt+Del "
+    "- Ctrl+Alt+Home resets window";
 
 bx_sdl_gui_c::bx_sdl_gui_c(CConfigurator *cfg) {
   myCfg = cfg;
   bx_keymap = new bx_keymap_c(cfg);
 }
 
-#ifdef __MORPHOS__
-void bx_sdl_morphos_exit(void) {
-  SDL_Quit();
-  if (PowerSDLBase)
-    CloseLibrary(PowerSDLBase);
-}
-#endif
 void bx_sdl_gui_c::specific_init(unsigned x_tilesize, unsigned y_tilesize) {
-  int i;
-
-  int j;
-  u32 flags;
-
-  tilewidth = x_tilesize;
-  tileheight = y_tilesize;
-
-  for (i = 0; i < 256; i++)
-    for (j = 0; j < 16; j++)
-      vga_charmap[i * 32 + j] = sdl_font8x16[i][j];
-
-#ifdef __MORPHOS__
-  if (!(PowerSDLBase = OpenLibrary("powersdl.library", 0))) {
-    BX_PANIC(("Unable to open SDL libraries"));
-    return;
-  }
-#endif
-  flags = SDL_INIT_VIDEO;
-  if (SDL_Init(flags) < 0) {
-    FAILURE(SDL, "Unable to initialize SDL libraries");
+  if (!SDL_Init(SDL_INIT_VIDEO)) {
+    FAILURE(SDL, "Unable to initialize SDL3 video subsystem");
   }
 
-#ifdef __MORPHOS__
-  atexit(bx_sdl_morphos_exit);
-#else
-  atexit(SDL_Quit);
-#endif
-  sdl_screen = NULL;
-
-  //  sdl_fullscreen_toggle = 0;
+  // Create the initial window + renderer + texture at 640x480.
+  // dimension_update() will recreate the texture if the resolution changes.
   dimension_update(640, 480);
 
-  SDL_EnableKeyRepeat(250, 50);
-  SDL_WarpMouse(half_res_x, half_res_y);
+  // SDL3: key repeat is handled by the OS; no SDL_EnableKeyRepeat().
 
   // load keymap for sdl
   if (myCfg->get_bool_value("keyboard.use_mapping", false)) {
     bx_keymap->loadKeymap(convertStringToSDLKey);
   }
 
+  this->vid_linear = myCfg->get_bool_value("video.linear", true);
+  this->vid_scale = (int)myCfg->get_num_value("video.scale_ratio", true, 0);
+  this->vid_scale_change_enable =
+      myCfg->get_bool_value("video.scale_change_enable", false);
+
+  const char *ms = myCfg->get_text_value("mouse.speed", "1.0");
+  this->mouse_speed = atof(ms);
+  if (this->mouse_speed <= 0.0 || this->mouse_speed > 10.0) {
+    printf("%%SDL-W-MOUSESPEED: invalid mouse.speed \"%s\" (valid: 0.0 < "
+           "speed <= 10.0); using 1.0.\n",
+           ms);
+    this->mouse_speed = 1.0;
+  }
+
+  this->mouse_invert_x = myCfg->get_bool_value("mouse.invert_x", false);
+  this->mouse_invert_y = myCfg->get_bool_value("mouse.invert_y", false);
+
   new_gfx_api = 1;
 }
 
-void bx_sdl_gui_c::text_update(u8 *old_text, u8 *new_text,
-                               unsigned long cursor_x, unsigned long cursor_y,
-                               bx_vga_tminfo_t tm_info, unsigned nrows) {
-  u8 *pfont_row;
+void bx_sdl_gui_c::graphics_frame_update(const u32 *pixels, unsigned width,
+                                         unsigned height) {
+  if (!sdl_texture || !sdl_renderer)
+    return;
 
-  u8 *old_line;
-
-  u8 *new_line;
-
-  u8 *text_base;
-  unsigned int cs_y;
-  unsigned int i;
-  unsigned int x;
-  unsigned int y;
-  unsigned int curs;
-  unsigned int hchars;
-  unsigned int offset;
-  u8 fontline;
-  u8 fontpixels;
-  u8 fontrows;
-  int rows;
-  u32 fgcolor;
-  u32 bgcolor;
-  u32 *buf;
-  u32 *buf_row;
-  u32 *buf_char;
-  u32 disp;
-  u16 font_row;
-  u16 mask;
-  u8 cfstart;
-  u8 cfwidth;
-  u8 cfheight;
-  u8 split_fontrows;
-  u8 split_textrow;
-  bool cursor_visible;
-  bool gfxcharw9;
-  bool invert;
-  bool forceUpdate;
-  bool split_screen;
-  u32 text_palette[16];
-
-  //  UNUSED(nrows);
-  forceUpdate = 0;
-  if (charmap_updated) {
-    forceUpdate = 1;
-    charmap_updated = 0;
-  }
-
-  for (i = 0; i < 16; i++) {
-    text_palette[i] = palette[theVGA->get_actl_palette_idx(i)];
-  }
-
-  if ((tm_info.h_panning != h_panning) || (tm_info.v_panning != v_panning)) {
-    forceUpdate = 1;
-    h_panning = tm_info.h_panning;
-    v_panning = tm_info.v_panning;
-  }
-
-  if (tm_info.line_compare != line_compare) {
-    forceUpdate = 1;
-    line_compare = tm_info.line_compare;
-  }
-
-  disp = sdl_screen->pitch / 4;
-  buf_row = (u32 *)sdl_screen->pixels;
-
-  // first invalidate character at previous and new cursor location
-  if ((prev_cursor_y < text_rows) && (prev_cursor_x < text_cols)) {
-    curs = prev_cursor_y * tm_info.line_offset + prev_cursor_x * 2;
-    old_text[curs] = ~new_text[curs];
-  }
-
-  cursor_visible =
-      ((tm_info.cs_start <= tm_info.cs_end) && (tm_info.cs_start < fontheight));
-  if ((cursor_visible) && (cursor_y < text_rows) && (cursor_x < text_cols)) {
-    curs = cursor_y * tm_info.line_offset + cursor_x * 2;
-    old_text[curs] = ~new_text[curs];
-  } else {
-    curs = 0xffff;
-  }
-
-  rows = text_rows;
-  if (v_panning)
-    rows++;
-  y = 0;
-  cs_y = 0;
-  text_base = new_text - tm_info.start_address;
-  split_textrow = (line_compare + v_panning) / fontheight;
-  split_fontrows = ((line_compare + v_panning) % fontheight) + 1;
-  split_screen = 0;
-
-  do {
-    buf = buf_row;
-    hchars = text_cols;
-    if (h_panning)
-      hchars++;
-    cfheight = fontheight;
-    cfstart = 0;
-    if (split_screen) {
-      if (rows == 1) {
-        cfheight = (res_y - line_compare - 1) % fontheight;
-        if (cfheight == 0)
-          cfheight = fontheight;
-      }
-    } else if (v_panning) {
-      if (y == 0) {
-        cfheight -= v_panning;
-        cfstart = v_panning;
-      } else if (rows == 1) {
-        cfheight = v_panning;
-      }
-    }
-
-    if (!split_screen && (y == split_textrow)) {
-      if ((split_fontrows - cfstart) < cfheight) {
-        cfheight = split_fontrows - cfstart;
-      }
-    }
-
-    new_line = new_text;
-    old_line = old_text;
-    x = 0;
-    offset = cs_y * tm_info.line_offset;
-    do {
-      cfwidth = fontwidth;
-      if (h_panning) {
-        if (hchars > text_cols) {
-          cfwidth -= h_panning;
-        } else if (hchars == 1) {
-          cfwidth = h_panning;
+  // Debug aid: AXPBOX_DUMP_FB=<path-prefix> writes the frame as a PPM every
+  // ~2 seconds (verifies the S3 -> SDL pixel pipeline on headless setups).
+  static const char *dump_prefix = getenv("AXPBOX_DUMP_FB");
+  if (dump_prefix) {
+    static Uint64 last_dump = 0;
+    Uint64 now = SDL_GetTicks();
+    if (now - last_dump > 2000) {
+      last_dump = now;
+      static unsigned dump_seq = 0;
+      char path[512];
+      snprintf(path, sizeof(path), "%s-%03u-%ux%u.ppm", dump_prefix, dump_seq++,
+               width, height);
+      FILE *f = fopen(path, "wb");
+      if (f) {
+        fprintf(f, "P6\n%u %u\n255\n", width, height);
+        for (unsigned i = 0; i < width * height; i++) {
+          u8 rgb[3] = {(u8)(pixels[i] >> 16), (u8)(pixels[i] >> 8),
+                       (u8)pixels[i]};
+          fwrite(rgb, 1, 3, f);
         }
+        fclose(f);
       }
-
-      // check if char needs to be updated
-      if (forceUpdate || (old_text[0] != new_text[0]) ||
-          (old_text[1] != new_text[1])) {
-
-        // Get Foreground/Background pixel colors
-        fgcolor = text_palette[new_text[1] & 0x0F];
-        bgcolor = text_palette[(new_text[1] >> 4) & 0x0F];
-        invert = ((offset == curs) && (cursor_visible));
-        gfxcharw9 = ((tm_info.line_graphics) && ((new_text[0] & 0xE0) == 0xC0));
-
-        // Display this one char
-        fontrows = cfheight;
-        fontline = cfstart;
-        if (y > 0) {
-          pfont_row = (u8 *)&vga_charmap[(new_text[0] << 5)];
-        } else {
-          pfont_row = (u8 *)&vga_charmap[(new_text[0] << 5) + cfstart];
-        }
-
-        buf_char = buf;
-        do {
-          font_row = *pfont_row++;
-          if (gfxcharw9) {
-            font_row = (font_row << 1) | (font_row & 0x01);
-          } else {
-            font_row <<= 1;
-          }
-
-          if (hchars > text_cols) {
-            font_row <<= h_panning;
-          }
-
-          fontpixels = cfwidth;
-          if ((invert) && (fontline >= tm_info.cs_start) &&
-              (fontline <= tm_info.cs_end))
-            mask = 0x100;
-          else
-            mask = 0x00;
-          do {
-            if ((font_row & 0x100) == mask)
-              *buf = bgcolor;
-            else
-              *buf = fgcolor;
-            buf++;
-            font_row <<= 1;
-          } while (--fontpixels);
-          buf -= cfwidth;
-          buf += disp;
-          fontline++;
-        } while (--fontrows);
-
-        // restore output buffer ptr to start of this char
-        buf = buf_char;
-      }
-
-      // move to next char location on screen
-      buf += cfwidth;
-
-      // select next char in old/new text
-      new_text += 2;
-      old_text += 2;
-      offset += 2;
-      x++;
-
-      // process one entire horizontal row
-    } while (--hchars);
-
-    // go to next character row location
-    buf_row += disp * cfheight;
-    if (!split_screen && (y == split_textrow)) {
-      new_text = text_base;
-      forceUpdate = 1;
-      cs_y = 0;
-      if (tm_info.split_hpanning)
-        h_panning = 0;
-      rows = ((res_y - line_compare + fontheight - 2) / fontheight) + 1;
-      split_screen = 1;
-    } else {
-      new_text = new_line + tm_info.line_offset;
-      old_text = old_line + tm_info.line_offset;
-      cs_y++;
-      y++;
     }
-  } while (--rows);
-  h_panning = tm_info.h_panning;
-  prev_cursor_x = cursor_x;
-  prev_cursor_y = cursor_y;
+  }
+
+  // Upload the ARGB32 pixels directly to the streaming texture.
+  // pitch = width * 4 bytes per pixel
+  SDL_UpdateTexture(sdl_texture, NULL, pixels, (int)(width * sizeof(u32)));
+
+  // Present: clear -> draw texture -> flip
+  SDL_RenderClear(sdl_renderer);
+  SDL_RenderTexture(sdl_renderer, sdl_texture, NULL, NULL);
+  SDL_RenderPresent(sdl_renderer);
 }
 
 void bx_sdl_gui_c::graphics_tile_update(u8 *snapshot, unsigned x, unsigned y) {
-  u32 *buf;
-
-  u32 disp;
-  u32 *buf_row;
-  int i;
-  int j;
-
-  disp = sdl_screen->pitch / 4;
-  buf = (u32 *)sdl_screen->pixels + /*(headerbar_height+y)*disp +*/ x;
-
-  i = tileheight;
-  if (i + y > res_y)
-    i = res_y - y;
-
-  // FIXME
-  if (i <= 0)
-    return;
-
-  switch (vga_bpp) {
-  case 8: /* 8 bpp */
-    do {
-      buf_row = buf;
-      j = tilewidth;
-      do {
-        *buf++ = palette[*snapshot++];
-      } while (--j);
-      buf = buf_row + disp;
-    } while (--i);
-    break;
-
-  default:
-    BX_PANIC(("%u bpp modes handled by new graphics API", vga_bpp));
-    return;
-  }
+  //
 }
 
 bx_svga_tileinfo_t *bx_sdl_gui_c::graphics_tile_info(bx_svga_tileinfo_t *info) {
-  if (!info) {
-    info = (bx_svga_tileinfo_t *)malloc(sizeof(bx_svga_tileinfo_t));
-    if (!info) {
-      return NULL;
-    }
-  }
-
-  info->bpp = sdl_screen->format->BitsPerPixel;
-  info->pitch = sdl_screen->pitch;
-  info->red_shift = sdl_screen->format->Rshift + 8 - sdl_screen->format->Rloss;
-  info->green_shift =
-      sdl_screen->format->Gshift + 8 - sdl_screen->format->Gloss;
-  info->blue_shift = sdl_screen->format->Bshift + 8 - sdl_screen->format->Bloss;
-  info->red_mask = sdl_screen->format->Rmask;
-  info->green_mask = sdl_screen->format->Gmask;
-  info->blue_mask = sdl_screen->format->Bmask;
-  info->is_indexed = (sdl_screen->format->palette != NULL);
-
-#ifdef BX_LITTLE_ENDIAN
-  info->is_little_endian = 1;
-#else
-  info->is_little_endian = 0;
-#endif
-  return info;
+  return NULL;
 }
 
 u8 *bx_sdl_gui_c::graphics_tile_get(unsigned x0, unsigned y0, unsigned *w,
                                     unsigned *h) {
-  if (x0 + tilewidth > res_x)
-    *w = res_x - x0;
-  else
-    *w = tilewidth;
-
-  if (y0 + tileheight > res_y)
-    *h = res_y - y0;
-  else
-    *h = tileheight;
-
-  return (u8 *)sdl_screen->pixels + sdl_screen->pitch * y0 +
-         sdl_screen->format->BytesPerPixel * x0;
+  return NULL;
 }
 
 void bx_sdl_gui_c::graphics_tile_update_in_place(unsigned x0, unsigned y0,
-                                                 unsigned w, unsigned h) {}
-static u32 sdl_sym_to_bx_key(SDLKey sym) {
+                                                 unsigned w, unsigned h) {
+  //
+}
+
+static u32 sdl_scan_to_bx_key(SDL_Scancode sym) {
   switch (sym) {
-
-  //  case SDLK_UNKNOWN:              return BX_KEY_UNKNOWN;
-  //  case SDLK_FIRST:                return BX_KEY_FIRST;
-  case SDLK_BACKSPACE:
+  case SDL_SCANCODE_BACKSPACE:
     return BX_KEY_BACKSPACE;
-
-  case SDLK_TAB:
+  case SDL_SCANCODE_TAB:
     return BX_KEY_TAB;
-
-  //  case SDLK_CLEAR:                return BX_KEY_CLEAR;
-  case SDLK_RETURN:
+  case SDL_SCANCODE_RETURN:
     return BX_KEY_ENTER;
-
-  case SDLK_PAUSE:
+  case SDL_SCANCODE_PAUSE:
     return BX_KEY_PAUSE;
-
-  case SDLK_ESCAPE:
+  case SDL_SCANCODE_ESCAPE:
     return BX_KEY_ESC;
-
-  case SDLK_SPACE:
+  case SDL_SCANCODE_SPACE:
     return BX_KEY_SPACE;
-
-  //  case SDLK_EXCLAIM:              return BX_KEY_EXCLAIM;
-  //  case SDLK_QUOTEDBL:             return BX_KEY_QUOTEDBL;
-  //  case SDLK_HASH:                 return BX_KEY_HASH;
-  //  case SDLK_DOLLAR:               return BX_KEY_DOLLAR;
-  //  case SDLK_AMPERSAND:            return BX_KEY_AMPERSAND;
-  case SDLK_QUOTE:
+  case SDL_SCANCODE_APOSTROPHE:
     return BX_KEY_SINGLE_QUOTE;
-
-  //  case SDLK_LEFTPAREN:            return BX_KEY_LEFTPAREN;
-  //  case SDLK_RIGHTPAREN:           return BX_KEY_RIGHTPAREN;
-  //  case SDLK_ASTERISK:             return BX_KEY_ASTERISK;
-  //  case SDLK_PLUS:                 return BX_KEY_PLUS;
-  case SDLK_COMMA:
+  case SDL_SCANCODE_COMMA:
     return BX_KEY_COMMA;
-
-  case SDLK_MINUS:
+  case SDL_SCANCODE_MINUS:
     return BX_KEY_MINUS;
-
-  case SDLK_PERIOD:
+  case SDL_SCANCODE_PERIOD:
     return BX_KEY_PERIOD;
-
-  case SDLK_SLASH:
+  case SDL_SCANCODE_SLASH:
     return BX_KEY_SLASH;
 
-  case SDLK_0:
+  case SDL_SCANCODE_0:
     return BX_KEY_0;
-
-  case SDLK_1:
+  case SDL_SCANCODE_1:
     return BX_KEY_1;
-
-  case SDLK_2:
+  case SDL_SCANCODE_2:
     return BX_KEY_2;
-
-  case SDLK_3:
+  case SDL_SCANCODE_3:
     return BX_KEY_3;
-
-  case SDLK_4:
+  case SDL_SCANCODE_4:
     return BX_KEY_4;
-
-  case SDLK_5:
+  case SDL_SCANCODE_5:
     return BX_KEY_5;
-
-  case SDLK_6:
+  case SDL_SCANCODE_6:
     return BX_KEY_6;
-
-  case SDLK_7:
+  case SDL_SCANCODE_7:
     return BX_KEY_7;
-
-  case SDLK_8:
+  case SDL_SCANCODE_8:
     return BX_KEY_8;
-
-  case SDLK_9:
+  case SDL_SCANCODE_9:
     return BX_KEY_9;
 
-  //  case SDLK_COLON:                return BX_KEY_COLON;
-  case SDLK_SEMICOLON:
+  case SDL_SCANCODE_SEMICOLON:
     return BX_KEY_SEMICOLON;
-
-  //  case SDLK_LESS:                 return BX_KEY_LESS;
-  case SDLK_EQUALS:
+  case SDL_SCANCODE_EQUALS:
     return BX_KEY_EQUALS;
 
-  //  case SDLK_GREATER:              return BX_KEY_GREATER;
-  //  case SDLK_QUESTION:             return BX_KEY_QUESTION;
-  //  case SDLK_AT:                   return BX_KEY_AT;
-
-  /*
- Skip uppercase letters
-*/
-  case SDLK_LEFTBRACKET:
+  case SDL_SCANCODE_LEFTBRACKET:
     return BX_KEY_LEFT_BRACKET;
-
-  case SDLK_BACKSLASH:
+  case SDL_SCANCODE_BACKSLASH:
     return BX_KEY_BACKSLASH;
-
-  case SDLK_RIGHTBRACKET:
+  case SDL_SCANCODE_NONUSBACKSLASH:
+    return BX_KEY_BACKSLASH;
+  case SDL_SCANCODE_RIGHTBRACKET:
     return BX_KEY_RIGHT_BRACKET;
-
-  //  case SDLK_CARET:                return BX_KEY_CARET;
-  //  case SDLK_UNDERSCORE:           return BX_KEY_UNDERSCORE;
-  case SDLK_BACKQUOTE:
+  case SDL_SCANCODE_GRAVE:
     return BX_KEY_GRAVE;
 
-  case SDLK_a:
+  case SDL_SCANCODE_A:
     return BX_KEY_A;
-
-  case SDLK_b:
+  case SDL_SCANCODE_B:
     return BX_KEY_B;
-
-  case SDLK_c:
+  case SDL_SCANCODE_C:
     return BX_KEY_C;
-
-  case SDLK_d:
+  case SDL_SCANCODE_D:
     return BX_KEY_D;
-
-  case SDLK_e:
+  case SDL_SCANCODE_E:
     return BX_KEY_E;
-
-  case SDLK_f:
+  case SDL_SCANCODE_F:
     return BX_KEY_F;
-
-  case SDLK_g:
+  case SDL_SCANCODE_G:
     return BX_KEY_G;
-
-  case SDLK_h:
+  case SDL_SCANCODE_H:
     return BX_KEY_H;
-
-  case SDLK_i:
+  case SDL_SCANCODE_I:
     return BX_KEY_I;
-
-  case SDLK_j:
+  case SDL_SCANCODE_J:
     return BX_KEY_J;
-
-  case SDLK_k:
+  case SDL_SCANCODE_K:
     return BX_KEY_K;
-
-  case SDLK_l:
+  case SDL_SCANCODE_L:
     return BX_KEY_L;
-
-  case SDLK_m:
+  case SDL_SCANCODE_M:
     return BX_KEY_M;
-
-  case SDLK_n:
+  case SDL_SCANCODE_N:
     return BX_KEY_N;
-
-  case SDLK_o:
+  case SDL_SCANCODE_O:
     return BX_KEY_O;
-
-  case SDLK_p:
+  case SDL_SCANCODE_P:
     return BX_KEY_P;
-
-  case SDLK_q:
+  case SDL_SCANCODE_Q:
     return BX_KEY_Q;
-
-  case SDLK_r:
+  case SDL_SCANCODE_R:
     return BX_KEY_R;
-
-  case SDLK_s:
+  case SDL_SCANCODE_S:
     return BX_KEY_S;
-
-  case SDLK_t:
+  case SDL_SCANCODE_T:
     return BX_KEY_T;
-
-  case SDLK_u:
+  case SDL_SCANCODE_U:
     return BX_KEY_U;
-
-  case SDLK_v:
+  case SDL_SCANCODE_V:
     return BX_KEY_V;
-
-  case SDLK_w:
+  case SDL_SCANCODE_W:
     return BX_KEY_W;
-
-  case SDLK_x:
+  case SDL_SCANCODE_X:
     return BX_KEY_X;
-
-  case SDLK_y:
+  case SDL_SCANCODE_Y:
     return BX_KEY_Y;
-
-  case SDLK_z:
+  case SDL_SCANCODE_Z:
     return BX_KEY_Z;
 
-  case SDLK_DELETE:
+  case SDL_SCANCODE_DELETE:
     return BX_KEY_DELETE;
 
-  /* End of ASCII mapped keysyms */
-
-  /* Numeric keypad */
-  case SDLK_KP0:
+    // Keypad
+  case SDL_SCANCODE_KP_0:
     return BX_KEY_KP_INSERT;
-
-  case SDLK_KP1:
+  case SDL_SCANCODE_KP_1:
     return BX_KEY_KP_END;
-
-  case SDLK_KP2:
+  case SDL_SCANCODE_KP_2:
     return BX_KEY_KP_DOWN;
-
-  case SDLK_KP3:
+  case SDL_SCANCODE_KP_3:
     return BX_KEY_KP_PAGE_DOWN;
-
-  case SDLK_KP4:
+  case SDL_SCANCODE_KP_4:
     return BX_KEY_KP_LEFT;
-
-  case SDLK_KP5:
+  case SDL_SCANCODE_KP_5:
     return BX_KEY_KP_5;
-
-  case SDLK_KP6:
+  case SDL_SCANCODE_KP_6:
     return BX_KEY_KP_RIGHT;
-
-  case SDLK_KP7:
+  case SDL_SCANCODE_KP_7:
     return BX_KEY_KP_HOME;
-
-  case SDLK_KP8:
+  case SDL_SCANCODE_KP_8:
     return BX_KEY_KP_UP;
-
-  case SDLK_KP9:
+  case SDL_SCANCODE_KP_9:
     return BX_KEY_KP_PAGE_UP;
-
-  case SDLK_KP_PERIOD:
+  case SDL_SCANCODE_KP_PERIOD:
     return BX_KEY_KP_DELETE;
-
-  case SDLK_KP_DIVIDE:
+  case SDL_SCANCODE_KP_DIVIDE:
     return BX_KEY_KP_DIVIDE;
-
-  case SDLK_KP_MULTIPLY:
+  case SDL_SCANCODE_KP_MULTIPLY:
     return BX_KEY_KP_MULTIPLY;
-
-  case SDLK_KP_MINUS:
+  case SDL_SCANCODE_KP_MINUS:
     return BX_KEY_KP_SUBTRACT;
-
-  case SDLK_KP_PLUS:
+  case SDL_SCANCODE_KP_PLUS:
     return BX_KEY_KP_ADD;
-
-  case SDLK_KP_ENTER:
+  case SDL_SCANCODE_KP_ENTER:
     return BX_KEY_KP_ENTER;
 
-  //  case SDLK_KP_EQUALS:            return BX_KEY_KP_EQUALS;
-
-  /* Arrows + Home/End pad */
-  case SDLK_UP:
+    // Arrows + Home/End pad
+  case SDL_SCANCODE_UP:
     return BX_KEY_UP;
-
-  case SDLK_DOWN:
+  case SDL_SCANCODE_DOWN:
     return BX_KEY_DOWN;
-
-  case SDLK_RIGHT:
+  case SDL_SCANCODE_RIGHT:
     return BX_KEY_RIGHT;
-
-  case SDLK_LEFT:
+  case SDL_SCANCODE_LEFT:
     return BX_KEY_LEFT;
-
-  case SDLK_INSERT:
+  case SDL_SCANCODE_INSERT:
     return BX_KEY_INSERT;
-
-  case SDLK_HOME:
+  case SDL_SCANCODE_HOME:
     return BX_KEY_HOME;
-
-  case SDLK_END:
+  case SDL_SCANCODE_END:
     return BX_KEY_END;
-
-  case SDLK_PAGEUP:
+  case SDL_SCANCODE_PAGEUP:
     return BX_KEY_PAGE_UP;
-
-  case SDLK_PAGEDOWN:
+  case SDL_SCANCODE_PAGEDOWN:
     return BX_KEY_PAGE_DOWN;
 
-  /* Function keys */
-  case SDLK_F1:
+    // Function keys
+  case SDL_SCANCODE_F1:
     return BX_KEY_F1;
-
-  case SDLK_F2:
+  case SDL_SCANCODE_F2:
     return BX_KEY_F2;
-
-  case SDLK_F3:
+  case SDL_SCANCODE_F3:
     return BX_KEY_F3;
-
-  case SDLK_F4:
+  case SDL_SCANCODE_F4:
     return BX_KEY_F4;
-
-  case SDLK_F5:
+  case SDL_SCANCODE_F5:
     return BX_KEY_F5;
-
-  case SDLK_F6:
+  case SDL_SCANCODE_F6:
     return BX_KEY_F6;
-
-  case SDLK_F7:
+  case SDL_SCANCODE_F7:
     return BX_KEY_F7;
-
-  case SDLK_F8:
+  case SDL_SCANCODE_F8:
     return BX_KEY_F8;
-
-  case SDLK_F9:
+  case SDL_SCANCODE_F9:
     return BX_KEY_F9;
-
-  case SDLK_F10:
+  case SDL_SCANCODE_F10:
     return BX_KEY_F10;
-
-  case SDLK_F11:
+  case SDL_SCANCODE_F11:
     return BX_KEY_F11;
-
-  case SDLK_F12:
+  case SDL_SCANCODE_F12:
     return BX_KEY_F12;
 
-  //  case SDLK_F13:                  return BX_KEY_F13;
-  //  case SDLK_F14:                  return BX_KEY_F14;
-  //  case SDLK_F15:                  return BX_KEY_F15;
-
-  /* Key state modifier keys */
-  case SDLK_NUMLOCK:
+    // Modifier keys
+  case SDL_SCANCODE_NUMLOCKCLEAR:
     return BX_KEY_NUM_LOCK;
-
-  case SDLK_CAPSLOCK:
+  case SDL_SCANCODE_CAPSLOCK:
     return BX_KEY_CAPS_LOCK;
-
-  case SDLK_SCROLLOCK:
+  case SDL_SCANCODE_SCROLLLOCK:
     return BX_KEY_SCRL_LOCK;
-
-  case SDLK_RSHIFT:
+  case SDL_SCANCODE_RSHIFT:
     return BX_KEY_SHIFT_R;
-
-  case SDLK_LSHIFT:
+  case SDL_SCANCODE_LSHIFT:
     return BX_KEY_SHIFT_L;
-
-  case SDLK_RCTRL:
+  case SDL_SCANCODE_RCTRL:
     return BX_KEY_CTRL_R;
-
-  case SDLK_LCTRL:
+  case SDL_SCANCODE_LCTRL:
     return BX_KEY_CTRL_L;
-
-  case SDLK_RALT:
+  case SDL_SCANCODE_RALT:
     return BX_KEY_ALT_R;
-
-  case SDLK_LALT:
+  case SDL_SCANCODE_LALT:
     return BX_KEY_ALT_L;
-
-  case SDLK_RMETA:
-    return BX_KEY_ALT_R;
-
-  case SDLK_LMETA:
+  case SDL_SCANCODE_LGUI:
     return BX_KEY_WIN_L;
-
-  case SDLK_LSUPER:
-    return BX_KEY_WIN_L;
-
-  case SDLK_RSUPER:
+  case SDL_SCANCODE_RGUI:
     return BX_KEY_WIN_R;
 
-  //  case SDLK_MODE:                 return BX_KEY_MODE;
-  //  case SDLK_COMPOSE:              return BX_KEY_COMPOSE;
-
-  /* Miscellaneous function keys */
-  case SDLK_PRINT:
+    // Misc function keys
+  case SDL_SCANCODE_PRINTSCREEN:
     return BX_KEY_PRINT;
-
-  case SDLK_BREAK:
-    return BX_KEY_PAUSE;
-
-  case SDLK_MENU:
+  case SDL_SCANCODE_MENU:
     return BX_KEY_MENU;
-#if 0
-
-  case SDLK_HELP:
-    return BX_KEY_HELP;
-
-  case SDLK_SYSREQ:
-    return BX_KEY_SYSREQ;
-
-  case SDLK_POWER:
-    return BX_KEY_POWER;
-
-  case SDLK_EURO:
-    return BX_KEY_EURO;
-
-  case SDLK_UNDO:
-    return BX_KEY_UNDO;
-#endif
 
   default:
-    BX_ERROR(("sdl keysym %d not mapped", (int)sym));
+    BX_ERROR(("sdl3 scancode 0x%x not mapped", (unsigned)sym));
     return BX_KEY_UNHANDLED;
   }
 }
 
+// Name -> BX key code map shared by the AXPBOX_KEYSCRIPT and AXPBOX_KEYPIPE
+// debug hooks. Returns 0 for unknown names.
+static u32 sdl_debug_key_lookup(const char *name) {
+  static const struct {
+    const char *name;
+    u32 key;
+  } ks_map[] = {
+      {"enter", BX_KEY_ENTER},
+      {"esc", BX_KEY_ESC},
+      {"tab", BX_KEY_TAB},
+      {"space", BX_KEY_SPACE},
+      {"up", BX_KEY_UP},
+      {"down", BX_KEY_DOWN},
+      {"left", BX_KEY_LEFT},
+      {"right", BX_KEY_RIGHT},
+      {"del", BX_KEY_DELETE},
+      {"ins", BX_KEY_INSERT},
+      {"home", BX_KEY_HOME},
+      {"end", BX_KEY_END},
+      {"bksp", BX_KEY_BACKSPACE},
+      {"bslash", BX_KEY_BACKSLASH},
+      {"dot", BX_KEY_PERIOD},
+      {"minus", BX_KEY_MINUS},
+      {"equals", BX_KEY_EQUALS},
+      {"f1", BX_KEY_F1},
+      {"f2", BX_KEY_F2},
+      {"f3", BX_KEY_F3},
+      {"f4", BX_KEY_F4},
+      {"f5", BX_KEY_F5},
+      {"f6", BX_KEY_F6},
+      {"f7", BX_KEY_F7},
+      {"f8", BX_KEY_F8},
+      {"f9", BX_KEY_F9},
+      {"f10", BX_KEY_F10},
+      {"f11", BX_KEY_F11},
+      {"f12", BX_KEY_F12},
+      {"a", BX_KEY_A},
+      {"b", BX_KEY_B},
+      {"c", BX_KEY_C},
+      {"d", BX_KEY_D},
+      {"e", BX_KEY_E},
+      {"f", BX_KEY_F},
+      {"g", BX_KEY_G},
+      {"h", BX_KEY_H},
+      {"i", BX_KEY_I},
+      {"j", BX_KEY_J},
+      {"k", BX_KEY_K},
+      {"l", BX_KEY_L},
+      {"m", BX_KEY_M},
+      {"n", BX_KEY_N},
+      {"o", BX_KEY_O},
+      {"p", BX_KEY_P},
+      {"q", BX_KEY_Q},
+      {"r", BX_KEY_R},
+      {"s", BX_KEY_S},
+      {"t", BX_KEY_T},
+      {"u", BX_KEY_U},
+      {"v", BX_KEY_V},
+      {"w", BX_KEY_W},
+      {"x", BX_KEY_X},
+      {"y", BX_KEY_Y},
+      {"z", BX_KEY_Z},
+      {"0", BX_KEY_0},
+      {"1", BX_KEY_1},
+      {"2", BX_KEY_2},
+      {"3", BX_KEY_3},
+      {"4", BX_KEY_4},
+      {"5", BX_KEY_5},
+      {"6", BX_KEY_6},
+      {"7", BX_KEY_7},
+      {"8", BX_KEY_8},
+      {"9", BX_KEY_9},
+      {"pgdn", BX_KEY_PAGE_DOWN},
+      {"pgup", BX_KEY_PAGE_UP},
+  };
+  for (const auto &m : ks_map)
+    if (!strcmp(name, m.name))
+      return m.key;
+  return 0;
+}
+
 void bx_sdl_gui_c::handle_events(void) {
+  // Debug aid: AXPBOX_AUTOKEY_ENTER=<seconds> presses Enter once every
+  // <seconds> (drives firmware prompts on headless/scripted runs).
+  static const char *autokey = getenv("AXPBOX_AUTOKEY_ENTER");
+  if (autokey && theKeyboard) {
+    static Uint64 ak_last = 0;
+    Uint64 ak_period = (Uint64)atol(autokey) * 1000;
+    Uint64 ak_now = SDL_GetTicks();
+    if (ak_period && ak_now - ak_last > ak_period) {
+      ak_last = ak_now;
+      theKeyboard->gen_scancode(BX_KEY_ENTER);
+      theKeyboard->gen_scancode(BX_KEY_ENTER | BX_KEY_RELEASED);
+    }
+  }
+
+  // Debug aid: AXPBOX_AUTOMOUSE=<seconds> injects synthetic mouse motion
+  // straight into the guest PS/2 path starting <seconds> in, tracing a
+  // square (2 s per side), plus a left click every full lap. Verifies the
+  // guest-side mouse plumbing (KBC aux, IRQ12, guest driver) with no host
+  // input; if the guest cursor moves with this but not with the real mouse,
+  // the problem is host-side SDL event delivery.
+  static const char *automouse = getenv("AXPBOX_AUTOMOUSE");
+  if (automouse && theKeyboard) {
+    static Uint64 am_epoch = SDL_GetTicks();
+    static Uint64 am_last = 0;
+    Uint64 am_now = SDL_GetTicks();
+    if (am_now >= am_epoch + (Uint64)atol(automouse) * 1000 &&
+        am_now - am_last >= 50) {
+      am_last = am_now;
+      int phase = (int)((am_now / 2000) % 4);
+      // Guest-side +y is up (PS/2 convention), so this traces
+      // right, down, left, up on screen.
+      int dx = (phase == 0) ? 3 : (phase == 2) ? -3 : 0;
+      int dy = (phase == 1) ? -3 : (phase == 3) ? 3 : 0;
+      unsigned buttons = ((am_now / 2000) % 8 == 7) ? 0x01 : 0x00;
+      theKeyboard->mouse_motion(dx, dy, 0, buttons);
+    }
+  }
+
+  // Debug aid: AXPBOX_KEYSCRIPT="35:enter,50:f2,52:down,..." injects named
+  // keys at the given second offsets (headless firmware/menu navigation).
+  static const char *keyscript = getenv("AXPBOX_KEYSCRIPT");
+  if (keyscript && theKeyboard) {
+    struct KScriptEvent {
+      Uint64 t_ms;
+      u32 key;
+    };
+    static std::vector<KScriptEvent> ks_events;
+    static size_t ks_next = 0;
+    static bool ks_parsed = false;
+    if (!ks_parsed) {
+      ks_parsed = true;
+      char buf[1024];
+      strncpy(buf, keyscript, sizeof(buf) - 1);
+      buf[sizeof(buf) - 1] = 0;
+      for (char *tok = strtok(buf, ","); tok; tok = strtok(nullptr, ",")) {
+        char *colon = strchr(tok, ':');
+        if (!colon)
+          continue;
+        *colon = 0;
+        Uint64 at = (Uint64)(atof(tok) * 1000.0);
+        u32 k = sdl_debug_key_lookup(colon + 1);
+        if (k)
+          ks_events.push_back({at, k});
+      }
+      printf("%%SDL-I-KEYSCRIPT: %zu scripted key events armed.\n",
+             ks_events.size());
+    }
+    Uint64 ks_now = SDL_GetTicks();
+    while (ks_next < ks_events.size() && ks_events[ks_next].t_ms <= ks_now) {
+      u32 k = ks_events[ks_next].key;
+      printf("%%SDL-I-KEYSCRIPT: injecting key %u at t=%llums\n", k,
+             (unsigned long long)ks_now);
+      theKeyboard->gen_scancode(k);
+      theKeyboard->gen_scancode(k | BX_KEY_RELEASED);
+      ks_next++;
+    }
+  }
+
+  // Debug aid: AXPBOX_KEYPIPE=<file> injects named keys appended to <file>
+  // while the emulator runs (interactive headless menu navigation):
+  //   echo "f2 down enter" >> keys.txt
+  // Tokens are whitespace-separated key names (same names as
+  // AXPBOX_KEYSCRIPT); each token is pressed+released ~120 ms apart.
+  static const char *keypipe = getenv("AXPBOX_KEYPIPE");
+  if (keypipe && theKeyboard) {
+    static long kp_offset = 0;
+    static Uint64 kp_last = 0;
+    Uint64 kp_now = SDL_GetTicks();
+    if (kp_now - kp_last >= 120) {
+      FILE *f = fopen(keypipe, "rb");
+      if (f) {
+        fseek(f, 0, SEEK_END);
+        long size = ftell(f);
+        if (size > kp_offset) {
+          fseek(f, kp_offset, SEEK_SET);
+          char tok[64];
+          // consume exactly one token per poll so keys pace out
+          if (fscanf(f, "%63s", tok) == 1) {
+            kp_offset = ftell(f);
+            kp_last = kp_now;
+            u32 k = sdl_debug_key_lookup(tok);
+            if (k) {
+              printf("%%SDL-I-KEYPIPE: injecting \"%s\"\n", tok);
+              theKeyboard->gen_scancode(k);
+              theKeyboard->gen_scancode(k | BX_KEY_RELEASED);
+            } else {
+              printf("%%SDL-W-KEYPIPE: unknown key \"%s\"\n", tok);
+            }
+          } else {
+            kp_offset = size;
+          }
+        }
+        fclose(f);
+      }
+    }
+  }
+
   u32 key_event;
 
-  //  u8 mouse_state;
-  int wheel_status;
-
   while (SDL_PollEvent(&sdl_event)) {
-    wheel_status = 0;
     switch (sdl_event.type) {
-    case SDL_VIDEOEXPOSE:
-      SDL_UpdateRect(sdl_screen, 0, 0, res_x, res_y);
+    case SDL_EVENT_WINDOW_EXPOSED:
+      // Window needs redraw — re-present the current texture
+      if (sdl_renderer && sdl_texture) {
+        SDL_RenderClear(sdl_renderer);
+        SDL_RenderTexture(sdl_renderer, sdl_texture, NULL, NULL);
+        SDL_RenderPresent(sdl_renderer);
+      }
       break;
 
-    case SDL_MOUSEMOTION:
-
-    //	//fprintf (stderr, "mouse event to (%d,%d), relative (%d,%d)\n",
-    //(int)(sdl_event.motion.x), (int)(sdl_event.motion.y),
-    //(int)sdl_event.motion.xrel, (int)sdl_event.motion.yrel); 	if (!sdl_grab) {
-    //	  //fprintf (stderr, "ignore mouse event because sdl_grab is off\n");
-    //	  break;
-    //	}
-    //	if (just_warped
-    //	    && sdl_event.motion.x == half_res_x
-    //	    && sdl_event.motion.y == half_res_y) {
-    //	  // This event was generated as a side effect of the WarpMouse,
-    //	  // and it must be ignored.
-    //	  //fprintf (stderr, "ignore mouse event because it is a side effect of
-    //SDL_WarpMouse\n"); 	  just_warped = false; 	  break;
-    //	}
-    //	//fprintf (stderr, "processing relative mouse event\n");
-    //        new_mousebuttons = ((sdl_event.motion.state &
-    //        0x01)|((sdl_event.motion.state>>1)&0x02)
-    //                            |((sdl_event.motion.state<<1)&0x04));
-    //        DEV_mouse_motion_ext(
-    //            sdl_event.motion.xrel,
-    //            -sdl_event.motion.yrel,
-    //            wheel_status,
-    //            new_mousebuttons);
-    //	old_mousebuttons = new_mousebuttons;
-    //	old_mousex = (int)(sdl_event.motion.x);
-    //	old_mousey = (int)(sdl_event.motion.y);
-    //	//fprintf (stderr, "warping mouse to center\n");
-    //	SDL_WarpMouse(half_res_x, half_res_y);
-    //	just_warped = 1;
-    //	break;
-    //
-    case SDL_MOUSEBUTTONDOWN:
-
-    //        if( (sdl_event.button.button == SDL_BUTTON_MIDDLE)
-    //            && ((SDL_GetModState() & KMOD_CTRL) > 0)
-    //            && (sdl_fullscreen_toggle == 0) )
-    //	{
-    //	  if( sdl_grab == 0 )
-    //	  {
-    //	    SDL_ShowCursor(0);
-    //	    SDL_WM_GrabInput(SDL_GRAB_ON);
-    //	  }
-    //	  else
-    //	  {
-    //	    SDL_ShowCursor(1);
-    //	    SDL_WM_GrabInput(SDL_GRAB_OFF);
-    //	  }
-    //	  sdl_grab = ~sdl_grab;
-    //	  toggle_mouse_enable();
-    //	  break;
-    //	}
-    //#ifdef SDL_BUTTON_WHEELUP
-    //        // get the wheel status
-    //        if (sdl_event.button.button == SDL_BUTTON_WHEELUP) {
-    //          wheel_status = 1;
-    //        }
-    //        if (sdl_event.button.button == SDL_BUTTON_WHEELDOWN) {
-    //          wheel_status = -1;
-    //        }
-    //#endif
-    case SDL_MOUSEBUTTONUP:
-
-      //	// figure out mouse state
-      //	new_mousex = (int)(sdl_event.button.x);
-      //	new_mousey = (int)(sdl_event.button.y);
-      //	// SDL_GetMouseState() returns the state of all buttons
-      //	mouse_state = SDL_GetMouseState(NULL, NULL);
-      //	new_mousebuttons =
-      //	  (mouse_state & 0x01)    |
-      //	  ((mouse_state>>1)&0x02) |
-      //	  ((mouse_state<<1)&0x04) ;
-      //	// filter out middle button if not fullscreen
-      //	if( sdl_fullscreen_toggle == 0 )
-      //	  new_mousebuttons &= 0x07;
-      //        // send motion information
-      //        DEV_mouse_motion_ext(
-      //            new_mousex - old_mousex,
-      //            -(new_mousey - old_mousey),
-      //            wheel_status,
-      //            new_mousebuttons);
-      //	// mark current state to diff with next packet
-      //	old_mousebuttons = new_mousebuttons;
-      //	old_mousex = new_mousex;
-      //	old_mousey = new_mousey;
+    case SDL_EVENT_WINDOW_RESTORED:
+    case SDL_EVENT_WINDOW_DISPLAY_SCALE_CHANGED:
+      // System DPI changed — re-scale SDL GUI window
+      if (res_x > 0 && res_y > 0) {
+        dimension_update(res_x, res_y);
+      }
       break;
 
-    //
-    case SDL_KEYDOWN:
+    case SDL_EVENT_MOUSE_MOTION:
+      // Debug aid: AXPBOX_MOUSE_DEBUG=1 traces every host motion event and
+      // grab transition to stderr (diagnoses host-side delivery problems).
+      if (getenv("AXPBOX_MOUSE_DEBUG"))
+        fprintf(stderr, "MOUSEDBG motion xrel=%d yrel=%d grab=%d\n",
+                (int)sdl_event.motion.xrel, (int)sdl_event.motion.yrel,
+                sdl_grab);
+      if (sdl_grab) {
+        // PS/2 mouse Y is positive-up, SDL is positive-down; hence the
+        // baseline Y negation. invert_x/y flip on top of that.
+        double mx = (double)sdl_event.motion.xrel * mouse_speed;
+        double my = -(double)sdl_event.motion.yrel * mouse_speed;
+        sdl_mouse_accum_x += mouse_invert_x ? -mx : mx;
+        sdl_mouse_accum_y += mouse_invert_y ? -my : my;
 
-      // convert sym->bochs code
-      if (sdl_event.key.keysym.sym > SDLK_LAST)
+        int dx = (int)sdl_mouse_accum_x;
+        int dy = (int)sdl_mouse_accum_y;
+
+        if (dx != 0 || dy != 0) {
+          sdl_mouse_accum_x -= dx;
+          sdl_mouse_accum_y -= dy;
+          theKeyboard->mouse_motion(dx, dy, 0, sdl_mouse_button_state);
+        }
+      }
+      break;
+
+    case SDL_EVENT_MOUSE_BUTTON_DOWN:
+    case SDL_EVENT_MOUSE_BUTTON_UP: {
+      if (!sdl_grab) {
+        if (sdl_event.type == SDL_EVENT_MOUSE_BUTTON_DOWN &&
+            sdl_event.button.button == SDL_BUTTON_LEFT) {
+          sdl_regrab_attempts = 0; // fresh user grab: reset the bounce budget
+          bx_gui->mouse_enabled_changed(true);
+        }
         break;
-      if (!myCfg->get_bool_value("keyboard.use_mapping", false))
+      }
 
-      //    if (!SIM->get_param_bool(BXPN_KBD_USEMAPPING)->get())
-      {
-        key_event = sdl_sym_to_bx_key(sdl_event.key.keysym.sym);
-#if defined(DEBUG_KBD)
-        BX_DEBUG(("keypress scancode=%d, sym=%d, bx_key = %d",
-                  sdl_event.key.keysym.scancode, sdl_event.key.keysym.sym,
-                  key_event));
-#endif
-      } else {
+      int bitmask = 0;
+      switch (sdl_event.button.button) {
+      case SDL_BUTTON_LEFT:
+        bitmask = 0x01;
+        break;
+      case SDL_BUTTON_RIGHT:
+        bitmask = 0x02;
+        break;
+      case SDL_BUTTON_MIDDLE:
+        bitmask = 0x04;
+        break;
+      default:
+        break;
+      }
 
-        /* use mapping */
-        BXKeyEntry *entry = bx_keymap->findHostKey(sdl_event.key.keysym.sym);
-        if (!entry) {
-          BX_ERROR(("host key %d (0x%x) not mapped!",
-                    (unsigned)sdl_event.key.keysym.sym,
-                    (unsigned)sdl_event.key.keysym.sym));
+      if (sdl_event.type == SDL_EVENT_MOUSE_BUTTON_DOWN)
+        sdl_mouse_button_state |= bitmask;
+      else
+        sdl_mouse_button_state &= ~bitmask;
+
+      theKeyboard->mouse_motion(0, 0, 0, sdl_mouse_button_state);
+      break;
+    }
+
+    case SDL_EVENT_MOUSE_WHEEL:
+      if (sdl_grab) {
+        float wy =
+            sdl_event.wheel.y; // SDL3: float; +y = away from user (scroll up)
+        if (sdl_event.wheel.direction == SDL_MOUSEWHEEL_FLIPPED)
+          wy = -wy;
+        int dz = (int)wy;
+        if (dz != 0)
+          theKeyboard->mouse_motion(0, 0, dz, sdl_mouse_button_state);
+      }
+      break;
+    case SDL_EVENT_WINDOW_FOCUS_LOST: {
+      if (getenv("AXPBOX_MOUSE_DEBUG"))
+        fprintf(stderr, "MOUSEDBG focus lost (grab=%d)\n", sdl_grab);
+      if (sdl_grab) {
+        // Some compositors (WSLg/Wayland) bounce window focus when the
+        // grab is engaged; releasing here and never coming back left the
+        // mouse permanently dead after the first click. Remember that the
+        // guest owned the mouse and re-grab when focus returns (bounded,
+        // so a compositor that always rejects the grab can't ping-pong).
+        if (sdl_regrab_attempts < 8) {
+          sdl_regrab_on_focus = true;
+          sdl_regrab_attempts++;
+        }
+        bx_gui->mouse_enabled_changed(false);
+      }
+      break;
+    }
+    case SDL_EVENT_WINDOW_FOCUS_GAINED: {
+      if (getenv("AXPBOX_MOUSE_DEBUG"))
+        fprintf(stderr, "MOUSEDBG focus gained (regrab=%d)\n",
+                (int)sdl_regrab_on_focus);
+      if (sdl_regrab_on_focus) {
+        sdl_regrab_on_focus = false;
+        bx_gui->mouse_enabled_changed(true);
+      }
+      break;
+    }
+    case SDL_EVENT_KEY_DOWN:
+      if (sdl_event.key.key == SDLK_END &&
+          (sdl_event.key.mod & SDL_KMOD_CTRL) &&
+          (sdl_event.key.mod & SDL_KMOD_ALT)) {
+        theKeyboard->gen_scancode(BX_KEY_DELETE);
+        theKeyboard->gen_scancode(BX_KEY_DELETE | BX_KEY_RELEASED);
+        sdl_swallow_end_release = true;
+        break;
+      }
+
+      // Ctrl+Alt+Home: reset window to last GPU-driven size
+      if (sdl_event.key.key == SDLK_HOME &&
+          (sdl_event.key.mod & SDL_KMOD_CTRL) &&
+          (sdl_event.key.mod & SDL_KMOD_ALT)) {
+        reset_window_size();
+        sdl_swallow_home_release = true;
+        break;
+      }
+
+      // Ctrl+PageUp / Ctrl+PageDown: runtime scale adjust (gated by config)
+      if (vid_scale_change_enable && (sdl_event.key.mod & SDL_KMOD_CTRL) &&
+          !(sdl_event.key.mod & SDL_KMOD_ALT)) {
+        if (sdl_event.key.key == SDLK_PAGEUP) {
+          adjust_window_scale(+1);
+          sdl_swallow_pageup_release = true;
           break;
         }
+        if (sdl_event.key.key == SDLK_PAGEDOWN) {
+          adjust_window_scale(-1);
+          sdl_swallow_pagedown_release = true;
+          break;
+        }
+      }
 
+      // Ctrl+F10: toggle mouse capture
+      if (sdl_event.key.key == SDLK_F10 &&
+          (sdl_event.key.mod & SDL_KMOD_CTRL)) {
+        theKeyboard->gen_scancode(BX_KEY_CTRL_L | BX_KEY_RELEASED);
+        theKeyboard->gen_scancode(BX_KEY_CTRL_R | BX_KEY_RELEASED);
+
+        // deliberate toggle: forget any pending focus re-grab
+        sdl_regrab_on_focus = false;
+        sdl_regrab_attempts = 0;
+        bx_gui->mouse_enabled_changed(!sdl_grab);
+        sdl_swallow_keys = true; // eat subsequent releases
+        break;
+      }
+#ifdef _WIN32
+      extern void win32_select_file(HWND hwnd);
+#else
+      extern void sdl_select_file(SDL_Window *);
+#endif
+      if (sdl_event.key.key == SDLK_F11 &&
+          (sdl_event.key.mod & SDL_KMOD_CTRL)) {
+        theKeyboard->gen_scancode(BX_KEY_CTRL_L | BX_KEY_RELEASED);
+        theKeyboard->gen_scancode(BX_KEY_CTRL_R | BX_KEY_RELEASED);
+
+        if (sdl_grab)
+          bx_gui->mouse_enabled_changed(false);
+
+#ifdef _WIN32
+        win32_select_file((HWND)SDL_GetPointerProperty(
+            SDL_GetWindowProperties(sdl_window),
+            SDL_PROP_WINDOW_WIN32_HWND_POINTER, nullptr));
+#else
+        sdl_select_file(sdl_window);
+#endif
+
+        sdl_swallow_keys = true; // eat subsequent releases
+        break;
+      }
+      if (sdl_swallow_keys)
+        break; // swallow any key-down during toggle
+
+      // Filter out ScrollLock (fullscreen toggle prev.) and invalid keys
+      if (sdl_event.key.key == SDLK_SCROLLLOCK)
+        break;
+
+      // convert sym -> bochs code
+      if (!myCfg->get_bool_value("keyboard.use_mapping", false)) {
+        key_event = sdl_scan_to_bx_key(sdl_event.key.scancode);
+      } else {
+        /* use mapping */
+        BXKeyEntry *entry = bx_keymap->findHostKey(sdl_event.key.key);
+        if (!entry) {
+          BX_ERROR(("host key 0x%x not mapped!", (unsigned)sdl_event.key.key));
+          break;
+        }
         key_event = entry->baseKey;
       }
 
       if (key_event == BX_KEY_UNHANDLED)
         break;
+
       theKeyboard->gen_scancode(key_event);
+
+      // Locks: generate immediate press+release pair
       if ((key_event == BX_KEY_NUM_LOCK) || (key_event == BX_KEY_CAPS_LOCK)) {
         theKeyboard->gen_scancode(key_event | BX_KEY_RELEASED);
       }
       break;
 
-    case SDL_KEYUP:
+    case SDL_EVENT_KEY_UP:
+      if (sdl_event.key.key == SDLK_SCROLLLOCK)
+        break;
 
-      // filter out release of Windows/Fullscreen toggle and unsupported keys
-      if ((sdl_event.key.keysym.sym != SDLK_SCROLLOCK) &&
-          (sdl_event.key.keysym.sym < SDLK_LAST)) {
-
-        // convert sym->bochs code
-        if (!myCfg->get_bool_value("keyboard.use_mapping", false)) {
-
-          // if (!SIM->get_param_bool(BXPN_KBD_USEMAPPING)->get()) {
-          key_event = sdl_sym_to_bx_key(sdl_event.key.keysym.sym);
-        } else {
-
-          /* use mapping */
-          BXKeyEntry *entry = bx_keymap->findHostKey(sdl_event.key.keysym.sym);
-          if (!entry) {
-            BX_ERROR(("host key %d (0x%x) not mapped!",
-                      (unsigned)sdl_event.key.keysym.sym,
-                      (unsigned)sdl_event.key.keysym.sym));
-            break;
-          }
-
-          key_event = entry->baseKey;
-        }
-
-        if (key_event == BX_KEY_UNHANDLED)
-          break;
-        if ((key_event == BX_KEY_NUM_LOCK) || (key_event == BX_KEY_CAPS_LOCK)) {
-          theKeyboard->gen_scancode(key_event);
-        }
-
-        theKeyboard->gen_scancode(key_event | BX_KEY_RELEASED);
+      if (sdl_swallow_end_release && sdl_event.key.key == SDLK_END) {
+        sdl_swallow_end_release = false;
+        break;
       }
+
+      if (sdl_swallow_home_release && sdl_event.key.key == SDLK_HOME) {
+        sdl_swallow_home_release = false;
+        break;
+      }
+
+      if (sdl_swallow_pageup_release && sdl_event.key.key == SDLK_PAGEUP) {
+        sdl_swallow_pageup_release = false;
+        break;
+      }
+
+      if (sdl_swallow_pagedown_release && sdl_event.key.key == SDLK_PAGEDOWN) {
+        sdl_swallow_pagedown_release = false;
+        break;
+      }
+
+      if (sdl_swallow_keys) {
+        // hanlde dealing with ctrl+f10 escape
+        if (!(SDL_GetModState() & SDL_KMOD_CTRL))
+          sdl_swallow_keys = false;
+        break;
+      }
+
+      if (!myCfg->get_bool_value("keyboard.use_mapping", false)) {
+        key_event = sdl_scan_to_bx_key(sdl_event.key.scancode);
+      } else {
+        BXKeyEntry *entry = bx_keymap->findHostKey(sdl_event.key.key);
+        if (!entry) {
+          BX_ERROR(("host key 0x%x not mapped!", (unsigned)sdl_event.key.key));
+          break;
+        }
+        key_event = entry->baseKey;
+      }
+
+      if (key_event == BX_KEY_UNHANDLED)
+        break;
+
+      if ((key_event == BX_KEY_NUM_LOCK) || (key_event == BX_KEY_CAPS_LOCK)) {
+        theKeyboard->gen_scancode(key_event);
+      }
+
+      theKeyboard->gen_scancode(key_event | BX_KEY_RELEASED);
       break;
 
-    case SDL_QUIT:
-      FAILURE(Graceful, "User requested shutdown");
+    case SDL_EVENT_QUIT:
+      if (!sdl_grab)
+        FAILURE(Graceful, "User requested shutdown");
     }
   }
 }
@@ -1041,37 +966,19 @@ void bx_sdl_gui_c::handle_events(void) {
  * Flush any changes to sdl_screen to the actual window.
  **/
 void bx_sdl_gui_c::flush(void) {
-  SDL_UpdateRect(sdl_screen, 0, 0, res_x, res_y);
+  //
 }
 
 /**
  * Clear sdl_screen display, and flush it.
  **/
 void bx_sdl_gui_c::clear_screen(void) {
-  int i = res_y;
-
-  int j;
-  u32 color;
-  u32 *buf;
-  u32 *buf_row;
-  u32 disp;
-
-  if (!sdl_screen)
+  if (!sdl_renderer)
     return;
 
-  color = SDL_MapRGB(sdl_screen->format, 0, 0, 0);
-  disp = sdl_screen->pitch / 4;
-  buf = (u32 *)sdl_screen->pixels;
-
-  do {
-    buf_row = buf;
-    j = res_x;
-    while (j--)
-      *buf++ = color;
-    buf = buf_row + disp;
-  } while (--i);
-
-  flush();
+  SDL_SetRenderDrawColor(sdl_renderer, 0, 0, 0, 255);
+  SDL_RenderClear(sdl_renderer);
+  SDL_RenderPresent(sdl_renderer);
 }
 
 /**
@@ -1081,69 +988,162 @@ void bx_sdl_gui_c::clear_screen(void) {
  **/
 bool bx_sdl_gui_c::palette_change(unsigned index, unsigned red, unsigned green,
                                   unsigned blue) {
-  unsigned char palred = red & 0xFF;
-  unsigned char palgreen = green & 0xFF;
-  unsigned char palblue = blue & 0xFF;
-
-  if (index > 255)
-    return 0;
-
-  palette[index] = SDL_MapRGB(sdl_screen->format, palred, palgreen, palblue);
-
   return 1;
 }
 
 void bx_sdl_gui_c::dimension_update(unsigned x, unsigned y, unsigned fheight,
                                     unsigned fwidth, unsigned bpp) {
-  if ((bpp == 8) || (bpp == 15) || (bpp == 16) || (bpp == 24) || (bpp == 32)) {
-    vga_bpp = bpp;
+  SDL_DisplayID display;
+  float scaled_x, scaled_y;
+  float content_scale = 1.0f;
+
+  if (sdl_texture) {
+    SDL_DestroyTexture(sdl_texture);
+    sdl_texture = NULL;
+  }
+
+  if (!sdl_window)
+    display = SDL_GetPrimaryDisplay();
+  else
+    display = SDL_GetDisplayForWindow(sdl_window);
+
+  if (runtime_scale_override > 0)
+    content_scale = (float)runtime_scale_override;
+  else if (vid_scale)
+    content_scale = (float)vid_scale;
+  else
+    content_scale = SDL_GetDisplayContentScale(display);
+
+  scaled_x = x * content_scale;
+  scaled_y = y * content_scale;
+
+  if (!sdl_window) {
+    sdl_window =
+        SDL_CreateWindow(sdl_title, (int)scaled_x, (int)scaled_y,
+                         SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIGH_PIXEL_DENSITY);
+    if (!sdl_window) {
+      FAILURE_3(SDL, "Unable to create SDL3 window: %ix%i: %s\n", x, y,
+                SDL_GetError());
+    }
+
+    sdl_renderer = SDL_CreateRenderer(sdl_window, NULL);
+    if (!sdl_renderer) {
+      FAILURE_3(SDL, "Unable to create SDL3 renderer: %ix%i: %s\n", x, y,
+                SDL_GetError());
+    }
+
+    SDL_RaiseWindow(sdl_window);
+    SDL_SetRenderLogicalPresentation(sdl_renderer, (int)x, (int)y,
+                                     SDL_LOGICAL_PRESENTATION_LETTERBOX);
   } else {
-    FAILURE_1(SDL, "%d bpp graphics mode not supported.", bpp);
+    SDL_SetWindowSize(sdl_window, (int)scaled_x, (int)scaled_y);
+    SDL_SetRenderLogicalPresentation(sdl_renderer, (int)x, (int)y,
+                                     SDL_LOGICAL_PRESENTATION_LETTERBOX);
   }
 
-  if (fheight > 0) {
-    fontheight = fheight;
-    fontwidth = fwidth;
-    text_cols = x / fontwidth;
-    text_rows = y / fontheight;
-  }
-
-  if ((x == res_x) && (y == res_y))
-    return;
-
-  if (sdl_screen) {
-    SDL_FreeSurface(sdl_screen);
-    sdl_screen = NULL;
-  }
-
-  sdl_screen = SDL_SetVideoMode(x, y /*+headerbar_height+statusbar_height*/, 32,
-                                SDL_SWSURFACE);
-  if (!sdl_screen) {
-    FAILURE_3(SDL, "Unable to set requested videomode: %ix%i: %s   \n", x, y,
+  sdl_texture = SDL_CreateTexture(sdl_renderer, SDL_PIXELFORMAT_ARGB8888,
+                                  SDL_TEXTUREACCESS_STREAMING, (int)x, (int)y);
+  if (!sdl_texture) {
+    FAILURE_3(SDL, "Unable to create SDL3 texture: %ix%i: %s\n", x, y,
               SDL_GetError());
   }
+
+  SDL_SetTextureScaleMode(sdl_texture, vid_linear ? SDL_SCALEMODE_LINEAR
+                                                  : SDL_SCALEMODE_NEAREST);
 
   res_x = x;
   res_y = y;
   half_res_x = x / 2;
   half_res_y = y / 2;
+
+  // Remember the actual OS-pixel size we just drove the window to,
+  // so Ctrl+Alt+Home can snap back here after a manual resize.
+  last_driven_w = (int)scaled_x;
+  last_driven_h = (int)scaled_y;
+}
+
+void bx_sdl_gui_c::reset_window_size() {
+  if (!sdl_window || last_driven_w == 0 || last_driven_h == 0)
+    return;
+
+  SDL_WindowFlags flags = SDL_GetWindowFlags(sdl_window);
+  if (flags & (SDL_WINDOW_MAXIMIZED | SDL_WINDOW_FULLSCREEN))
+    SDL_RestoreWindow(sdl_window);
+
+  SDL_SetWindowSize(sdl_window, last_driven_w, last_driven_h);
+}
+
+void bx_sdl_gui_c::adjust_window_scale(int delta) {
+  // Snapshot the currently-effective integer scale.
+  int current;
+  if (runtime_scale_override > 0)
+    current = runtime_scale_override;
+  else if (vid_scale)
+    current = (int)vid_scale;
+  else if (sdl_window)
+    current =
+        (int)(SDL_GetDisplayContentScale(SDL_GetDisplayForWindow(sdl_window)) +
+              0.5f);
+  else
+    current = 1;
+
+  int next = current + delta;
+  if (next < runtime_scale_min)
+    next = runtime_scale_min;
+  if (next > runtime_scale_max)
+    next = runtime_scale_max;
+  if (next == runtime_scale_override)
+    return; // no change
+
+  runtime_scale_override = next;
+
+  if (sdl_window && res_x > 0 && res_y > 0) {
+    SDL_WindowFlags flags = SDL_GetWindowFlags(sdl_window);
+    if (flags & (SDL_WINDOW_MAXIMIZED | SDL_WINDOW_FULLSCREEN))
+      SDL_RestoreWindow(sdl_window);
+    dimension_update(res_x, res_y);
+  }
 }
 
 void bx_sdl_gui_c::mouse_enabled_changed_specific(bool val) {
-  if (val == 1) {
-    SDL_ShowCursor(0);
-    SDL_WM_GrabInput(SDL_GRAB_ON);
+  if (getenv("AXPBOX_MOUSE_DEBUG"))
+    fprintf(stderr, "MOUSEDBG grab -> %d (window=%p)\n", (int)val,
+            (void *)sdl_window);
+  if (val) {
+    SDL_HideCursor();
+    if (sdl_window) {
+      if (!SDL_SetWindowRelativeMouseMode(sdl_window, true) &&
+          getenv("AXPBOX_MOUSE_DEBUG"))
+        fprintf(stderr, "MOUSEDBG relative-mode enable failed: %s\n",
+                SDL_GetError());
+      SDL_SetWindowKeyboardGrab(sdl_window, true);
+      SDL_SetWindowTitle(sdl_window, sdl_title_grabbed);
+    }
   } else {
-    SDL_ShowCursor(1);
-    SDL_WM_GrabInput(SDL_GRAB_OFF);
+    SDL_ShowCursor();
+    if (sdl_window) {
+      SDL_SetWindowKeyboardGrab(sdl_window, false);
+      SDL_SetWindowRelativeMouseMode(sdl_window, false);
+      SDL_SetWindowTitle(sdl_window, sdl_title);
+    }
   }
 
   sdl_grab = val;
 }
 
 void bx_sdl_gui_c::exit(void) {
-  if (sdl_screen)
-    SDL_FreeSurface(sdl_screen);
+  if (sdl_texture) {
+    SDL_DestroyTexture(sdl_texture);
+    sdl_texture = NULL;
+  }
+  if (sdl_renderer) {
+    SDL_DestroyRenderer(sdl_renderer);
+    sdl_renderer = NULL;
+  }
+  if (sdl_window) {
+    SDL_DestroyWindow(sdl_window);
+    sdl_window = NULL;
+  }
 }
 
 /// key mapping for SDL
@@ -1168,14 +1168,9 @@ keyTableEntry keytable[] = {
 static u32 convertStringToSDLKey(const char *string) {
   keyTableEntry *ptr;
   for (ptr = &keytable[0]; ptr->name != NULL; ptr++) {
-#if defined(DEBUG_SDL_KEY)
-    printf("SDL: comparing string '%s' to SDL key '%s'   \n", string,
-           ptr->name);
-#endif
     if (!strcmp(string, ptr->name))
       return ptr->value;
   }
-
-  return BX_KEYMAP_UNKNOWN;
+  return 0;
 }
 #endif // defined(HAVE_SDL)

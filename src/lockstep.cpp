@@ -26,17 +26,21 @@
  * serve the general public.
  */
 
+/**
+ * \file
+ * Contains the code for the lockstep debugging mechanism.
+ **/
 #include "StdAfx.hpp"
 
 #include "lockstep.hpp"
 
 #if defined(IDB) && (defined(LS_MASTER) || defined(LS_SLAVE))
-int ls_Socket;
+int64_t ls_Socket;
 
 #if defined(LS_MASTER)
 char ls_IP[30];
 #else
-int ls_listenSocket;
+int64_t ls_listenSocket;
 #endif
 void lockstep_init() {
   struct sockaddr_in Address;
@@ -93,7 +97,7 @@ void lockstep_init() {
   printf("%%LST-I-INIT: Lock-step connection initialized.\n");
 }
 
-void lockstep_sync_m2s(char *s) {
+void lockstep_sync_m2s(const char *s) {
 #if defined(LS_MASTER)
   send(ls_Socket, s, strlen(s) + 1, 0);
 
@@ -194,7 +198,7 @@ void lockstep_compare(char *s) {
 #endif
 }
 
-void lockstep_send(char *s) {
+void lockstep_send(const char *s) {
 
   //  printf("<send %s>",s);
   fd_set readset;

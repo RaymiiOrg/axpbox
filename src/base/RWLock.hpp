@@ -389,7 +389,4 @@ inline CScopedRWLock::CScopedRWLock(CRWLock *rwl, bool write) : _rwl(rwl) {
 
 inline CScopedRWLock::~CScopedRWLock() { _rwl->unlock(); }
 
-#define SCOPED_READ_LOCK(mutex) CRWLock::CScopedLock L_##__LINE__(mutex, false)
-#define SCOPED_WRITE_LOCK(mutex) CRWLock::CScopedLock L_##__LINE__(mutex, true)
-
 #endif // Foundation_RWLock_INCLUDED

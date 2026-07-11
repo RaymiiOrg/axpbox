@@ -26,9 +26,44 @@
  * serve the general public.
  */
 
+/**
+ * \file
+ * Contains the code for the PCI device class.
+ *
+ **/
 #include "PCIDevice.hpp"
 #include "StdAfx.hpp"
 #include "System.hpp"
+#include "diag_rpcc.hpp"
+
+#include <chrono>
+#include <cstdarg>
+
+// Definition of the per-thread diagnostic-stall accumulator declared in
+// diag_rpcc.h.
+thread_local int64_t g_diag_excluded_ns = 0;
+
+// printf() that times its console-I/O stall into g_diag_excluded_ns so jit_run
+// keeps it out of the guest RPCC -- the PCI decode-off diagnostics below can
+// spam during VGA init and jump the counter.
+static void diag_printf(const char *fmt, ...) {
+  const auto t0 = std::chrono::steady_clock::now();
+  va_list ap;
+  va_start(ap, fmt);
+  vprintf(fmt, ap);
+  va_end(ap);
+  g_diag_excluded_ns +=
+      (int64_t)std::chrono::duration_cast<std::chrono::nanoseconds>(
+          std::chrono::steady_clock::now() - t0)
+          .count();
+}
+
+#define DEBUG_PCI 0
+
+static bool pci_dma_targets_ram(CSystem *system, u64 phys_addr, size_t bytes) {
+  return bytes && system->PtrToMem(phys_addr) &&
+         system->PtrToMem(phys_addr + bytes - 1);
+}
 
 static size_t pci_dma_chunk_limit(u64 phys_addr, size_t remaining) {
   const size_t dma_page = 8192;
@@ -182,43 +217,74 @@ void CPCIDevice::config_write(int func, u32 address, int dsize, u32 data) {
 }
 
 void CPCIDevice::register_bar(int func, int bar, u32 data, u32 mask) {
-  u32 length = ((~mask) | 1) + 1;
+  int id = PCI_RANGE_BASE + (func * 8) + bar;
 
-  if ((data & 1) && bar != 6) {
-
-    // io space
+  // IO BAR here, never BAR 6 though
+  if ((data & 1u) && bar != 6) {
     pci_range_is_io[func][bar] = true;
 
-    cSystem->RegisterMemory(this, PCI_RANGE_BASE + (func * 8) + bar,
-                            U64(0x00000801fc000000) +
-                                (U64(0x0000000200000000) * myPCIBus) +
-                                (data & ~0x3),
-                            length);
-#if defined(DEBUG_PCI)
-    printf("%s(%s).%d PCI BAR %d set to IO  % " PRIx64 ", len %x.\n",
+    u32 length = (~(mask & PCI_IO_ADDRESS_MASK)) + 1u; // Size probe from mask
+    if (length < 4u)
+      length = 4u;
+
+    u32 base =
+        (data & PCI_IO_ADDRESS_MASK) & ~(length - 1u); //  IO BAR alignment
+
+    const u64 t =
+        U64(0x00000801fc000000) + (U64(0x0000000200000000) * myPCIBus) + base;
+
+    cSystem->RegisterMemory(this, id, t, length);
+    printf("%s(%s).%d PCI BAR %d set to IO   %" PRIx64 ", len %x.\n",
            myCfg->get_myName(), myCfg->get_myValue(), func, bar, t, length);
-#endif
-  } else if ((data & 1) || bar != 6) {
+    return;
+  }
 
-    // io space
-    pci_range_is_io[func][bar] = true;
+  // Everything else is memory BAR ......
+  pci_range_is_io[func][bar] = false;
 
-    cSystem->RegisterMemory(this, PCI_RANGE_BASE + (func * 8) + bar,
-                            U64(0x0000080000000000) +
-                                (U64(0x0000000200000000) * myPCIBus) +
-                                (data & ~0xf),
-                            length);
-#if defined(DEBUG_PCI)
-    printf("%s(%s).%d PCI BAR %d set to MEM % " PRIx64 ", len %x.\n",
+  // PCI Option ROM BAR, bit 0 = enable, address 31:11, 10:1 reserve by spec
+  if (bar == 6) {
+    const bool rom_enable = (data & PCI_ROM_ADDRESS_ENABLE) != 0;
+
+    if (!rom_enable) {
+      printf("%s(%s).%d PCI BAR 6 ROM disabled.\n", myCfg->get_myName(),
+             myCfg->get_myValue(), func);
+      return;
+    }
+
+    // Size from probe mask; ignore enable & reserved bits via ROM mask
+    u32 length = (~(mask & PCI_ROM_ADDRESS_MASK)) + 1u;
+    if (length < 0x800u)
+      length = 0x800u; // spec minimum 2 KiB
+
+    // Base: drop enable/reserved via mask, then align to size
+    u32 base = (data & PCI_ROM_ADDRESS_MASK) & ~(length - 1u);
+
+    const u64 t =
+        U64(0x0000080000000000) + (U64(0x0000000200000000) * myPCIBus) + base;
+
+    cSystem->RegisterMemory(this, id, t, length);
+    printf("%s(%s).%d PCI BAR 6 set to MEM %" PRIx64 " (ROM), len %x.\n",
+           myCfg->get_myName(), myCfg->get_myValue(), func, t, length);
+    return;
+  }
+
+  // Normal memory BAR (0..5 that are memory)
+  {
+    // Size from probe mask; clear attr bits via MEM mask
+    u32 length = (~(mask & PCI_MEM_ADDRESS_MASK)) + 1u;
+    if (length < 0x10u)
+      length = 0x10u; // spec minimum 16 bytes
+
+    // Base: clear attr bits, then align to size
+    u32 base = (data & PCI_MEM_ADDRESS_MASK) & ~(length - 1u);
+
+    const u64 t =
+        U64(0x0000080000000000) + (U64(0x0000000200000000) * myPCIBus) + base;
+
+    cSystem->RegisterMemory(this, id, t, length);
+    printf("%s(%s).%d PCI BAR %d set to MEM %" PRIx64 ", len %x.\n",
            myCfg->get_myName(), myCfg->get_myValue(), func, bar, t, length);
-#endif
-  } else {
-
-    // disabled...
-#if defined(DEBUG_PCI)
-    printf("%s(%s).%d PCI BAR %d should be disabled...\n", myCfg->get_myName(),
-           myCfg->get_myValue(), func, bar);
-#endif
   }
 }
 
@@ -264,14 +330,14 @@ u64 CPCIDevice::ReadMem(int index, u64 address, int dsize) {
   if (index < PCI_RANGE_BASE) {
     if (dev_range_is_io[index] &&
         !(pci_state.config_data[0][1] & endian_32(1))) {
-      printf("%s(%s) Legacy IO access with IO disabled from PCI config.\n",
-             myCfg->get_myName(), myCfg->get_myValue());
+      diag_printf("%s(%s) Legacy IO access with IO disabled from PCI config.\n",
+                  myCfg->get_myName(), myCfg->get_myValue());
       return 0;
     }
 
     if (!dev_range_is_io[index] &&
         !(pci_state.config_data[0][1] & endian_32(2))) {
-      printf(
+      diag_printf(
           "%s(%s) Legacy memory access with memory disabled from PCI config.\n",
           myCfg->get_myName(), myCfg->get_myValue());
       return 0;
@@ -292,14 +358,14 @@ u64 CPCIDevice::ReadMem(int index, u64 address, int dsize) {
 
   if (pci_range_is_io[func][bar] &&
       !(pci_state.config_data[func][1] & endian_32(1))) {
-    printf("%s(%s).%d PCI IO access with IO disabled from PCI config.\n",
-           myCfg->get_myName(), myCfg->get_myValue(), func);
+    diag_printf("%s(%s).%d PCI IO access with IO disabled from PCI config.\n",
+                myCfg->get_myName(), myCfg->get_myValue(), func);
     return 0;
   }
 
   if (!pci_range_is_io[func][bar] &&
       !(pci_state.config_data[func][1] & endian_32(2))) {
-    printf(
+    diag_printf(
         "%s(%s).%d PCI memory access with memory disabled from PCI config.\n",
         myCfg->get_myName(), myCfg->get_myValue(), func);
     return 0;
@@ -330,14 +396,14 @@ void CPCIDevice::WriteMem(int index, u64 address, int dsize, u64 data) {
   if (index < PCI_RANGE_BASE) {
     if (dev_range_is_io[index] &&
         !(pci_state.config_data[0][1] & endian_32(1))) {
-      printf("%s(%s) Legacy IO access with IO disabled from PCI config.\n",
-             myCfg->get_myName(), myCfg->get_myValue());
+      diag_printf("%s(%s) Legacy IO access with IO disabled from PCI config.\n",
+                  myCfg->get_myName(), myCfg->get_myValue());
       return;
     }
 
     if (!dev_range_is_io[index] &&
         !(pci_state.config_data[0][1] & endian_32(2))) {
-      printf(
+      diag_printf(
           "%s(%s) Legacy memory access with memory disabled from PCI config.\n",
           myCfg->get_myName(), myCfg->get_myValue());
       return;
@@ -359,29 +425,61 @@ void CPCIDevice::WriteMem(int index, u64 address, int dsize, u64 data) {
 
   if (pci_range_is_io[func][bar] &&
       !(pci_state.config_data[func][1] & endian_32(1))) {
-    printf("%s(%s).%d PCI IO access with IO disabled from PCI config.\n",
-           myCfg->get_myName(), myCfg->get_myValue(), func);
+    diag_printf("%s(%s).%d PCI IO access with IO disabled from PCI config.\n",
+                myCfg->get_myName(), myCfg->get_myValue(), func);
     return;
   }
 
   if (!pci_range_is_io[func][bar] &&
       !(pci_state.config_data[func][1] & endian_32(2))) {
-    printf(
+    diag_printf(
         "%s(%s).%d PCI memory access with memory disabled from PCI config.\n",
         myCfg->get_myName(), myCfg->get_myValue(), func);
     return;
   }
-
+#if DEBUG_PCI
+  printf("[PCI::WriteMem] func=%d bar=%d addr=%08X dsize=%d data=%08X\n", func,
+         bar, (uint32_t)address, dsize, (uint32_t)data);
+#endif
   WriteMem_Bar(func, bar, (u32)address, dsize, (u32)data);
 }
 
 bool CPCIDevice::do_pci_interrupt(int func, bool asserted) {
-  if ((endian_32(pci_state.config_data[func][0x0f]) & 0xff) != 0xff) {
-    cSystem->interrupt(endian_32(pci_state.config_data[func][0x0f]) & 0xff,
-                       asserted);
-    return true;
-  } else
+  // Per Tsunami HRM section 6.3, the 64 TIGbus interrupt inputs (DRIR
+  // bits 0-63) are board-wired to PCI INTx pins.  ES40 uses the slot-
+  // based pattern SRM programs at first pass:
+  //   DRIR_bit = ((slot + 1) * 4 + bus * 0x10 + (pin - 1)) & 0x3f.
+  //
+  // Two gates the cfg-space CFIT longword tells us:
+  //   - Pin (cfg+0x3D) selects which INTx (1=A, 2=B, 3=C, 4=D); 0 means
+  //     the device declares no INTx capability and we early-return.
+  //   - Line (cfg+0x3C) == 0xFF is PCI spec's "no IRQ assigned" — that's
+  //     also the reset value, so it doubles as "SRM has not configured
+  //     this device's IRQ yet".  Honouring it prevents firing INTx into
+  //     the OS during the pre-bootstrap window where exception handlers
+  //     aren't installed yet (OpenVMS in particular crashes hard with
+  //     ACV through vector 0x80 if INTx delivers in that window).
+  //
+  // Once a real value lands in Line (any 8-bit value < 0xFF), we ignore
+  // it and use the slot formula instead
+  const u32 cfit = endian_32(pci_state.config_data[func][0x0f]);
+  const u8 line = cfit & 0xff;
+  const u8 pin = (cfit >> 8) & 0xff;
+  if (pin == 0)
     return false;
+
+  const int intx = (pin - 1) & 0x3;
+  const int slot = myPCIDev & 0x1f;
+  const int bus_offset = (myPCIBus & 0x3) * 0x10;
+  const int drir_bit = ((slot + 1) * 4 + bus_offset + intx) & 0x3f;
+
+#ifdef DEBUG_PCI_IRQ
+  printf("PCI-IRQ: %s.%d %s line=0x%02x pin=%d slot=%d bus=%d -> DRIR bit %d\n",
+         devid_string, func, asserted ? "ASSERT  " : "DEASSERT", line, pin,
+         myPCIDev, myPCIBus, drir_bit);
+#endif
+  cSystem->interrupt(drir_bit, asserted);
+  return true;
 }
 
 static u32 pci_magic1 = 0xC1095A78;
@@ -421,7 +519,7 @@ int CPCIDevice::RestoreState(FILE *f) {
     return -1;
   }
 
-  r = fread(&ss, sizeof(long), 1, f);
+  fread(&ss, sizeof(long), 1, f);
   if (r != 1) {
     printf("%s: unexpected end of file!\n", devid_string);
     return -1;
@@ -432,7 +530,7 @@ int CPCIDevice::RestoreState(FILE *f) {
     return -1;
   }
 
-  r = fread(&pci_state, sizeof(pci_state), 1, f);
+  fread(&pci_state, sizeof(pci_state), 1, f);
   if (r != 1) {
     printf("%s: unexpected end of file!\n", devid_string);
     return -1;
@@ -494,6 +592,10 @@ void CPCIDevice::do_pci_read(u32 address, void *dest, size_t element_size,
 
   // if there is only one element to read, this is a simple ReadMem operation.
   if (element_count == 1) {
+    const bool writes_ram =
+        pci_dma_targets_ram(cSystem, phys_addr, element_size);
+    CSystem::CPCIDMAWriteGuard dma_guard(cSystem, writes_ram);
+    dma_guard.invalidate(phys_addr, element_size);
     switch (element_size) {
     case 1:
       *(u8 *)dest = (u8)cSystem->ReadMem(phys_addr, 8, this);
@@ -529,11 +631,12 @@ void CPCIDevice::do_pci_read(u32 address, void *dest, size_t element_size,
 
       // get a pointer to system memory if the address is inside main memory
       char *memptr = cSystem->PtrToMem(cur_phys);
+      char *memptr2 = cSystem->PtrToMem(cur_phys + chunk - 1);
 
       // Copy only within a single translated DMA page. Scatter-gather DMA does
       // not guarantee that adjacent PCI bus addresses map to contiguous host
       // physical memory beyond the current page.
-      if (memptr) {
+      if (memptr && memptr2) {
         memcpy(dst, memptr, chunk);
       } else {
         for (el = 0; el < chunk; el++)
@@ -548,34 +651,38 @@ void CPCIDevice::do_pci_read(u32 address, void *dest, size_t element_size,
 
 #if defined(ES40_BIG_ENDIAN)
   }
-#endif
 
   // outside main memory, or inside main memory with endian-conversion
   // required we need to do the transfer element-by-element.
   switch (element_size) {
-  case 1:
+  case 1: {
     for (el = 0; el < element_count; el++) {
       *(u8 *)dst = (u8)cSystem->ReadMem(phys_addr, 8, this);
       dst++;
       phys_addr++;
     }
     break;
+  }
 
   case 2: {
     *(u16 *)dst = endian_16((u16)cSystem->ReadMem(phys_addr, 16, this));
     dst += 2;
     phys_addr += 2;
-  } break;
+    break;
+  }
 
   case 4: {
     *(u32 *)dst = endian_32((u32)cSystem->ReadMem(phys_addr, 32, this));
     dst += 4;
     phys_addr += 4;
-  } break;
+    break;
+  }
 
   default:
     FAILURE(InvalidArgument, "Strange element size");
+    break;
   }
+#endif
 }
 
 /**
@@ -598,6 +705,10 @@ void CPCIDevice::do_pci_write(u32 address, void *source, size_t element_size,
 
   // if there is only one element to read, this is a simple ReadMem operation.
   if (element_count == 1) {
+    const bool writes_ram =
+        pci_dma_targets_ram(cSystem, phys_addr, element_size);
+    CSystem::CPCIDMAWriteGuard dma_guard(cSystem, writes_ram);
+    dma_guard.invalidate(phys_addr, element_size);
     switch (element_size) {
     case 1:
       cSystem->WriteMem(phys_addr, 8, *(u8 *)source, this);
@@ -630,12 +741,24 @@ void CPCIDevice::do_pci_write(u32 address, void *source, size_t element_size,
 
       // get a pointer to system memory if the address is inside main memory
       char *memptr = cSystem->PtrToMem(cur_phys);
+      char *memptr2 = cSystem->PtrToMem(cur_phys + chunk - 1);
 
-      if (memptr) {
+      // Copy only within a single translated DMA page. Scatter-gather DMA does
+      // not guarantee that adjacent PCI bus addresses map to contiguous host
+      // physical memory beyond the current page.
+      // Also, make sure we aren't trying to copy past allocated memory.
+      if (memptr && memptr2) {
+        CSystem::CPCIDMAWriteGuard dma_guard(cSystem, true);
+        dma_guard.invalidate(cur_phys, chunk);
         memcpy(memptr, src, chunk);
       } else {
-        for (el = 0; el < chunk; el++)
-          cSystem->WriteMem(cur_phys + el, 8, (u8)src[el], this);
+        for (el = 0; el < chunk; el++) {
+          const u64 byte_phys = cur_phys + el;
+          const bool writes_ram = pci_dma_targets_ram(cSystem, byte_phys, 1);
+          CSystem::CPCIDMAWriteGuard dma_guard(cSystem, writes_ram);
+          dma_guard.invalidate(byte_phys, 1);
+          cSystem->WriteMem(byte_phys, 8, (u8)src[el], this);
+        }
       }
 
       src += chunk;
@@ -646,32 +769,45 @@ void CPCIDevice::do_pci_write(u32 address, void *source, size_t element_size,
 
 #if defined(ES40_BIG_ENDIAN)
   }
-#endif
 
   // outside main memory, or inside main memory with endian-conversion
   // required we need to do the transfer element-by-element.
   switch (element_size) {
-  case 1:
+  case 1: {
     for (el = 0; el < element_count; el++) {
+      const bool writes_ram = pci_dma_targets_ram(cSystem, phys_addr, 1);
+      CSystem::CPCIDMAWriteGuard dma_guard(cSystem, writes_ram);
+      dma_guard.invalidate(phys_addr, 1);
       cSystem->WriteMem(phys_addr, 8, *(u8 *)src, this);
       src++;
       phys_addr++;
     }
     break;
+  }
 
   case 2: {
+    const bool writes_ram = pci_dma_targets_ram(cSystem, phys_addr, 2);
+    CSystem::CPCIDMAWriteGuard dma_guard(cSystem, writes_ram);
+    dma_guard.invalidate(phys_addr, 2);
     cSystem->WriteMem(phys_addr, 16, endian_16(*(u16 *)src), this);
     src += 2;
     phys_addr += 2;
-  } break;
+    break;
+  }
 
   case 4: {
+    const bool writes_ram = pci_dma_targets_ram(cSystem, phys_addr, 4);
+    CSystem::CPCIDMAWriteGuard dma_guard(cSystem, writes_ram);
+    dma_guard.invalidate(phys_addr, 4);
     cSystem->WriteMem(phys_addr, 32, endian_32(*(u32 *)src), this);
     src += 4;
     phys_addr += 4;
-  } break;
+    break;
+  }
 
   default:
     FAILURE(InvalidArgument, "Strange element size");
+    break;
   }
+#endif
 }

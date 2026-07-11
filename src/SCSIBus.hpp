@@ -26,11 +26,14 @@
  * serve the general public.
  */
 
+/**
+ * \file
+ * Contains definitions for the SCSI bus class.
+ **/
 #if !defined(__SCSIBUS__H__)
 #define __SCSIBUS__H__
 
 #include "SCSIDevice.hpp"
-#include "StdAfx.hpp"
 #include "SystemComponent.hpp"
 
 /**

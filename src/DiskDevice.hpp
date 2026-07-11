@@ -26,6 +26,10 @@
  * serve the general public.
  */
 
+/**
+ * \file
+ * Contains definitions to use a raw device as a disk image.
+ **/
 #if !defined(__DISKDEV_H__)
 #define __DISKDEV_H__
 
@@ -43,6 +47,7 @@ public:
   virtual bool seek_byte(off_t_large byte);
   virtual size_t read_bytes(void *dest, size_t bytes);
   virtual size_t write_bytes(void *src, size_t bytes);
+  virtual void flush();
 
 protected:
 #if defined(_WIN32)

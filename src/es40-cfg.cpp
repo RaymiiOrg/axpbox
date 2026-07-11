@@ -26,7 +26,19 @@
  * serve the general public.
  */
 
+/**
+ * \file
+ * Configuration file creator.
+ **/
+
 #include "StdAfx.hpp"
+#include "banner.hpp"
+
+#ifdef _WIN32
+#pragma comment(lib, "winmm.lib")
+#include <mmsystem.h>
+#include <windows.h>
+#endif
 
 // C++ includes
 #include <algorithm>
@@ -37,7 +49,7 @@
 #include <vector>
 
 #if defined(HAVE_PCAP)
-#include <pcap.h>
+#include "NetworkPcap.hpp"
 #endif
 
 using namespace std;
@@ -59,7 +71,8 @@ using namespace std;
  *                of "".
  * \param os:     Output stream for the configuration file.
  **/
-void add_disks(ShrinkingChoiceQuestion *disk_q, ostream *os) {
+void add_disks(ShrinkingChoiceQuestion *disk_q, ostream *os,
+               bool floppy = false) {
   /* Loop until there are no more disks to be added.
    */
   for (;;) {
@@ -95,6 +108,7 @@ void add_disks(ShrinkingChoiceQuestion *disk_q, ostream *os) {
     *os << "    " << disk_q->getAnswer() << " = " << type_q.ask() << "\n";
     *os << "    {\n";
 
+    MultipleChoiceQuestion cdrom_q;
     if (type_q.getAnswer() == "file" || type_q.getAnswer() == "device") {
       /* For a file or device, we need to know what
        * file or device to use.
@@ -106,9 +120,28 @@ void add_disks(ShrinkingChoiceQuestion *disk_q, ostream *os) {
                            " to use for this disk.");
       *os << "      " << type_q.getAnswer() << " = \"" << img_q.ask()
           << "\";\n";
+
+      /* We need to know whether to emulate this as
+       * a cd-rom, or as a hard-disk.
+       */
+      cdrom_q.setQuestion("Should " + disk_q->getAnswer() +
+                          " be a disk or a cd-rom device?");
+      cdrom_q.setExplanation("Do you want the OS to see this " +
+                             type_q.getAnswer() +
+                             " as a hard-disk, or as a cd-rom?");
+      cdrom_q.addAnswer("disk", "false", "Hard-disk");
+      cdrom_q.addAnswer("cd-rom", "true", "CD-ROM drive");
+      cdrom_q.setDefault("disk");
+      if (floppy) {
+        cdrom_q.setAnswer("false");
+        *os << "      cdrom = "
+            << "false"
+            << ";\n";
+      } else
+        *os << "      cdrom = " << cdrom_q.ask() << ";\n";
     }
 
-    if (type_q.getAnswer() == "file") {
+    if (type_q.getAnswer() == "file" && cdrom_q.getAnswer() != "true") {
       /* For a file, we need to know whether to create
        * it when it doesn't exist or not.
        */
@@ -119,6 +152,8 @@ void add_disks(ShrinkingChoiceQuestion *disk_q, ostream *os) {
           "The file will be created the first time the emulator runs.");
       create_q.addAnswer("no", "no", "Don't create this file");
       create_q.addAnswer("yes", "yes", "Create this file");
+      create_q.setDefault("yes");
+      create_q.ask();
       if (create_q.getAnswer() == "yes") {
         /* If we should create the file, we need to
          * know it's size.
@@ -147,41 +182,52 @@ void add_disks(ShrinkingChoiceQuestion *disk_q, ostream *os) {
     }
 
     if (type_q.getAnswer() == "ramdisk") {
-      /* For a RAM DISK, we need to know what
-       * size it should be.
-       */
-      MultipleChoiceQuestion unit_q;
-      unit_q.setQuestion(
-          "What unit do you want to use to specify the disk size?");
-      unit_q.setExplanation("This is needed to create the RAMDISK.");
-      unit_q.addAnswer("KB", "K", "Kilobytes");
-      unit_q.addAnswer("MB", "M", "Megabytes");
-      unit_q.addAnswer("GB", "G", "Gigabytes");
-      unit_q.setDefault("MB");
-      unit_q.ask();
-      NumberQuestion size_q;
-      size_q.setQuestion("How many " + unit_q.getAnswer() +
-                         "Bytes should the disk be?");
-      size_q.setExplanation("This is needed to create the RAMDISK.");
-      size_q.setRange(1, 1024);
-      size_q.setDefault("10");
-      size_q.ask();
-      *os << "      size = \"" << size_q.getAnswer() << unit_q.getAnswer()
-          << "\";\n";
+      cdrom_q.setQuestion("Should " + disk_q->getAnswer() +
+                          " be a disk or a read-only in-memory cd-rom device?");
+      cdrom_q.setExplanation(
+          "Do you want the OS to see this " + type_q.getAnswer() +
+          " as a hard-disk, or as a read-only in-memory cd-rom?");
+      cdrom_q.addAnswer("disk", "false", "Hard-disk");
+      cdrom_q.addAnswer("cd-rom", "true", "CD-ROM drive");
+      cdrom_q.setDefault("disk");
+      if (floppy) {
+        cdrom_q.setAnswer("false");
+        *os << "      cdrom = "
+            << "false"
+            << ";\n";
+      } else
+        *os << "      cdrom = " << cdrom_q.ask() << ";\n";
+      if (cdrom_q.getAnswer() == "cd-rom" || cdrom_q.getAnswer() == "true") {
+        FreeTextQuestion img_q;
+        img_q.setQuestion("What file should " + disk_q->getAnswer() + " use?");
+        img_q.setExplanation(
+            "Enter the path to the file to use for this disk.");
+        *os << "      "
+            << "file = \"" << img_q.ask() << "\";\n";
+      } else {
+        /* For a RAM DISK, we need to know what
+         * size it should be.
+         */
+        MultipleChoiceQuestion unit_q;
+        unit_q.setQuestion(
+            "What unit do you want to use to specify the disk size?");
+        unit_q.setExplanation("This is needed to create the RAMDISK.");
+        unit_q.addAnswer("KB", "K", "Kilobytes");
+        unit_q.addAnswer("MB", "M", "Megabytes");
+        unit_q.addAnswer("GB", "G", "Gigabytes");
+        unit_q.setDefault("MB");
+        unit_q.ask();
+        NumberQuestion size_q;
+        size_q.setQuestion("How many " + unit_q.getAnswer() +
+                           "Bytes should the disk be?");
+        size_q.setExplanation("This is needed to create the RAMDISK.");
+        size_q.setRange(1, 1024);
+        size_q.setDefault("10");
+        size_q.ask();
+        *os << "      size = \"" << size_q.getAnswer() << unit_q.getAnswer()
+            << "\";\n";
+      }
     }
-
-    /* We need to know whether to emulate this as
-     * a cd-rom, or as a hard-disk.
-     */
-    MultipleChoiceQuestion cdrom_q;
-    cdrom_q.setQuestion("Should " + disk_q->getAnswer() +
-                        " be a disk or a cd-rom device?");
-    cdrom_q.setExplanation("Do you want the OS to see this " +
-                           type_q.getAnswer() +
-                           " as a hard-disk, or as a cd-rom?");
-    cdrom_q.addAnswer("disk", "false", "Hard-disk");
-    cdrom_q.addAnswer("cd-rom", "true", "CD-ROM drive");
-    cdrom_q.setDefault("disk");
 
     /* We also need to know whether this is a
      * writeable or a read-only device.
@@ -193,7 +239,7 @@ void add_disks(ShrinkingChoiceQuestion *disk_q, ostream *os) {
     ro_q.addAnswer("yes", "true", "read-only");
     ro_q.setDefault("no");
 
-    if (cdrom_q.ask() == "true") {
+    if (cdrom_q.getAnswer() == "true") {
       /* CD-ROMs are always read-only.
        */
       ro_q.setAnswer("true");
@@ -206,8 +252,6 @@ void add_disks(ShrinkingChoiceQuestion *disk_q, ostream *os) {
        */
       ro_q.ask();
     }
-
-    *os << "      cdrom = " << cdrom_q.getAnswer() << ";\n";
     *os << "      read_only = " << ro_q.getAnswer() << ";\n";
 
     /* The user can define a custom model
@@ -238,9 +282,19 @@ void add_disks(ShrinkingChoiceQuestion *disk_q, ostream *os) {
 }
 
 /**
- * Entry point for configuration.
+ * Main program entry point.
  **/
 int main_cfg(int argc, char *argv[]) {
+  /* Banner
+   */
+#if defined _WIN32 && defined HAVE_PCAP
+  if (!load_wpcap()) {
+    printf("Failed to load wpcap.dll; is Npcap installed?\n");
+    return -1;
+  }
+#endif
+  print_axpbox_banner("AXPbox Alpha Emulator configuration utility");
+
   /* Explanation
    */
   printf("We are now going to set up an initial configuration file for the "
@@ -248,6 +302,27 @@ int main_cfg(int argc, char *argv[]) {
   printf("This file will be saved as es40.cfg in the current directory.\n\n");
   printf(
       "For more detailed information to the current question, answer '?'.\n");
+
+  /* Check if es40.cfg already exists.
+   */
+  ifstream check_file("es40.cfg");
+  if (check_file.is_open()) {
+    check_file.close();
+    MultipleChoiceQuestion overwrite_q;
+    overwrite_q.setQuestion(
+        "The file es40.cfg already exists. Do you want to overwrite it?");
+    overwrite_q.setExplanation("If you answer 'no', the program will exit "
+                               "without overwriting the existing file.");
+    overwrite_q.addAnswer("no", "no", "Keep the existing file and exit.");
+    overwrite_q.addAnswer("yes", "yes",
+                          "Overwrite the existing configuration file.");
+    overwrite_q.setDefault("no");
+
+    if (overwrite_q.ask() == "no") {
+      printf("Exiting without changing es40.cfg.\n");
+      return 0;
+    }
+  }
 
   /* Open es40.cfg for writing.
    */
@@ -273,18 +348,19 @@ int main_cfg(int argc, char *argv[]) {
   gui_q.addAnswer("SDL", "sdl",
                   "Simple Directmedia Layer. Preferred GUI mechanism.");
 #endif
-#if defined(HAVE_X11)
-  gui_q.addAnswer("X11", "X11", "Unix X-Windows GUI support.");
-#endif
-#if defined(_WIN32)
-  gui_q.addAnswer("win32", "win32", "Windows 32 GUI support.");
-#endif
+  //#if defined(HAVE_X11)
+  //	gui_q.addAnswer("X11", "X11", "Unix X-Windows GUI support.");
+  //#endif
+  //#if defined(_WIN32)
+  //	gui_q.addAnswer("win32", "win32", "Windows 32 GUI support.");
+  //#endif
 
   if (gui_q.countAnswers() == 1) {
     /* The only valid answer is "none".
      */
-    cout << "\nSorry, the GUI is not available! (no SDL, win32 or X11 support "
-            "found).\n";
+    // cout << "\nSorry, the GUI is not available! (no SDL, win32 or X11 support
+    // found).\n";
+    cout << "\nSorry, the GUI is not available! (no SDL support found).\n";
     gui_q.setAnswer("");
   } else {
     /* Ask what GUI to use?
@@ -297,6 +373,67 @@ int main_cfg(int argc, char *argv[]) {
      */
     os << "gui = " << gui_q.getAnswer() << "\n";
     os << "{\n";
+
+    MultipleChoiceQuestion vid_scale_q;
+    vid_scale_q.setQuestion(
+        "Do you want to set a custom scale ratio for the display output?");
+    vid_scale_q.setExplanation(
+        "The display output is scaled automatically based on system DPI by "
+        "default, which can be overrided.");
+    vid_scale_q.addAnswer("no", "no",
+                          "Set the display scale ratio automatically.");
+    vid_scale_q.addAnswer("yes", "yes", "Set a custom display scale ratio.");
+    vid_scale_q.setDefault("no");
+    vid_scale_q.ask();
+
+    NumberQuestion vid_scale_ratio_q;
+    /* If none was answered, we don't need to
+     * ask for arguments.
+     */
+    if (vid_scale_q.getAnswer() != "no") {
+      vid_scale_ratio_q.setQuestion(
+          "How many times should the display be scaled?");
+      vid_scale_ratio_q.setExplanation(
+          "Type an integer to set the scale ratio for the display output.");
+      vid_scale_ratio_q.setRange(1, 10);
+      vid_scale_ratio_q.setDefault("1");
+
+      os << "  video.scale_ratio = " << vid_scale_ratio_q.ask() << ";\n";
+    }
+
+    MultipleChoiceQuestion vid_linear_q;
+    vid_linear_q.setQuestion(
+        "Should the display output be nearest or bilinear?");
+    vid_linear_q.setExplanation(
+        "This affects the resized display output. Nearest looks pixel-y but "
+        "harsh, while linear does not look as harsh.");
+    vid_linear_q.addAnswer("nearest", "false", "Nearest display output.");
+    vid_linear_q.addAnswer("bilinear", "true", "Bilinear display output");
+    vid_linear_q.setDefault("bilinear");
+
+    os << "  video.linear = " << vid_linear_q.ask() << ";\n";
+
+    MultipleChoiceQuestion vid_scale_change_enable_q;
+    vid_scale_change_enable_q.setQuestion(
+        "Enable runtime display scale changes via hotkeys?");
+    vid_scale_change_enable_q.setExplanation(
+        "If enabled, the display scale ratio can be adjusted on the fly "
+        "while the emulator is running, without restarting. The change is "
+        "not persisted back to this config file.\n"
+        "Currently the assigned keys are fixed:\n"
+        "  Ctrl+PageUp   - increase scale by 1 (clamped at 8x)\n"
+        "  Ctrl+PageDown - decrease scale by 1 (clamped at 1x)\n"
+        "These key assignments may become user-configurable in the future.");
+    vid_scale_change_enable_q.addAnswer(
+        "no", "false", "Disable runtime scale change hotkeys.");
+    vid_scale_change_enable_q.addAnswer(
+        "yes", "true",
+        "Enable Ctrl+PageUp / Ctrl+PageDown to adjust scaling at runtime.");
+    vid_scale_change_enable_q.setDefault("no");
+
+    os << "  video.scale_change_enable = " << vid_scale_change_enable_q.ask()
+       << ";\n";
+
     os << "}\n\n";
   }
 
@@ -353,19 +490,6 @@ int main_cfg(int argc, char *argv[]) {
 
   os << "  rom.srm = \"" << rom_q.ask() << "\";\n";
 
-  rom_q.setQuestion("Where should the decompressed ROM image be saved?");
-  rom_q.setExplanation(
-      "This file will be created the first time the emulator runs.");
-#if defined(_WIN32)
-  rom_q.setDefault("rom\\decompressed.rom");
-#elif defined(__VMS)
-  rom_q.setDefault("[.ROM]DECOMPRESSED.ROM");
-#else
-  rom_q.setDefault("rom/decompressed.rom");
-#endif
-
-  os << "  rom.decompressed = \"" << rom_q.ask() << "\";\n";
-
   rom_q.setQuestion("Where should the Flash ROM image be saved?");
 #if defined(_WIN32)
   rom_q.setDefault("rom\\flash.rom");
@@ -397,27 +521,10 @@ int main_cfg(int argc, char *argv[]) {
   cpu_q.setQuestion("How many CPU's do you want in the system?");
   cpu_q.setRange(1, 4);
   cpu_q.setDefault("1");
-  cpu_q.setExplanation(
-      "The normal value for the number of CPU's is 1. More CPU's are very "
-      "experimental, and currently doesn't work.");
+  cpu_q.setExplanation("The normal value for the number of CPU's is 1. Up to "
+                       "four are supported on the Tsunami platform.");
 
   cpu_q.ask();
-
-  MultipleChoiceQuestion icache_q;
-
-  icache_q.setQuestion("Do you want the ICACHE on the CPU's enabled?");
-  icache_q.setExplanation(
-      "The ICACHE makes the CPU emulation more accurate, but also slows down "
-      "the emulator. Decent operating systems shouldn't depend on this.");
-  icache_q.setDefault("no");
-  icache_q.addAnswer("yes", "true",
-                     "ICACHE enabled. Performance hit, but may be necessary "
-                     "for some software.");
-  icache_q.addAnswer(
-      "no", "false",
-      "ICACHE disabled. Better performance, but may not always work.");
-
-  icache_q.ask();
 
   MultipleChoiceQuestion skip_memtest_hack_q;
 
@@ -438,11 +545,12 @@ int main_cfg(int argc, char *argv[]) {
 
   NumberQuestion mhz_q;
 
-  mhz_q.setQuestion("What should the reported speed of the CPU's be in MHz?");
+  mhz_q.setQuestion("What should the reported to guest platform speed of the "
+                    "CPU's be in MHz?");
   mhz_q.setExplanation("This only changes the CPU speed reported to the OS; "
                        "not the speed of the emulation.");
   mhz_q.setRange(10, 1250);
-  mhz_q.setDefault("800");
+  mhz_q.setDefault("500");
 
   mhz_q.ask();
 
@@ -453,7 +561,6 @@ int main_cfg(int argc, char *argv[]) {
     os << "  cpu" << i << " = ev68cb\n";
     os << "  {\n";
     os << "    speed = " << mhz_q.getAnswer() << "M;\n";
-    os << "    icache = " << icache_q.getAnswer() << ";\n";
     os << "    skip_memtest_hack = " << skip_memtest_hack_q.getAnswer()
        << ";\n";
     os << "  }\n\n";
@@ -466,17 +573,52 @@ int main_cfg(int argc, char *argv[]) {
   /* There are two serial ports (0 and 1).
    */
   for (int i = 0; i < 2; i++) {
-    NumberQuestion port_q;
-    port_q.setQuestion("What telnet port should serial " + i2s(i) + " listen?");
-    port_q.setRange(1, 65535);
-    /* The default ports are 21264 and 21265.
+    /* Port number — accepts a numeric port or "none" for a bit-bucket
+     * (null_attach) UART.
      */
+    FreeTextQuestion port_q;
+    port_q.setQuestion("What telnet port should serial " + i2s(i) + " listen?");
+    port_q.setOptions("1-65535 or 'none'");
+    /* The default ports are 21264 and 21265. */
     port_q.setDefault(i2s(21264 + i));
     port_q.setExplanation("You will telnet to this port to establish a "
                           "connection with emulated serial port " +
-                          i2s(i) + ".");
+                          i2s(i) +
+                          ".\n"
+                          "Answer 'none' to make this port a bit-bucket: the "
+                          "UART still exists on the bus and "
+                          "presents itself to the guest as a healthy idle "
+                          "16550 (THRE/TSRE, CTS/DSR), but no "
+                          "telnet listener is opened and any bytes the guest "
+                          "transmits are silently discarded. "
+                          "Useful since two are required by the platform "
+                          "firmwares in case you don't need them.");
 
-    port_q.ask();
+    bool is_null = false;
+    for (;;) {
+      port_q.ask();
+      if (port_q.getAnswer() == "none") {
+        is_null = true;
+        break;
+      }
+      try {
+        int v = s2i(port_q.getAnswer());
+        if (v >= 1 && v <= 65535)
+          break;
+        cout << "\nPlease enter a port in 1..65535, or 'none'.\n\n";
+      } catch (CLogicException) {
+        cout << "\nPlease enter an integer port number, or 'none'.\n\n";
+      }
+    }
+
+    if (is_null) {
+      /* Bit-bucket port — skip the action/args prompts entirely. */
+      os << "  serial" << i << " = serial\n";
+      os << "  {\n";
+      os << "    null_attach = true;\n";
+      os << "  }\n\n";
+      continue;
+    }
 
     FreeTextQuestion exec_q;
     exec_q.setQuestion(
@@ -522,8 +664,13 @@ int main_cfg(int argc, char *argv[]) {
       /* Quote the program path/name in "",
        * as it may contain spaces.
        */
-      os << "    action = \"\"\"" << exec_q.getAnswer() << "\"\" "
-         << arg_q.getAnswer() << "\";\n";
+
+      string exec = exec_q.getAnswer();
+      if (exec.size() >= 2 && exec.front() == '"' && exec.back() == '"')
+        exec = exec.substr(1, exec.size() - 2);
+
+      os << "    action = \"\"\"" << exec << "\"\" " << arg_q.getAnswer()
+         << "\";\n";
 #else
       os << "    action = \"" << exec_q.getAnswer() << " " << arg_q.getAnswer()
          << "\";\n";
@@ -536,35 +683,22 @@ int main_cfg(int argc, char *argv[]) {
    * Floppy Disks                *
    * **************************** */
 
-  MultipleChoiceQuestion fdc_q;
+  /* The floppy controller is always present. The user only chooses
+   * whether to attach any drives to it.
+   */
+  ShrinkingChoiceQuestion fd_q;
+  fd_q.setQuestion("Do you want to add any disks to the Floppy controller?");
+  fd_q.setDefault("none");
+  fd_q.setExplanation("Here, you can add floppy drives to your system.");
+  fd_q.addAnswer("none", "", "stop adding disks");
+  fd_q.addAnswer("0", "disk0.0", "A:");
+  fd_q.addAnswer("1", "disk0.1", "B:");
 
-  fdc_q.setQuestion("Do you want a floppy controller in your system?");
-  fdc_q.setExplanation(
-      "You need a floppy controller if you want to add floppy drives.");
-  fdc_q.setDefault("no");
-  fdc_q.addAnswer("yes", "fdc", "FDC present.");
-  fdc_q.addAnswer("no", "", "FDC not present.");
-
-  if (fdc_q.ask() != "") {
-    /* Use a ShrinkingChoiceQuestion; once
-     * a disk position has been used, it
-     * can't be used again.
-     */
-    ShrinkingChoiceQuestion fd_q;
-    fd_q.setQuestion("Do you want to add any disks to the Floppy controller?");
-    fd_q.setDefault("none");
-    fd_q.setExplanation("Here, you can add floppy drives to your system.");
-    fd_q.addAnswer("none", "", "stop adding disks");
-    fd_q.addAnswer("0", "disk0.0", "A:");
-    fd_q.addAnswer("1", "disk0.1", "B:");
-
-    os << "  fdc0 = floppy\n";
-    os << "  {\n";
-    /* Ask what disks to add.
-     */
-    add_disks(&fd_q, &os);
-    os << "  }\n\n";
-  }
+  os << "  fdc0 = floppy\n";
+  os << "  {\n";
+  /* Ask what disks to add. */
+  add_disks(&fd_q, &os, true);
+  os << "  }\n\n";
 
   /* **************************** *
    * ALi IDE Disks                *
@@ -618,9 +752,9 @@ int main_cfg(int argc, char *argv[]) {
     vga_q.setExplanation(
         "Functionality of the different cards is pretty much the same; some "
         "OS'es seem to have a preference, though.");
-    vga_q.setDefault("Cirrus");
+    vga_q.setDefault("S3");
     vga_q.addAnswer("none", "", "No graphics card");
-    vga_q.addAnswer("Cirrus", "cirrus", "Cirrus CL-GD something");
+    // vga_q.addAnswer("Cirrus", "cirrus", "Cirrus CL-GD something");
     vga_q.addAnswer("S3", "s3", "S3 Trio 64");
 #if defined(HAVE_RADEON)
     /* Radeon support is optional, and currently
@@ -644,11 +778,15 @@ int main_cfg(int argc, char *argv[]) {
     rom_q.setQuestion("Where can the VGA BIOS ROM image be found?");
     rom_q.setExplanation("This file is required.");
 #if defined(_WIN32)
-    rom_q.setDefault("rom\\vgabios-0.6a.bin");
+    rom_q.setDefault("rom\\CHANGE_ME_TO_CORRECT_VGA_BIOS_FOR_SELECTED_CARD_NOT_"
+                     "VGABIOS-0.6a.bin");
 #elif defined(__VMS)
-    rom_q.setDefault("[.ROM]VGABIOS_0_6A.BIN");
+    rom_q.setDefault("[.ROM]CHANGE_ME_TO_CORRECT_VGA_BIOS_FOR_SELECTED_CARD_"
+                     "NOT_VGABIOS-0.6a.bin");
 #else
-    rom_q.setDefault("rom/vgabios-0.6a.bin");
+    rom_q.setDefault(
+        "rom/"
+        "CHANGE_ME_TO_CORRECT_VGA_BIOS_FOR_SELECTED_CARD_NOT_VGABIOS-0.6a.bin");
 #endif
 
     os << "  " << pci_q.ask() << " = " << vga_q.getAnswer() << "\n";
@@ -681,9 +819,8 @@ int main_cfg(int argc, char *argv[]) {
 #endif
   card_q.addAnswer("scsi", "sym53c810",
                    "Symbios 53C810 narrow SCSI controller");
-  card_q.addAnswer(
-      "wide scsi", "sym53c895",
-      "Symbios 53C895 wide SCSI controller (doesn't work with OpenVMS)");
+  card_q.addAnswer("es1370 audio", "es1370",
+                   "ES1370 Audio card (works only with Windows NT 4.0)");
 
   /* Loop until there are no more PCI
    * cards to add.
@@ -731,7 +868,7 @@ int main_cfg(int argc, char *argv[]) {
 #endif
 #if defined(__linux__)
       type_q.addAnswer("tap", "tap",
-                        "Linux TAP (virtual interface, bridgeable)");
+                       "Linux TAP (virtual interface, bridgeable)");
 #if !defined(HAVE_PCAP)
       type_q.setDefault("tap");
 #endif
@@ -756,7 +893,10 @@ int main_cfg(int argc, char *argv[]) {
         } else {
           int i = 1;
           for (d = alldevs; d; d = d->next) {
-            if_q.addAnswer(i2s(i), d->name, d->name);
+            const char *description =
+                d->description ? d->description : "No description available";
+            if_q.addAnswer(i2s(i), d->name,
+                           string(d->name) + " (" + description + ")");
             i++;
           }
         }
@@ -811,38 +951,38 @@ int main_cfg(int argc, char *argv[]) {
       /* Ask what disks to add.
        */
       add_disks(&disk_q, &os);
-    } else if (card_q.getAnswer() == "sym53c895") {
-      /* Use a ShrinkingChoiceQuestion; once
-       * a disk position has been used, it
-       * can't be used again.
-       */
-      ShrinkingChoiceQuestion disk_q;
-      disk_q.setQuestion(
-          "Do you want to add any disks to the Sym53C895 controller?");
-      disk_q.setDefault("none");
-      disk_q.setExplanation(
-          "Add disks. Select 'none' if you have no more disks to add.");
-      disk_q.addAnswer("none", "", "stop adding disks");
-      /* The wide SCSI controller supports
-       * devices at targets 0..6 and 8..15.
-       */
-      for (int i = 0; i < 16; i++) {
-        if (i != 7)
-          disk_q.addAnswer(i2s(i), "disk0." + i2s(i), "Target " + i2s(i));
-      }
-      /* Ask what disks to add.
-       */
-      add_disks(&disk_q, &os);
     }
     os << "  }\n\n";
   }
 
-  MultipleChoiceQuestion mouse_q;
-  mouse_q.setQuestion("Would you like to emulate the mouse?");
-  mouse_q.setExplanation("The mouse is not really working yet... :-(");
-  mouse_q.addAnswer("no", "false", "Disable the mouse");
-  mouse_q.addAnswer("yes", "true", "Enable the mouse");
-  mouse_q.setDefault("no");
+#ifdef _WIN32
+  MultipleChoiceQuestion mpu_q;
+  mpu_q.setQuestion("Would you like to emulate the MPU-401 MIDI device?");
+  mpu_q.addAnswer("no", "", "Disable the MPU-401");
+  mpu_q.addAnswer("yes", "yes", "Enable the MPU-401");
+  mpu_q.setDefault("no");
+  mpu_q.ask();
+
+  if (mpu_q.getAnswer() != "") {
+    MultipleChoiceQuestion midi_q;
+    midi_q.setQuestion(
+        "What MIDI out device should we connect to (answer ? for a list)?");
+    midi_q.setExplanation("Choose 'list' to get a list at run-time.");
+    midi_q.addAnswer("list", "", "Get a list at run-time");
+
+    MIDIOUTCAPSA caps;
+    for (UINT i = 0; i < midiOutGetNumDevs(); i++) {
+      midiOutGetDevCapsA(i, &caps, sizeof(caps));
+      midi_q.addAnswer(i2s(i + 1), i2s(i), string(caps.szPname));
+    }
+
+    os << "  mpu = mpu401\n";
+    os << "  {\n";
+    os << "     midi_out = " << midi_q.ask() << ";\n";
+    os << "  }\n\n";
+  }
+
+#endif
 
   MultipleChoiceQuestion vgacons_q;
   vgacons_q.setQuestion("Where would you like console output to go?");
@@ -853,16 +993,13 @@ int main_cfg(int argc, char *argv[]) {
 
   if (vga_q.getAnswer() != "") {
     /* If a VGA card is present, ask about
-     * the mouse and the console.
+     * the console.
      */
-    mouse_q.ask();
     vgacons_q.ask();
   } else {
-    /* No VGA card present, mouse support
-     * is disabled, and the console goes
+    /* No VGA card present, the console goes
      * to serial port 0.
      */
-    mouse_q.setAnswer("false");
     vgacons_q.setAnswer("false");
   }
 
@@ -872,20 +1009,101 @@ int main_cfg(int argc, char *argv[]) {
                        "file. Leave blank if not wanted.");
   lpt_q.ask();
 
+  MultipleChoiceQuestion pmu_q;
+  pmu_q.setQuestion(
+      "Enable the M7101 power-management / ACPI device at PCI 0:17?");
+  pmu_q.setExplanation("AliM1543C chipset power management unit");
+  pmu_q.addAnswer("yes", "true", "Enable the PMU");
+  pmu_q.addAnswer("no", "false", "Disable the PMU");
+  pmu_q.setDefault("yes");
+  pmu_q.ask();
+
+  MultipleChoiceQuestion usb_q;
+  usb_q.setQuestion("Enable the USB OHCI controller at PCI 0:19?");
+  usb_q.setExplanation("AliM1543C chipset USB controller");
+  usb_q.addAnswer("yes", "true", "Enable the USB controller");
+  usb_q.addAnswer("no", "false", "Disable the USB controller");
+  usb_q.setDefault("yes");
+  usb_q.ask();
+
+  MultipleChoiceQuestion arc_compat_q;
+  arc_compat_q.setQuestion(
+      "Which OS the reported year should be compatible with?");
+  arc_compat_q.setExplanation(
+      "This only affects the year reported to the guest. Use \"nt\" if "
+      "planning to run Windows OSes.");
+  arc_compat_q.addAnswer("nt", "true",
+                         "Report the year as an offset from 1980, as expected "
+                         "by Windows OSes and AlphaBIOS.");
+  arc_compat_q.addAnswer(
+      "vms", "false",
+      "Report the year as expected by OpenVMS, Tru64 UNIX, Linux and BSDs.");
+  arc_compat_q.setDefault("vms");
+  arc_compat_q.ask();
+  os << "\n  arc_year_compat = " << arc_compat_q.ask() << ";\n\n";
+
+  MultipleChoiceQuestion time_q;
+  time_q.setQuestion(
+      "Do you want to set a fixed date and time when the VM starts?");
+  time_q.setExplanation(
+      "By default, the VM's date and time is initialized to the current host "
+      "date and time at startup. If you want to set a fixed date and time "
+      "instead, you can do so here.");
+  time_q.addAnswer("yes", "true", "Set a fixed date and time");
+  time_q.addAnswer("no", "false",
+                   "Initialize the VM's date and time to the current host date "
+                   "and time at startup");
+  time_q.setDefault("no");
+  time_q.ask();
+
+  if (time_q.getAnswer() == "yes") {
+    for (;;) {
+      FreeTextQuestion datetime_q;
+      datetime_q.setQuestion("What date and time should the VM have at "
+                             "startup? (format: YYYY-MM-DD HH:MM:SS)");
+      datetime_q.setExplanation(
+          "Enter the date and time in the format shown above. For example, "
+          "'2000-01-01 12:00:00' for January 1st, 2000 at noon.");
+      datetime_q.ask();
+      struct tm ft = {};
+      int n = sscanf(datetime_q.getAnswer().c_str(), "%d-%d-%d %d:%d:%d",
+                     &ft.tm_year, &ft.tm_mon, &ft.tm_mday, &ft.tm_hour,
+                     &ft.tm_min, &ft.tm_sec);
+      if (n < 3) {
+        cout << "\nInvalid date/time format.\n";
+        continue;
+      }
+      std::string datestr =
+          i2s(ft.tm_year) + "-" + i2s(ft.tm_mon) + "-" + i2s(ft.tm_mday);
+      if (n >= 4)
+        datestr += " " + i2s(ft.tm_hour);
+      if (n >= 5)
+        datestr += ":" + i2s(ft.tm_min);
+      if (n >= 6)
+        datestr += ":" + i2s(ft.tm_sec);
+      os << "  time = \"" << datestr << "\";\n\n";
+      break;
+    }
+  }
+
   os << "  pci0.7 = ali\n";
   os << "  {\n";
-  os << "    mouse.enabled = " << mouse_q.getAnswer() << ";\n";
   os << "    vga_console = " << vgacons_q.getAnswer() << ";\n";
   if (lpt_q.getAnswer() != "")
     os << "    lpt.outfile = \"" << lpt_q.getAnswer() << "\"\n";
   os << "  }\n\n";
 
-  /* The USB device is a fixed part, and
-   * currently not configurable.
-   */
-  os << "  pci0.19 = ali_usb\n";
-  os << "  {\n";
-  os << "  }\n";
+  if (usb_q.getAnswer() == "true") {
+    os << "  pci0.19 = ali_usb\n";
+    os << "  {\n";
+    os << "  }\n";
+  }
+
+  if (pmu_q.getAnswer() == "true") {
+    os << "  pci0.17 = ali_pmu\n";
+    os << "  {\n";
+    os << "  }\n";
+  }
 
   os << "}\n";
 

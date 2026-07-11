@@ -26,6 +26,11 @@
  * serve the general public.
  */
 
+/**
+ * \file
+ * Contains the definitions for the emulated Keyboard and mouse devices and
+ *controller.
+ **/
 #if !defined(INCLUDED_KEYBOARD_H)
 #define INCLUDED_KEYBOARD_H
 
@@ -53,10 +58,13 @@ public:
   virtual u64 ReadMem(int index, u64 address, int dsize);
   virtual int SaveState(FILE *f);
   virtual int RestoreState(FILE *f);
-  void run();
+  virtual void run();
   void execute();
 
   void gen_scancode(u32 key);
+  void mouse_motion(int delta_x, int delta_y, int delta_z,
+                    unsigned button_state);
+  void set_mouse_capture(bool val);
 
   virtual void init();
   virtual void start_threads();
@@ -66,6 +74,8 @@ private:
   std::unique_ptr<std::thread> myThread;
   std::atomic_bool myThreadDead{false};
   bool StopThread;
+
+  std::mutex kbdLock;
 
   u8 read_60();
   void write_60(u8 data);
@@ -81,7 +91,8 @@ private:
   void ctrl_to_mouse(u8 value);
   bool mouse_enQ_packet(u8 b1, u8 b2, u8 b3, u8 b4);
   void mouse_enQ(u8 mouse_data);
-  unsigned periodic();
+  void kbd_update_irq();
+  void kbd_service();
 
   //  void kbd_clock();
   void create_mouse_packet(bool force_enq);
@@ -173,6 +184,7 @@ private:
       s16 delayed_dz;
       u8 im_request;
       bool im_mode;
+      bool data_pending;
     } mouse;
 
     /// internal keyboard buffer

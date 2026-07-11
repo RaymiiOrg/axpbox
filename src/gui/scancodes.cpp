@@ -31,9 +31,14 @@
  *  Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307 USA
  */
 
+/**
+ * \file
+ * Contains scancodes used to translate host keys to scancodes for the
+ * emulated keyboard controller.
+ **/
 #include "../StdAfx.hpp"
 
-//#include "bochs.h"
+//#include "bochs.hpp"
 #include "scancodes.hpp"
 
 unsigned char translation8042[256] = {
@@ -167,7 +172,7 @@ scancode scancodes[BX_KEY_NBKEYS][3] = {
         // BX_KEY_CTRL_R ( ibm 64 )
         {"\xE0\x1D", "\xE0\x9D"},
         {"\xE0\x14", "\xE0\xF0\x14"},
-        {"\x58", "\xF0x58"},
+        {"\x58", "\xF0\x58"},
     },
 
     {

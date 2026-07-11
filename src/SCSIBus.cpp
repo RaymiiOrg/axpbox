@@ -26,6 +26,10 @@
  * serve the general public.
  */
 
+/**
+ * \file
+ * Contains definitions for the SCSI bus class.
+ **/
 #include "SCSIBus.hpp"
 #include "StdAfx.hpp"
 
@@ -184,7 +188,7 @@ int CSCSIBus::RestoreState(FILE *f) {
     return -1;
   }
 
-  r = fread(&ss, sizeof(long), 1, f);
+  fread(&ss, sizeof(long), 1, f);
   if (r != 1) {
     printf("%s: unexpected end of file!\n", devid_string);
     return -1;
@@ -195,7 +199,7 @@ int CSCSIBus::RestoreState(FILE *f) {
     return -1;
   }
 
-  r = fread(&state, sizeof(state), 1, f);
+  fread(&state, sizeof(state), 1, f);
   if (r != 1) {
     printf("%s: unexpected end of file!\n", devid_string);
     return -1;

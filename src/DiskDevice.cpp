@@ -26,6 +26,10 @@
  * serve the general public.
  */
 
+/**
+ * \file
+ * Contains code to use a raw device as a disk image.
+ **/
 #include "DiskDevice.hpp"
 #include "StdAfx.hpp"
 
@@ -108,7 +112,8 @@ CDiskDevice::CDiskDevice(CConfigurator *cfg, CSystem *sys, CDiskController *c,
 
   model_number = myCfg->get_text_value("model_number", filename);
 
-  printf("%s: Mounted device %s, %" PRId64 " %zd-byte blocks, %" PRId64 "/%ld/%ld.\n",
+  printf("%s: Mounted device %s, %" PRId64 " %zu-byte blocks, %" PRId64
+         "/%ld/%ld.\n",
          devid_string, filename, byte_size / state.block_size, state.block_size,
          cylinders, heads, sectors);
 }
@@ -140,8 +145,8 @@ bool CDiskDevice::seek_byte(off_t_large byte) {
 
 size_t CDiskDevice::read_bytes(void *dest, size_t bytes) {
 
-  //  printf("%s: read %d bytes @ %" LL
-  //  "d.\n",devid_string,bytes,state.byte_pos);
+  //  printf("%s: read %d bytes @ %" PRId64
+  //  ".\n",devid_string,bytes,state.byte_pos);
 #if defined(_WIN32)
   off_t_large byte_from = (state.byte_pos / dev_block_size) * dev_block_size;
   off_t_large byte_to =
@@ -164,7 +169,8 @@ size_t CDiskDevice::read_bytes(void *dest, size_t bytes) {
   ReadFile(handle, buffer, byte_len, &r, NULL);
 
   if (r != (byte_len)) {
-    printf("%s: Tried to read %d bytes from pos %ld, but could only read %d bytes!\n",
+    printf("%s: Tried to read %lu bytes from pos %" PRId64
+           "d, but could only read %lu bytes!\n",
            devid_string, byte_len, byte_from, r);
     printf("%s: Error %ld.\n", devid_string, GetLastError());
   }
@@ -206,7 +212,8 @@ size_t CDiskDevice::write_bytes(void *src, size_t bytes) {
     SetFilePointerEx(handle, a, NULL, FILE_BEGIN);
     ReadFile(handle, buffer, (DWORD)dev_block_size, &r, NULL);
     if (r != (dev_block_size)) {
-      printf("%s: Tried to read %d bytes from pos %ld, but could only read %zd bytes!\n",
+      printf("%s: Tried to read %zu bytes from pos %" PRId64
+             "d, but could only read %lu bytes!\n",
              devid_string, dev_block_size, byte_from, r);
       FAILURE(InvalidArgument, "Error during device write operation. "
                                "Terminating to avoid disk corruption.");
@@ -223,7 +230,8 @@ size_t CDiskDevice::write_bytes(void *src, size_t bytes) {
     ReadFile(handle, buffer + byte_len - dev_block_size, (DWORD)dev_block_size,
              &r, NULL);
     if (r != (dev_block_size)) {
-      printf("%s: Tried to read %d bytes from pos %ld, but could only read %zd bytes!\n",
+      printf("%s: Tried to read %zu bytes from pos %" PRId64
+             "d, but could only read %lu bytes!\n",
              devid_string, dev_block_size, byte_to - dev_block_size, r);
       FAILURE(InvalidArgument, "Error during device write operation. "
                                "Terminating to avoid disk corruption.");
@@ -240,7 +248,8 @@ size_t CDiskDevice::write_bytes(void *src, size_t bytes) {
   WriteFile(handle, buffer, byte_len, &r, NULL);
 
   if (r != byte_len) {
-    printf("%s: Tried to write %d bytes to pos %ld, but could only write %d bytes!\n",
+    printf("%s: Tried to write %lu bytes to pos %" PRId64
+           "d, but could only write %lu bytes!\n",
            devid_string, byte_len, byte_from, r);
     FAILURE(InvalidArgument, "Error during device write operation. Terminating "
                              "to avoid disk corruption.");
@@ -253,5 +262,16 @@ size_t CDiskDevice::write_bytes(void *src, size_t bytes) {
   r = fwrite(src, 1, bytes, handle);
   state.byte_pos = ftell_large(handle);
   return r;
+#endif
+}
+
+void CDiskDevice::flush() {
+  if (read_only)
+    return;
+#if defined(_WIN32)
+  FlushFileBuffers(handle);
+#else
+  if (handle)
+    fflush(handle);
 #endif
 }

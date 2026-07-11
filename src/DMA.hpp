@@ -26,6 +26,10 @@
  * serve the general public.
  */
 
+/**
+ * \file
+ * Contains the definitions for the emulated DMA controller.
+ **/
 #if !defined(INCLUDED_DMA_H)
 #define INCLUDED_DMA_H
 
@@ -47,9 +51,12 @@ public:
   virtual int RestoreState(FILE *f);
 
   void set_request(int index, int channel, int data);
-  void send_data(int channel, void *data);
-  void recv_data(int channel, void *data);
+  void send_data(int channel, void *data, size_t length = 0);
+  void recv_data(int channel, void *data, size_t length = 0);
   int get_count(int channel) { return state.channel[channel].count; };
+  size_t get_transfer_size(int channel) {
+    return (size_t)state.channel[channel].count + 1;
+  };
 
 private:
   void do_dma();

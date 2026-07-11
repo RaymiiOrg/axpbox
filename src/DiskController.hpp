@@ -26,6 +26,10 @@
  * serve the general public.
  */
 
+/**
+ * \file
+ * Contains definitions for the disk controller base class.
+ **/
 #if !defined(__DISKCONTROLLER_H__)
 #define __DISKCONTROLLER_H__
 

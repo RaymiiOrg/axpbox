@@ -1,22 +1,42 @@
 cmake_minimum_required(VERSION 3.10)
-set(CMAKE_CXX_STANDARD 11)
+set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
-project(AXPBox VERSION 1.1.3)
+project(AXPBox VERSION 1.2.0)
+
+# x86-64 JIT (requires the asmjit sources in third_party/asmjit; see README)
+option(ES40_DISABLE_ASMJIT "Disable the x86-64 JIT (asmjit)" ON)
 
 # Source files
 file(GLOB srcs src/*.cpp src/base/*.cpp src/gui/*.cpp)
 file(GLOB include_sources src/base/*WIN32.cpp src/base/*POSIX.cpp)
 list(REMOVE_ITEM srcs ${include_sources})
+# Cirrus is not ported to the MAME-derived VGA core (disabled upstream too)
+list(REMOVE_ITEM srcs ${CMAKE_SOURCE_DIR}/src/Cirrus.cpp)
 
 add_executable(axpbox ${srcs} src/Main.cpp)
 target_include_directories(axpbox PRIVATE src src/base src/gui ${CMAKE_BINARY_DIR}/src)
+
+if (NOT ES40_DISABLE_ASMJIT)
+    if (NOT EXISTS ${CMAKE_SOURCE_DIR}/third_party/asmjit/CMakeLists.txt)
+        message(FATAL_ERROR "asmjit missing: clone it into third_party/asmjit\n"
+            "  git clone https://github.com/asmjit/asmjit third_party/asmjit\n"
+            "  git -C third_party/asmjit checkout 0bd5787b54b575ed94bf32ac452153b34385c514")
+    endif()
+    set(ASMJIT_NO_INSTALL ON)
+    add_subdirectory(third_party/asmjit)
+    target_sources(axpbox PRIVATE src/jit/jitengine.cpp)
+    target_compile_definitions(axpbox PRIVATE ES40_JIT)
+    target_include_directories(axpbox PRIVATE ${CMAKE_SOURCE_DIR}/third_party/asmjit/src)
+    target_link_libraries(axpbox asmjit)
+    message(STATUS "asmjit JIT enabled")
+endif()
 
 # Path to additional CMake modules
 set(CMAKE_MODULE_PATH ${CMAKE_SOURCE_DIR}/cmake)
 
 if (CMAKE_GENERATOR MATCHES "Visual Studio")
   add_definitions(-DNOMINMAX -D_WIN32_WINNT=0x0A00 -DLANG_CXX11 -DCOMPILER_MSVC -D__VERSION__=\"MSVC\")
-  add_definitions(-DWIN32 -DOS_WIN -D_MBCS -DWIN64 -DWIN32_LEAN_AND_MEAN -DNOGDI -DPLATFORM_WINDOWS)
+  add_definitions(-DWIN32 -DOS_WIN -D_MBCS -DWIN64 -DWIN32_LEAN_AND_MEAN -DPLATFORM_WINDOWS)
   add_definitions(/bigobj /nologo /EHsc /GF /FC /MP /Gm-)
   # Suppress warnings to reduce build log size.
   add_definitions(/wd4267 /wd4244 /wd4800 /wd4503 /wd4554 /wd4996 /wd4348 /wd4018)
@@ -116,7 +136,6 @@ check_symbol_exists(_stricasecmp "string.h" HAVE__STRICASECMP)
 check_symbol_exists(_stricmp "string.h" HAVE__STRICMP)
 
 # Features
-check_include_file("SDL/SDL.h" HAVE_SDL)
 check_include_file("X11/X.h" HAVE_X11)
 # Large file support (fopen64 / disk files > 2 GB)
 AXPBOX_TEST_LARGE_FILES(HAVE_LARGE_FILES)
@@ -143,16 +162,37 @@ endif()
 
 if (DISABLE_SDL STREQUAL "yes")
     set(HAVE_SDL 0)
+else()
+    find_package(SDL3 CONFIG QUIET)
+    if (SDL3_FOUND)
+        set(HAVE_SDL 1)
+        set(HAVE_SDL3 1)
+        message(STATUS "SDL3 found (system)")
+    elseif (EXISTS ${CMAKE_SOURCE_DIR}/third_party/SDL/CMakeLists.txt)
+        # Bundled SDL3 (git submodule third_party/SDL), built statically so
+        # the executable does not depend on an SDL3 shared library.
+        set(SDL_SHARED OFF CACHE BOOL "" FORCE)
+        set(SDL_STATIC ON CACHE BOOL "" FORCE)
+        set(SDL_TEST_LIBRARY OFF CACHE BOOL "" FORCE)
+        add_subdirectory(third_party/SDL EXCLUDE_FROM_ALL)
+        set(HAVE_SDL 1)
+        set(HAVE_SDL3 1)
+        message(STATUS "SDL3 built from bundled submodule (third_party/SDL, static)")
+    else()
+        set(HAVE_SDL 0)
+    endif()
 endif()
 if (DISABLE_X11 STREQUAL "yes")
     set(HAVE_X11 0)
 endif()
 
 if(HAVE_SDL)
-    target_link_libraries(axpbox SDL)
-    message(STATUS "sdl found. SDL graphics support enabled")
+    target_link_libraries(axpbox SDL3::SDL3)
+    message(STATUS "SDL3 found. SDL graphics support enabled")
 else()
-    message(WARNING "sdl not found. Building without SDL graphics support")
+    message(WARNING "SDL3 not found (no system SDL3 and third_party/SDL "
+                    "submodule not initialized; run: git submodule update "
+                    "--init). Building without SDL graphics support")
 endif()
 if(HAVE_X11)
     target_link_libraries(axpbox X11)
@@ -196,6 +236,7 @@ if (GIT_FOUND)
     set(PACKAGE_GITSHA "\"${GIT_SHA}\"")
 endif()
 
+set(VERSION "\"${PROJECT_VERSION}\"")
 set(PACKAGE ${PROJECT_NAME})
 set(PACKAGE_BUGREPORT "tglozar@gmail.com")
 set(PACKAGE_NAME string(TOLOWER ${PROJECT_NAME}))

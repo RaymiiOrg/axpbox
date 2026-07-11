@@ -26,6 +26,10 @@
  * serve the general public.
  */
 
+/**
+ * \file
+ * Contains definitions for the disk controller base class.
+ **/
 #include "DiskController.hpp"
 #include "Disk.hpp"
 #include "StdAfx.hpp"

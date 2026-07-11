@@ -29,12 +29,15 @@
 #include "System.hpp"
 #include "AlphaCPU.hpp"
 #include "DPR.hpp"
+#include "Flash.hpp"
 #include "StdAfx.hpp"
 #include "lockstep.hpp"
 
 #include <ctype.h>
 #include <signal.h>
 #include <stdlib.h>
+
+#include <thread>
 
 #define CLOCK_RATIO 10000
 
@@ -58,6 +61,11 @@ CSystem::CSystem(CConfigurator *cfg) {
   iNumMemories = 0;
   iNumCPUs = 0;
   iNumMemoryBits = (int)myCfg->get_num_value("memory.bits", false, 27);
+
+  // initialize SPD data according to configured memory size
+  const uint32_t total_mb =
+      static_cast<uint32_t>((1ULL << iNumMemoryBits) >> 20);
+  init_spd_from_config_mb(total_mb);
 
   //  iNumConfig = 0;
 #if defined(IDB)
@@ -99,8 +107,6 @@ CSystem::CSystem(CConfigurator *cfg) {
   } else
     CHECK_ALLOCATION(memory = calloc(1 << iNumMemoryBits, 1));
 
-  cpu_lock_mutex = new CFastMutex("cpu-locking-lock");
-
   printf("%s(%s): $Id: System.cpp,v 1.79 2008/06/12 07:29:44 iamcamiel Exp $\n",
          cfg->get_myName(), cfg->get_myValue());
 }
@@ -141,7 +147,7 @@ void CSystem::RegisterComponent(CSystemComponent *component) {
 }
 
 void CSystem::UnregisterComponent(CSystemComponent *component) {
- iNumComponents--;
+  iNumComponents--;
 }
 
 /**
@@ -247,7 +253,7 @@ void CSystem::Run() {
   int k;
 
 #if defined(DUMP_MEMMAP)
-  printf("ES40 Memory Map\n");
+  printf("AXPbox Memory Map\n");
   printf("Physical Address Size     Device/Index\n");
   printf("---------------- -------- -------------------------\n");
   for (i = 0; i < iNumMemories; i++) {
@@ -265,6 +271,10 @@ void CSystem::Run() {
   for (k = 0;; k++) {
     if (got_sigint)
       FAILURE(Graceful, "CTRL-C detected");
+
+    if (ProcessPendingReset())
+      continue;
+
     std::this_thread::sleep_for(std::chrono::milliseconds(100));
     for (i = 0; i < iNumComponents; i++)
       acComponents[i]->check_state();
@@ -325,29 +335,143 @@ int CSystem::SingleStep() {
 #if defined(DEBUG_PORTACCESS)
 u64 lastport;
 #endif // defined(DEBUG_PORTACCESS)
-void CSystem::cpu_lock(int cpuid, u64 address) {
-  SCOPED_FM_LOCK(cpu_lock_mutex);
+// EV6/EV68 Dcache blocks are 64 bytes; LDx_L/STx_C monitor that cache line.
+#define CPU_LOCK_MATCH_MASK U64(0x00000807ffffffc0)
+#define CPU_LOCK_IO_MASK U64(0x0000080000000000)
 
-  //  printf("cpu%d: lock %" PRIx64 ".   \n",cpuid,address);
-  state.cpu_lock_flags |= (1 << cpuid);
+static inline bool cpu_lock_matches(u64 locked_address, u64 address) {
+  return !((locked_address ^ address) & CPU_LOCK_MATCH_MASK);
+}
+
+static constexpr u32 CPU_LLSC_DMA_WRITER = 0x80000000U;
+static constexpr u32 CPU_LLSC_DMA_READERS = 0x7fffffffU;
+
+// EV68 HRM 4.6 requires an external writer to invalidate the locked cache
+// line. The gate makes the invalidating probe and RAM write atomic with
+// respect to the load/publish and test/store portions of LDx_L/STx_C.
+CSystem::CLLSCDRAMGuard::CLLSCDRAMGuard(CSystem *sys, bool active)
+    : system(active ? sys : nullptr) {
+  if (system)
+    system->cpu_llsc_enter();
+}
+
+CSystem::CLLSCDRAMGuard::~CLLSCDRAMGuard() {
+  if (system)
+    system->cpu_llsc_leave();
+}
+
+CSystem::CPCIDMAWriteGuard::CPCIDMAWriteGuard(CSystem *sys, bool active)
+    : system(active ? sys : nullptr) {
+  if (system)
+    system->pci_dma_write_enter();
+}
+
+CSystem::CPCIDMAWriteGuard::~CPCIDMAWriteGuard() {
+  if (system)
+    system->pci_dma_write_leave();
+}
+
+void CSystem::CPCIDMAWriteGuard::invalidate(u64 address, size_t bytes) {
+  if (system)
+    system->cpu_clear_external_locks(address, bytes);
+}
+
+void CSystem::cpu_llsc_enter() {
+  u32 gate = cpu_llsc_dma_gate.load(std::memory_order_acquire);
+  for (;;) {
+    if (!(gate & CPU_LLSC_DMA_WRITER) &&
+        (gate & CPU_LLSC_DMA_READERS) != CPU_LLSC_DMA_READERS &&
+        cpu_llsc_dma_gate.compare_exchange_weak(gate, gate + 1,
+                                                std::memory_order_acquire,
+                                                std::memory_order_relaxed))
+      return;
+    std::this_thread::yield();
+    gate = cpu_llsc_dma_gate.load(std::memory_order_acquire);
+  }
+}
+
+void CSystem::cpu_llsc_leave() {
+  cpu_llsc_dma_gate.fetch_sub(1, std::memory_order_release);
+}
+
+void CSystem::pci_dma_write_enter() {
+  u32 gate = cpu_llsc_dma_gate.load(std::memory_order_acquire);
+  for (;;) {
+    if (!(gate & CPU_LLSC_DMA_WRITER) &&
+        cpu_llsc_dma_gate.compare_exchange_weak(
+            gate, gate | CPU_LLSC_DMA_WRITER, std::memory_order_acquire,
+            std::memory_order_relaxed))
+      break;
+    std::this_thread::yield();
+    gate = cpu_llsc_dma_gate.load(std::memory_order_acquire);
+  }
+
+  while (cpu_llsc_dma_gate.load(std::memory_order_acquire) &
+         CPU_LLSC_DMA_READERS)
+    std::this_thread::yield();
+}
+
+void CSystem::pci_dma_write_leave() {
+  cpu_llsc_dma_gate.store(0, std::memory_order_release);
+}
+
+// --- Load-locked / store-conditional (HRM 4.2) -----------------------------
+// Keep the original CAS-backed model for same-address LL/SC sequences, because
+// it provides the emulator's MP atomicity. Some Alpha code stores
+// conditionally to a different quadword in the same locked cache line; those
+// must not compare against the value loaded from the LDx_L address.
+
+void CSystem::cpu_lock(int cpuid, u64 address, u64 value) {
   state.cpu_lock_address[cpuid] = address;
+  cpu_lock_value[cpuid] = value;
+  state.cpu_lock_flags |= (1 << cpuid); // atomic fetch_or
 }
 
-bool CSystem::cpu_unlock(int cpuid) {
-  SCOPED_FM_LOCK(cpu_lock_mutex);
+bool CSystem::cpu_take_lock(int cpuid, u64 address, u64 *expected,
+                            bool *same_address) {
+  // I/O-space conditional stores have no cache line to watch; treat as held.
+  bool held = (address & CPU_LOCK_IO_MASK) ||
+              ((state.cpu_lock_flags.load() & (1 << cpuid)) &&
+               cpu_lock_matches(state.cpu_lock_address[cpuid], address));
 
-  bool retval;
-  retval = state.cpu_lock_flags & (1 << cpuid);
-
-  //  printf("cpu%d: unlock (%s).   \n",cpuid,retval?"ok":"failed");
-  state.cpu_lock_flags &= ~(1 << cpuid);
-  return retval;
+  // STx_C always consumes this CPU's lock, success or fail.
+  state.cpu_lock_flags &= ~(1 << cpuid); // atomic fetch_and
+  if (held) {
+    *expected = cpu_lock_value[cpuid];
+    *same_address = (state.cpu_lock_address[cpuid] == address);
+  }
+  return held;
 }
 
-void CSystem::cpu_break_lock(int cpuid, CSystemComponent *source) {
-  SCOPED_FM_LOCK(cpu_lock_mutex);
-  printf("cpu%d: lock broken by %s.   \n", cpuid, source->devid_string);
-  state.cpu_lock_flags &= ~(1 << cpuid);
+/**
+ * Drop one CPU's load lock. Called when that CPU takes an exception or
+ * interrupt (HRM 4.2.4: a pending STx_C must fail if an exception/interrupt
+ * intervened).
+ **/
+void CSystem::cpu_clear_lock(int cpuid) {
+  state.cpu_lock_flags &= ~(1 << cpuid); // atomic fetch_and
+}
+
+/** Model the EV68 invalidating probe for every reservation line touched by
+ * DMA. **/
+void CSystem::cpu_clear_external_locks(u64 address, size_t bytes) {
+  if (!bytes)
+    return;
+
+  const u64 first_line = (address & U64(0x00000807ffffffff)) & ~U64(63);
+  const u64 last_line =
+      ((address & U64(0x00000807ffffffff)) + bytes - 1) & ~U64(63);
+  int clear_mask = 0;
+  const int flags = state.cpu_lock_flags.load(std::memory_order_relaxed);
+  for (int i = 0; i < iNumCPUs; i++) {
+    if (!(flags & (1 << i)))
+      continue;
+    const u64 locked_line = state.cpu_lock_address[i] & CPU_LOCK_MATCH_MASK;
+    if (locked_line >= first_line && locked_line <= last_line)
+      clear_mask |= 1 << i;
+  }
+  if (clear_mask)
+    state.cpu_lock_flags.fetch_and(~clear_mask, std::memory_order_relaxed);
 }
 
 /**
@@ -456,16 +580,8 @@ void CSystem::WriteMem(u64 address, int dsize, u64 data,
   u32 t32;
   u16 t16;
 #endif // defined(ALIGN_MEM_ACCESS)
-  if (state.cpu_lock_flags) {
-    for (i = 0; i < iNumCPUs; i++) {
-      if ((state.cpu_lock_flags & (1 << i)) &&
-          (!((state.cpu_lock_address[i] ^ address) &
-             U64(0x00000807ffffff00))) &&
-          (source != acCPUs[i]))
-        cpu_break_lock(i, source);
-    }
-  }
-
+  // No device-write lock breaking here: the CAS-backed STx_C model detects
+  // any intervening store to the locked location by value comparison.
   a = address & U64(0x00000807ffffffff);
 
   if (a >> iNumMemoryBits) // non-memory
@@ -1339,7 +1455,20 @@ u64 CSystem::cchip_csr_read(u32 a, CSystemComponent *source) {
     //    printf("MISC: %016" PRIx64 " from CPU %d (@%" PRIx64 ") (other @ %" LL
     //    "x).\n",state.cchip.misc | cpu->get_cpuid(),cpu->get_cpuid(),
     //    cpu->get_pc()-4, acCPUs[1-cpu->get_cpuid()]->get_pc());
-    return state.cchip.misc | cpu->get_cpuid();
+    {
+      // Consistent read of MISC against the concurrent RMW in
+      // cchip_csr_write()/clear_clock_int().
+      std::lock_guard<std::mutex> g(drir_lock);
+      return state.cchip.misc | cpu->get_cpuid();
+    }
+
+  case 0x0c0: { // MPD: bit3=DR (SDA read), bit2=CKR (SCL read), bits1:0 read
+                // as 0
+    u8 v = 0;
+    v |= (m_mpd_bus.scl() ? 1 : 0) << 2; // CKR
+    v |= (m_mpd_bus.sda() ? 1 : 0) << 3; // DR
+    return v;
+  }
 
   case 0x100:
 
@@ -1440,6 +1569,17 @@ void CSystem::cchip_csr_write(u32 a, u64 data, CSystemComponent *source) {
 
     return;
 
+  case 0x0c0: { // MPD
+    // MPD: bit0=CKS (SCL driver: 1=release, 0=pull low)
+    //      bit1=DS  (SDA driver: 1=release, 0=pull low)
+    bool new_cks = (data & 0x1) != 0;
+    bool new_ds = (data & 0x2) != 0;
+    m_mpd.cks_out = new_cks;
+    m_mpd.ds_out = new_ds;
+    m_mpd_bus.drive_from_host(m_mpd.cks_out, m_mpd.ds_out); // SCL, SDA
+    return;
+  }
+
   case 0x200:
   case 0x240:
   case 0x600:
@@ -1524,7 +1664,7 @@ u8 CSystem::tig_read(u32 a) {
   case 0x30000040: // smir
     return state.tig.FwWrite;
   case 0x30000100: // mod_info
-    return 0;
+    return state.tig.ModInfo;
   case 0x300003c0: // ttcr
     return state.tig.HaltA;
   case 0x30000480: // clr_pwr_flt_det
@@ -1547,7 +1687,7 @@ void CSystem::tig_write(u32 a, u8 data) {
     state.tig.FwWrite = data;
     return;
   case 0x30000100: // mod_info
-    printf("Soft reset: %02x\n", data);
+    state.tig.ModInfo = data;
     return;
   case 0x300003c0: // ttcr
     state.tig.HaltA = data;
@@ -1556,6 +1696,16 @@ void CSystem::tig_write(u32 a, u8 data) {
     return;
   case 0x300005c0: // ev6_halt
     state.tig.HaltB = data;
+    return;
+  case 0x30000600: // srcr0
+  case 0x30000640: // srcr1
+    // Empirical: LFU writes 0x30 here when exiting after an update.
+    if (data & 0x30) {
+      printf("%%SYS-I-RESETREQ: TIG SRCR write %07x=%02x\n", a, data);
+      if (theSROM)
+        theSROM->FlushIfDirty();
+      RequestSystemReset();
+    }
     return;
   default:
     printf("Unknown TIG %07x write with %02x attempted.\n", a, data);
@@ -1573,81 +1723,149 @@ int CSystem::LoadROM() {
   int j;
   u64 temp;
   u32 scratch;
+  bool loadedFromFlash = false;
 
-  f = fopen(myCfg->get_text_value("rom.decompressed", "decompressed.rom"),
-            "rb");
-  if (!f) {
-    f = fopen(myCfg->get_text_value("rom.srm", "cl67srmrom.exe"), "rb");
-    if (!f)
-      FAILURE(Runtime, "No original or decompressed SRM ROM image found");
-    printf("%%SYS-I-READROM: Reading original ROM image from %s.\n",
-           myCfg->get_text_value("rom.srm", "cl67srmrom.exe"));
-    for (i = 0; i < 0x240; i++) {
-      if (feof(f))
-        break;
-      (void)!fread(&scratch, 1, 1, f);
-    }
+  // If flash.rom contains a partitioned ES40 image (CPQ header at the SRM
+  // partition), execute its embedded self-decompressor to inflate the console
+  // into low RAM just like the cl67srmrom.exe path would.
+  if (theSROM && theSROM->HasBootFirmware()) {
+    printf("%%SYS-I-READFLASH: Reading boot ROM image from %s.\n",
+           myCfg->get_text_value("rom.flash", "flash.rom"));
 
-    if (feof(f))
-      FAILURE(Runtime, "File is too short to be a SRM ROM image");
-    buffer = PtrToMem(0x900000);
-    while (!feof(f))
-      (void)!fread(buffer++, 1, 1, f);
-    fclose(f);
+    const u8 *flash = theSROM->GetFlashBytes();
+    const u32 srm_off = 0x00010000;
+    const u32 srm_len = 0x000E0000;
 
-    printf("%%SYS-I-DECOMP: Decompressing ROM image.\n0%%");
-    acCPUs[0]->set_pc(0x900001);
-    acCPUs[0]->set_PAL_BASE(0x900000);
+    printf("%%SYS-I-DECOMP: Decompressing SRM image from flash.\n0%%");
+    fflush(stdout);
+
+    // The SRM partition is wrapped in a 0x40-byte CPQ header. The
+    // self-decompressing payload is not position independent and expects
+    // to be loaded exactly like the cl67srmrom.exe path: payload at
+    // 0x900000, PC=0x900001, PAL_BASE=0x900000.
+    const u64 load_base = U64(0x0000000000900000);
+    const u32 cpq_hdr_len = 0x40;
+
+    memcpy(PtrToMem(load_base), flash + srm_off + cpq_hdr_len,
+           srm_len - cpq_hdr_len);
+
+    acCPUs[0]->set_pc(load_base | 1);
+    acCPUs[0]->set_PAL_BASE(load_base);
     acCPUs[0]->enable_icache();
 
+    bool decomp_ok = true;
     j = 0;
-    while (acCPUs[0]->get_clean_pc() > 0x200000) {
+    while (acCPUs[0]->get_clean_pc() > U64(0x200000)) {
       for (i = 0; i < 1800000; i++) {
         SingleStep();
-        if (acCPUs[0]->get_clean_pc() < 0x200000)
+        if (acCPUs[0]->get_clean_pc() < U64(0x200000))
           break;
       }
-
       j++;
-      if (((j % 5) == 0) && (j < 50))
+      if (j < 50) {
         printf("%d%%", j * 2);
-      else
+        fflush(stdout);
+      } else {
         printf(".");
-      fflush(stdout);
+        fflush(stdout);
+      }
+      if (j > 500) {
+        printf("\n%%SYS-F-DECOMPFAIL: SRM decompressor did not return to low "
+               "memory.\n");
+        decomp_ok = false;
+        break;
+      }
     }
-
     printf("100%%\n");
+
     acCPUs[0]->restore_icache();
 
+    if (decomp_ok) {
+      for (i = 0; i < iNumCPUs; i++)
+        acCPUs[i]->set_pc(acCPUs[0]->get_pc());
+      for (i = 0; i < iNumCPUs; i++)
+        acCPUs[i]->set_PAL_BASE(acCPUs[0]->get_pal_base());
+
+      loadedFromFlash = true;
+    }
+  }
+
+  if (!loadedFromFlash) {
     f = fopen(myCfg->get_text_value("rom.decompressed", "decompressed.rom"),
-              "wb");
+              "rb");
     if (!f) {
-      printf("%%SYS-W-NOWRITE: Couldn't write decompressed rom to %s.\n",
-             myCfg->get_text_value("rom.decompressed", "decompressed.rom"));
+      f = fopen(myCfg->get_text_value("rom.srm", "cl67srmrom.exe"), "rb");
+      if (!f)
+        FAILURE(Runtime, "No original or decompressed SRM ROM image found");
+      printf("%%SYS-I-READROM: Reading original ROM image from %s.\n",
+             myCfg->get_text_value("rom.srm", "cl67srmrom.exe"));
+      for (i = 0; i < 0x240; i++) {
+        if (feof(f))
+          break;
+        (void)!fread(&scratch, 1, 1, f);
+      }
+
+      if (feof(f))
+        FAILURE(Runtime, "File is too short to be a SRM ROM image");
+      buffer = PtrToMem(0x900000);
+      while (!feof(f))
+        (void)!fread(buffer++, 1, 1, f);
+      fclose(f);
+
+      printf("%%SYS-I-DECOMP: Decompressing ROM image.\n0%%");
+      acCPUs[0]->set_pc(0x900001);
+      acCPUs[0]->set_PAL_BASE(0x900000);
+      acCPUs[0]->enable_icache();
+
+      j = 0;
+      while (acCPUs[0]->get_clean_pc() > 0x200000) {
+        for (i = 0; i < 1800000; i++) {
+          SingleStep();
+          if (acCPUs[0]->get_clean_pc() < 0x200000)
+            break;
+        }
+
+        j++;
+        if (((j % 5) == 0) && (j < 50))
+          printf("%d%%", j * 2);
+        else
+          printf(".");
+        fflush(stdout);
+      }
+
+      printf("100%%\n");
+      acCPUs[0]->restore_icache();
+
+      f = fopen(myCfg->get_text_value("rom.decompressed", "decompressed.rom"),
+                "wb");
+      if (!f) {
+        printf("%%SYS-W-NOWRITE: Couldn't write decompressed rom to %s.\n",
+               myCfg->get_text_value("rom.decompressed", "decompressed.rom"));
+      } else {
+        printf("%%SYS-I-ROMWRT: Writing decompressed rom to %s.\n",
+               myCfg->get_text_value("rom.decompressed", "decompressed.rom"));
+        temp = endian_64(acCPUs[0]->get_pc());
+        fwrite(&temp, 1, sizeof(u64), f);
+        temp = endian_64(acCPUs[0]->get_pal_base());
+        fwrite(&temp, 1, sizeof(u64), f);
+        buffer = PtrToMem(0);
+        fwrite(buffer, 1, 0x200000, f);
+        fclose(f);
+      }
     } else {
-      printf("%%SYS-I-ROMWRT: Writing decompressed rom to %s.\n",
+      printf("%%SYS-I-READROM: Reading decompressed ROM image from %s.\n",
              myCfg->get_text_value("rom.decompressed", "decompressed.rom"));
-      temp = endian_64(acCPUs[0]->get_pc());
-      fwrite(&temp, 1, sizeof(u64), f);
-      temp = endian_64(acCPUs[0]->get_pal_base());
-      fwrite(&temp, 1, sizeof(u64), f);
+      (void)!fread(&temp, 1, sizeof(u64), f);
+      for (int i = 0; i < iNumCPUs; i++)
+        acCPUs[i]->set_pc(endian_64(temp));
+      (void)!fread(&temp, 1, sizeof(u64), f);
+      for (int i = 0; i < iNumCPUs; i++)
+        acCPUs[i]->set_PAL_BASE(endian_64(temp));
       buffer = PtrToMem(0);
-      fwrite(buffer, 1, 0x200000, f);
+      (void)!fread(buffer, 1, 0x200000, f);
       fclose(f);
     }
-  } else {
-    printf("%%SYS-I-READROM: Reading decompressed ROM image from %s.\n",
-           myCfg->get_text_value("rom.decompressed", "decompressed.rom"));
-    (void)!fread(&temp, 1, sizeof(u64), f);
-    for (int i = 0; i < iNumCPUs; i++)
-      acCPUs[i]->set_pc(endian_64(temp));
-    (void)!fread(&temp, 1, sizeof(u64), f);
-    for (int i = 0; i < iNumCPUs; i++)
-      acCPUs[i]->set_PAL_BASE(endian_64(temp));
-    buffer = PtrToMem(0);
-    (void)!fread(buffer, 1, 0x200000, f);
-    fclose(f);
-  }
+  } // !loadedFromFlash
 
 #if !defined(SRM_NO_SPEEDUPS) || !defined(SRM_NO_IDE)
   printf("%%SYM-I-PATCHROM: Patching ROM for speed.\n");
@@ -1759,6 +1977,10 @@ int CSystem::LoadROM() {
  **/
 void CSystem::interrupt(int number, bool assert) {
   int i;
+
+  // Serialize drir RMW + delivery against other device threads; irq_h() is
+  // lock-free and never re-enters here, so this is deadlock-free.
+  std::lock_guard<std::mutex> drirGuard(drir_lock);
 
   if (number == -1) {
 
@@ -1894,8 +2116,8 @@ u64 CSystem::PCI_Phys(int pcibus, u32 address) {
 
   // Step through windows
   for (j = 0; j < 4; j++) {
-    printf("WSBA%d: %016" PRIx64 " WSM: %016" PRIx64 " TBA: %016" PRIx64 "\n", j,
-           state.pchip[pcibus].wsba[j], state.pchip[pcibus].wsm[j],
+    printf("WSBA%d: %016" PRIx64 " WSM: %016" PRIx64 " TBA: %016" PRIx64 "\n",
+           j, state.pchip[pcibus].wsba[j], state.pchip[pcibus].wsm[j],
            state.pchip[pcibus].tba[j]);
   }
 
@@ -1931,8 +2153,8 @@ u64 CSystem::PCI_Phys(int pcibus, u32 address) {
           a = PCI_Phys_direct_mapped(address, state.pchip[pcibus].wsm[j],
                                      state.pchip[pcibus].tba[j]);
 #if defined(DEBUG_PCI)
-        printf("PCI memory address %08x translated to %016" PRIx64 "\n", address,
-               a);
+        printf("PCI memory address %08x translated to %016" PRIx64 "\n",
+               address, a);
 #endif
         return a;
       }
@@ -2114,6 +2336,77 @@ void CSystem::stop_threads() {
   for (int i = 0; i < iNumComponents; i++)
     acComponents[i]->stop_threads();
   printf("\n");
+}
+
+// --- Firmware-triggered system reset support ------------------------------
+
+void CSystem::RequestSystemReset() {
+  m_reset_requested.store(true, std::memory_order_release);
+}
+
+bool CSystem::IsSystemResetRequested() const {
+  return m_reset_requested.load(std::memory_order_acquire);
+}
+
+bool CSystem::ProcessPendingReset() {
+  if (!m_reset_requested.exchange(false, std::memory_order_acq_rel))
+    return false;
+
+  struct ResetInProgressGuard {
+    CSystem *sys;
+    explicit ResetInProgressGuard(CSystem *s) : sys(s) {
+      sys->SetResetInProgress(true);
+    }
+    ~ResetInProgressGuard() { sys->SetResetInProgress(false); }
+  };
+
+  printf("\n%%SYS-I-RESET: System reset requested by firmware.\n");
+  if (theSROM)
+    theSROM->FlushIfDirty();
+
+  ResetInProgressGuard rip(this);
+  stop_threads();
+  ResetChipsetState();
+  for (int dev = 0; dev < iNumComponents; dev++)
+    acComponents[dev]->ResetPCI();
+  for (int cpu = 0; cpu < iNumCPUs; cpu++)
+    acCPUs[cpu]->ResetForSystemReset();
+  LoadROM();
+  start_threads();
+  return true;
+}
+
+void CSystem::ResetChipsetState() {
+  // Re-establish the same power-on defaults used in the constructor.
+  state.cpu_lock_flags = 0;
+  memset(state.cpu_lock_address, 0, sizeof(state.cpu_lock_address));
+  memset(cpu_lock_value, 0, sizeof(cpu_lock_value));
+
+  for (int i = 0; i < 4; i++)
+    state.cchip.dim[i] = 0;
+  state.cchip.drir = 0;
+  state.cchip.misc = U64(0x0000000800000000);
+  state.cchip.csc = U64(0x3142444014157803);
+
+  state.dchip.drev = 0x01;
+  state.dchip.dsc = 0x43;
+  state.dchip.dsc2 = 0x03;
+  state.dchip.str = 0x25;
+
+  for (int i = 0; i < 2; i++) {
+    memset(&state.pchip[i], 0, sizeof(struct SSys_state::SSys_pchip));
+    state.pchip[i].wsba[3] = 2;
+  }
+
+  state.pchip[0].pctl = U64(0x0000104401440081);
+  state.pchip[1].pctl = U64(0x0000504401440081);
+
+  state.tig.FwWrite = 0;
+  state.tig.HaltA = 0;
+  state.tig.HaltB = 0;
+  state.tig.ModInfo = 0;
+
+  memset(state.cf8_address, 0, sizeof(state.cf8_address));
 }
 
 /**
@@ -2347,8 +2640,147 @@ void CSystem::panic(char *message, int flags) {
  *the interrupt.
  **/
 void CSystem::clear_clock_int(int ProcNum) {
+  std::lock_guard<std::mutex> g(drir_lock);
   state.cchip.misc &= ~(U64(0x10) << ProcNum);
   acCPUs[ProcNum]->irq_h(2, false, 0);
+}
+
+/**
+ * Acknowledge an interprocessor interrupt: clear MISC<IPINTR>, drop b_irq<3>.
+ **/
+void CSystem::clear_ipi(int ProcNum) {
+  std::lock_guard<std::mutex> g(drir_lock);
+  state.cchip.misc &= ~(U64(0x100) << ProcNum);
+  acCPUs[ProcNum]->irq_h(3, false, 0);
+#ifdef DEBUG_IPI
+  printf("*** IP interrupt cleared for CPU %d (PALcode dispatch ack).\n",
+         ProcNum);
+#endif
+}
+
+/* ---------------- SPD generation + init ---------------- */
+std::vector<uint32_t> CSystem::split_mb_into_dimms(uint32_t total_mb) {
+  // ES40 prefers matched Registered ECC DIMMs for interleave.
+  // Try to form 4 identical sticks, else 2, else fall back to greedy.
+  const uint32_t choices[] = {1024, 512, 256, 128, 64};
+  auto fill_all = [&](uint32_t each, int n) -> std::vector<uint32_t> {
+    std::vector<uint32_t> v(4, 0);
+    for (int i = 0; i < n; ++i)
+      v[i] = each;
+    return v;
+  };
+
+  // 4-way match
+  for (uint32_t c : choices)
+    if (total_mb == 4 * c)
+      return fill_all(c, 4);
+
+  // 2-way match
+  for (uint32_t c : choices)
+    if (total_mb == 2 * c)
+      return fill_all(c, 2);
+
+  // Mixed but server-ish: try largest even pairs first, then greedy.
+  std::vector<uint32_t> out(4, 0);
+  uint32_t remain = total_mb;
+  for (uint32_t c : choices) {
+    while (remain >= 2 * c) {
+      for (int k = 0; k < 2; k++) {
+        for (int i = 0; i < 4; i++)
+          if (!out[i]) {
+            out[i] = c;
+            break;
+          }
+      }
+      remain -= 2 * c;
+    }
+  }
+
+  for (uint32_t c : choices) {
+    while (remain >= c) {
+      for (int i = 0; i < 4; i++)
+        if (!out[i]) {
+          out[i] = c;
+          break;
+        }
+      remain -= c;
+    }
+  }
+
+  return out;
+}
+
+std::vector<uint8_t> CSystem::build_sdram_spd(uint32_t mb,
+                                              bool registered_ecc) {
+  // ES40-typical: Registered ECC PC100 SDRAM (168-pin), CL=2/3 supported.
+  // Geometry chosen to make capacity math coherent for 64/128/256/512/1024 MB.
+  struct Geo {
+    uint8_t rows, cols, ranks;
+  } g{};
+
+  switch (mb) {
+  case 64:
+    g = {12, 9, 1};
+    break; // 8Mx8 devices, 1 rank
+  case 128:
+    g = {13, 9, 1};
+    break; // 16Mx8, 1 rank
+  case 256:
+    g = {13, 10, 2};
+    break; // 16Mx8, 2 ranks
+  case 512:
+    g = {14, 10, 2};
+    break; // 32Mx8, 2 ranks
+  case 1024:
+    g = {14, 10, 2};
+    break; // 32Mx8, 2 ranks (denser parts)
+  default:
+    g = {13, 10, 2};
+    break;
+  }
+
+  std::vector<uint8_t> b(256, 0x00);
+  b[0] = 0x80;   // bytes used
+  b[1] = 0x08;   // SPD rev 1.3 (0x08 is commonly used)
+  b[2] = 0x04;   // SDR SDRAM
+  b[3] = g.rows; // Row address bits
+  b[4] = g.cols; // Column address bits
+  // Byte 5: module attributes - bit1 Registered, bit5 ECC
+  b[5] = (registered_ecc ? 0x20 : 0x00) | 0x02; // ECC + Registered
+  b[6] = 0x04;                                  // SDRAM device banks (4)
+  // Data width 64, ECC width 8 -> 72-bit module (ES40 expects ECC)
+  b[7] = 64;
+  b[8] = 0;
+  b[11] = 8;
+  b[12] = 0;
+  b[17] = g.ranks; // module ranks
+  // Conservative PC100 timings (CL=2/3). Units are ns.
+  b[9] = 20;  // tAA (CL=2) 20 ns
+  b[10] = 2;  // tWR (~2ns; not used by SRM)
+  b[18] = 20; // tRCD 20 ns
+  b[19] = 20; // tRP  20 ns
+  b[20] = 10; // tCK min at highest supported CL (10 ns => 100 MHz)
+  b[21] = 10; // tCK at CL=2 also 10 ns (safe)
+  b[22] = 45; // tRAS 45 ns (common PC100 value)
+  // Byte 23: supported CAS latencies bitmask: bit1=CL2, bit2=CL3
+  b[23] = 0x06; // CL=2 and CL=3 supported
+
+  // Compute checksum over bytes 0..62
+  uint8_t sum = 0;
+  for (int i = 0; i <= 62; i++)
+    sum = (uint8_t)(sum + b[i]);
+  b[63] = (uint8_t)(0x100 - sum);
+  return b;
+}
+
+void CSystem::init_spd_from_config_mb(uint32_t total_mb) {
+  auto dimms = split_mb_into_dimms(total_mb);
+  for (int i = 0; i < 4; i++) {
+    if (!dimms[i])
+      continue;
+    auto image = build_sdram_spd(dimms[i], /*registered_ecc*/ true);
+    m_mpd_bus.attach(std::make_shared<Eeprom24C02>(uint8_t(0x50 + i), image));
+  }
 }
 
 #if defined(PROFILE)

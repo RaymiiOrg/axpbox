@@ -26,6 +26,23 @@
  * serve the general public.
  */
 
+/**
+ * \file
+ * Contains debugging macros used by AlphaCPU.cpp
+ **/
+
+#ifdef ES40_JIT
+#define ES40_EXECUTE_END() return
+#else
+#define ES40_EXECUTE_END() goto _next_instruction
+#endif
+
+#if defined(DEBUG_INSTALL_VMFAULT)
+#define DEBUG_INSTALL_PAL_TRAP(offset) debug_trace_user_pal_trap(offset)
+#else
+#define DEBUG_INSTALL_PAL_TRAP(offset) ((void)0)
+#endif
+
 #if defined(IDB)
 extern const char *PAL_NAME[];
 extern const char *IPR_NAME[];
@@ -51,16 +68,26 @@ void handle_debug_string(char *s);
 #define GO_PAL(offset)                                                         \
   {                                                                            \
     if (bDisassemble) {                                                        \
-      sprintf(dbg_strptr, " ==> PAL %x!\n", offset);                           \
+      sprintf(dbg_strptr, " ==> PAL %" PRIx64 "!\n", offset);                  \
       dbg_strptr += strlen(dbg_strptr);                                        \
     }                                                                          \
     handle_debug_string(dbg_string);                                           \
+    DEBUG_INSTALL_PAL_TRAP(offset);                                            \
     state.exc_addr = state.current_pc;                                         \
     set_pc(state.pal_base | offset | 1);                                       \
-    if ((offset == DTBM_SINGLE || offset == ITB_MISS) && bTrace)               \
-      trc->set_waitfor(this, state.exc_addr & ~U64(0x3));                      \
-    else                                                                       \
-      TRC_(true, false, "GO_PAL %04x", offset);                                \
+    /* HRM 4.2.4: a taken exception/interrupt clears lock_flag so a pending    \
+       STx_C fails. Exclude transparent TB-miss fills, which real HW does      \
+       not use to clear the lock. */                                           \
+    if constexpr ((offset) != DTBM_SINGLE && (offset) != DTBM_DOUBLE_3 &&      \
+                  (offset) != DTBM_DOUBLE_4 && (offset) != ITB_MISS)           \
+      cSystem->cpu_clear_lock(state.iProcNum);                                 \
+    if constexpr ((offset) == DTBM_SINGLE || (offset) == ITB_MISS) {           \
+      if (bTrace)                                                              \
+        trc->set_waitfor(this, state.exc_addr & ~U64(0x3));                    \
+      else                                                                     \
+        TRC_(true, false, "GO_PAL %" PRIx64, offset);                          \
+    } else                                                                     \
+      TRC_(true, false, "GO_PAL %" PRIx64, offset);                            \
   }
 
 #else
@@ -70,15 +97,22 @@ void handle_debug_string(char *s);
 
 #define GO_PAL(offset)                                                         \
   {                                                                            \
+    DEBUG_INSTALL_PAL_TRAP(offset);                                            \
     state.exc_addr = state.current_pc;                                         \
     set_pc(state.pal_base | offset | 1);                                       \
+    /* HRM 4.2.4: clear lock_flag on taken exception/interrupt (fail a         \
+       pending STx_C). Exclude transparent TB-miss fills; offset is a          \
+       compile-time constant so this condition folds to nothing per site. */   \
+    if constexpr ((offset) != DTBM_SINGLE && (offset) != DTBM_DOUBLE_3 &&      \
+                  (offset) != DTBM_DOUBLE_4 && (offset) != ITB_MISS)           \
+      cSystem->cpu_clear_lock(state.iProcNum);                                 \
   }
 #endif
 #if defined(IDB)
 #define DEBUG_XX                                                               \
   if (trc->get_fnc_name(this, state.current_pc & ~U64(0x3), &funcname)) {      \
     if (bListing && !strcmp(funcname, "")) {                                   \
-      printf("%08" PRIx64 ": \"%s\"\n", state.current_pc,                         \
+      printf("%08" PRIx64 ": \"%s\"\n", state.current_pc,                      \
              cSystem->PtrToMem(state.current_pc));                             \
       state.pc = (state.current_pc +                                           \
                   strlen(cSystem->PtrToMem(state.current_pc)) + 4) &           \
@@ -93,11 +127,11 @@ void handle_debug_string(char *s);
     } else if (bListing && !strncmp(funcname, "!CHAR-", 6)) {                  \
       u64 xx_upto;                                                             \
       int xx_result;                                                           \
-      xx_result = sscanf(&(funcname[6]), "%" PRIx64 "", &xx_upto);                \
+      xx_result = sscanf(&(funcname[6]), "%" SCNx64, &xx_upto);                \
       if (xx_result == 1) {                                                    \
         state.pc = state.current_pc;                                           \
         while (state.pc < xx_upto) {                                           \
-          printf("%08" PRIx64 ": \"%s\"\n", state.pc,                             \
+          printf("%08" PRIx64 ": \"%s\"\n", state.pc,                          \
                  cSystem->PtrToMem(state.pc));                                 \
           state.pc += strlen(cSystem->PtrToMem(state.pc));                     \
           while (state.pc < xx_upto &&                                         \
@@ -111,14 +145,14 @@ void handle_debug_string(char *s);
       int stringlen;                                                           \
       u64 xx_upto;                                                             \
       int xx_result;                                                           \
-      xx_result = sscanf(&(funcname[7]), "%" PRIx64 "", &xx_upto);                \
+      xx_result = sscanf(&(funcname[7]), "%" SCNx64, &xx_upto);                \
       if (xx_result == 1) {                                                    \
         state.pc = state.current_pc;                                           \
         while (state.pc < xx_upto) {                                           \
           stringlen = (int)cSystem->ReadMem(state.pc++, 8, this);              \
           memset(stringval, 0, 300);                                           \
           strncpy(stringval, cSystem->PtrToMem(state.pc), stringlen);          \
-          printf("%08" PRIx64 ": \"%s\"\n", state.pc - 1, stringval);             \
+          printf("%08" PRIx64 ": \"%s\"\n", state.pc - 1, stringval);          \
           state.pc += stringlen;                                               \
           while (state.pc < xx_upto &&                                         \
                  cSystem->ReadMem(state.pc, 8, this) == 0)                     \
@@ -131,7 +165,7 @@ void handle_debug_string(char *s);
       state.pc = state.current_pc;                                             \
       while ((state.pc == state.current_pc) ||                                 \
              !trc->get_fnc_name(this, state.pc, &funcname)) {                  \
-        printf("%08" PRIx64 ": %016" PRIx64 "\n", state.pc,                          \
+        printf("%08" PRIx64 ": %016" PRIx64 "\n", state.pc,                    \
                cSystem->ReadMem(state.pc, 64, this));                          \
         state.pc += 8;                                                         \
       }                                                                        \
@@ -141,7 +175,7 @@ void handle_debug_string(char *s);
       state.pc = state.current_pc;                                             \
       while ((state.pc == state.current_pc) ||                                 \
              !trc->get_fnc_name(this, state.pc, &funcname)) {                  \
-        printf("%08" PRIx64 ": %08" PRIx64 "\n", state.pc,                           \
+        printf("%08" PRIx64 ": %08" PRIx64 "\n", state.pc,                     \
                cSystem->ReadMem(state.pc, 32, this));                          \
         state.pc += 4;                                                         \
       }                                                                        \
@@ -154,11 +188,11 @@ void handle_debug_string(char *s);
       dbg_strptr += strlen(dbg_strptr);                                        \
     }                                                                          \
   }                                                                            \
-  sprintf(dbg_strptr, bListing ? "%08" PRIx64 ": " : "%016" PRIx64 "",               \
+  sprintf(dbg_strptr, bListing ? "%08" PRIx64 ": " : "%016" PRIx64,            \
           state.current_pc);                                                   \
   dbg_strptr += strlen(dbg_strptr);                                            \
   if (!bListing)                                                               \
-    sprintf(dbg_strptr, "(%08" PRIx64 "): ", current_pc_physical);                \
+    sprintf(dbg_strptr, "(%08" PRIx64 "): ", current_pc_physical);             \
   else {                                                                       \
     sprintf(dbg_strptr, "%08x %c%c%c%c: ", ins, printable((char)(ins)),        \
             printable((char)(ins >> 8)), printable((char)(ins >> 16)),         \
@@ -166,6 +200,9 @@ void handle_debug_string(char *s);
   }                                                                            \
   dbg_strptr += strlen(dbg_strptr);
 
+/* IDB-disassembly variants -- log then raise OPCDEC, matching the non-IDB
+ * macros below. HRM 6.8.2 Table 6-8 mandates OPCDEC for unallocated
+ * encodings; brokenpipe routes them through the same path. */
 #define UNKNOWN1                                                               \
   if (bDisassemble) {                                                          \
     DEBUG_XX                                                                   \
@@ -173,7 +210,8 @@ void handle_debug_string(char *s);
   sprintf(dbg_strptr, "Unknown opcode: %02x   ", opcode);                      \
   dbg_strptr += strlen(dbg_strptr);                                            \
   handle_debug_string(dbg_string);                                             \
-  return;
+  GO_PAL(OPCDEC);                                                              \
+  ES40_EXECUTE_END();
 
 #define UNKNOWN2                                                               \
   if (bDisassemble) {                                                          \
@@ -182,12 +220,13 @@ void handle_debug_string(char *s);
   sprintf(dbg_strptr, "Unknown opcode: %02x.%02x   ", opcode, function);       \
   dbg_strptr += strlen(dbg_strptr);                                            \
   handle_debug_string(dbg_string);                                             \
-  return;
+  GO_PAL(OPCDEC);                                                              \
+  ES40_EXECUTE_END();
 
 #define POST_X64(a)                                                            \
   if (bDisassemble) {                                                          \
     if (!bListing) {                                                           \
-      sprintf(dbg_strptr, " ==> %" PRIx64 "", a);                                 \
+      sprintf(dbg_strptr, " ==> %" PRIx64, a);                                 \
       dbg_strptr += strlen(dbg_strptr);                                        \
     }                                                                          \
   }
@@ -212,7 +251,7 @@ void handle_debug_string(char *s);
     if (trc->get_fnc_name(this, dbg_x, &funcname))                             \
       sprintf(dbg_strptr, "%s", funcname);                                     \
     else                                                                       \
-      sprintf(dbg_strptr, "%" PRIx64 "", dbg_x);                                  \
+      sprintf(dbg_strptr, "%" PRIx64, dbg_x);                                  \
     dbg_strptr += strlen(dbg_strptr);                                          \
   }
 
@@ -226,10 +265,10 @@ void handle_debug_string(char *s);
     if (trc->get_fnc_name(this, dbg_x, &funcname))                             \
       sprintf(dbg_strptr, "%s", funcname);                                     \
     else                                                                       \
-      sprintf(dbg_strptr, "%" PRIx64 "", dbg_x);                                  \
+      sprintf(dbg_strptr, "%" PRIx64, dbg_x);                                  \
     dbg_strptr += strlen(dbg_strptr);                                          \
     if (!bListing) {                                                           \
-      sprintf(dbg_strptr, ": (%" PRIx64 ")", state.r[REG_1]);                     \
+      sprintf(dbg_strptr, ": (%" PRIx64 ")", state.r[REG_1]);                  \
       dbg_strptr += strlen(dbg_strptr);                                        \
     }                                                                          \
   }
@@ -244,10 +283,10 @@ void handle_debug_string(char *s);
     if (trc->get_fnc_name(this, dbg_x, &funcname))                             \
       sprintf(dbg_strptr, "%s", funcname);                                     \
     else                                                                       \
-      sprintf(dbg_strptr, "%" PRIx64 "", dbg_x);                                  \
+      sprintf(dbg_strptr, "%" PRIx64, dbg_x);                                  \
     dbg_strptr += strlen(dbg_strptr);                                          \
     if (!bListing) {                                                           \
-      sprintf(dbg_strptr, ": (%" PRIx64 ")", state.f[FREG_1]);                    \
+      sprintf(dbg_strptr, ": (%" PRIx64 ")", state.f[FREG_1]);                 \
       dbg_strptr += strlen(dbg_strptr);                                        \
     }                                                                          \
   }
@@ -262,7 +301,7 @@ void handle_debug_string(char *s);
     if (trc->get_fnc_name(this, dbg_x, &funcname))                             \
       sprintf(dbg_strptr, "%s", funcname);                                     \
     else                                                                       \
-      sprintf(dbg_strptr, "%" PRIx64 "", dbg_x);                                  \
+      sprintf(dbg_strptr, "%" PRIx64, dbg_x);                                  \
     dbg_strptr += strlen(dbg_strptr);                                          \
   }
 
@@ -279,7 +318,7 @@ void handle_debug_string(char *s);
                      REG_2 & 31);                                              \
     dbg_strptr += strlen(dbg_strptr);                                          \
     if (!bListing) {                                                           \
-      sprintf(dbg_strptr, ": (%" PRIx64 ")", state.r[REG_2]);                     \
+      sprintf(dbg_strptr, ": (%" PRIx64 ")", state.r[REG_2]);                  \
       dbg_strptr += strlen(dbg_strptr);                                        \
     }                                                                          \
   }
@@ -296,7 +335,7 @@ void handle_debug_string(char *s);
     DEBUG_XX sprintf(dbg_strptr, #mnemonic " r%d", REG_2 & 31);                \
     dbg_strptr += strlen(dbg_strptr);                                          \
     if (!bListing) {                                                           \
-      sprintf(dbg_strptr, ": (%" PRIx64 ")", state.r[REG_2]);                     \
+      sprintf(dbg_strptr, ": (%" PRIx64 ")", state.r[REG_2]);                  \
       dbg_strptr += strlen(dbg_strptr);                                        \
     }                                                                          \
   }
@@ -337,7 +376,7 @@ void handle_debug_string(char *s);
             (u32)DISP_16, REG_2 & 31);                                         \
     dbg_strptr += strlen(dbg_strptr);                                          \
     if (!bListing) {                                                           \
-      sprintf(dbg_strptr, ": (%" PRIx64 ")", state.r[REG_2]);                     \
+      sprintf(dbg_strptr, ": (%" PRIx64 ")", state.r[REG_2]);                  \
       dbg_strptr += strlen(dbg_strptr);                                        \
     }                                                                          \
   }
@@ -350,14 +389,14 @@ void handle_debug_string(char *s);
     sprintf(dbg_strptr, #mnemonic " r%d, ", REG_1 & 31);                       \
     dbg_strptr += strlen(dbg_strptr);                                          \
     if (ins & 0x1000)                                                          \
-      sprintf(dbg_strptr, "%02" PRIx64 "H", V_2);                              \
+      sprintf(dbg_strptr, "%" PRIx64 "H", V_2);                                \
     else                                                                       \
       sprintf(dbg_strptr, "r%d", REG_2 & 31);                                  \
     dbg_strptr += strlen(dbg_strptr);                                          \
     sprintf(dbg_strptr, ", r%d", REG_3 & 31);                                  \
     dbg_strptr += strlen(dbg_strptr);                                          \
     if (!bListing) {                                                           \
-      sprintf(dbg_strptr, ": (%" PRIx64 ",%" PRIx64 ")", state.r[REG_1], V_2);       \
+      sprintf(dbg_strptr, ": (%" PRIx64 ",%" PRIx64 ")", state.r[REG_1], V_2); \
       dbg_strptr += strlen(dbg_strptr);                                        \
     }                                                                          \
   }
@@ -373,7 +412,7 @@ void handle_debug_string(char *s);
     sprintf(dbg_strptr, #mnemonic " f%d, f%d, f%d", FREG_1, FREG_2, FREG_3);   \
     dbg_strptr += strlen(dbg_strptr);                                          \
     if (!bListing) {                                                           \
-      sprintf(dbg_strptr, ": (%" PRIx64 ",%" PRIx64 ")", state.f[FREG_1],            \
+      sprintf(dbg_strptr, ": (%" PRIx64 ",%" PRIx64 ")", state.f[FREG_1],      \
               state.f[FREG_2]);                                                \
       dbg_strptr += strlen(dbg_strptr);                                        \
     }                                                                          \
@@ -389,7 +428,7 @@ void handle_debug_string(char *s);
     sprintf(dbg_strptr, #mnemonic " r%d, f%d ", REG_1 & 31, FREG_3);           \
     dbg_strptr += strlen(dbg_strptr);                                          \
     if (!bListing) {                                                           \
-      sprintf(dbg_strptr, ": (%" PRIx64 ")", state.r[REG_1]);                     \
+      sprintf(dbg_strptr, ": (%" PRIx64 ")", state.r[REG_1]);                  \
       dbg_strptr += strlen(dbg_strptr);                                        \
     }                                                                          \
   }
@@ -402,7 +441,7 @@ void handle_debug_string(char *s);
     sprintf(dbg_strptr, #mnemonic " f%d, r%d ", FREG_1, REG_3 & 31);           \
     dbg_strptr += strlen(dbg_strptr);                                          \
     if (!bListing) {                                                           \
-      sprintf(dbg_strptr, ": (%" PRIx64 ")", state.f[FREG_1]);                    \
+      sprintf(dbg_strptr, ": (%" PRIx64 ")", state.f[FREG_1]);                 \
       dbg_strptr += strlen(dbg_strptr);                                        \
     }                                                                          \
   }
@@ -424,14 +463,14 @@ void handle_debug_string(char *s);
     sprintf(dbg_strptr, #mnemonic " ");                                        \
     dbg_strptr += strlen(dbg_strptr);                                          \
     if (ins & 0x1000)                                                          \
-      sprintf(dbg_strptr, "%02" PRIx64 "H", V_2);                              \
+      sprintf(dbg_strptr, "%" PRIx64 "H", V_2);                                \
     else                                                                       \
       sprintf(dbg_strptr, "r%d", REG_2 & 31);                                  \
     dbg_strptr += strlen(dbg_strptr);                                          \
     sprintf(dbg_strptr, ", r%d", REG_3 & 31);                                  \
     dbg_strptr += strlen(dbg_strptr);                                          \
     if (!bListing) {                                                           \
-      sprintf(dbg_strptr, ": (%" PRIx64 ")", V_2);                                \
+      sprintf(dbg_strptr, ": (%" PRIx64 ")", V_2);                             \
       dbg_strptr += strlen(dbg_strptr);                                        \
     }                                                                          \
   }
@@ -486,7 +525,7 @@ void handle_debug_string(char *s);
             REG_2 & 31);                                                       \
     dbg_strptr += strlen(dbg_strptr);                                          \
     if (!bListing) {                                                           \
-      sprintf(dbg_strptr, ": (%" PRIx64 ")", state.r[REG_2]);                     \
+      sprintf(dbg_strptr, ": (%" PRIx64 ")", state.r[REG_2]);                  \
       dbg_strptr += strlen(dbg_strptr);                                        \
     }                                                                          \
   }
@@ -514,7 +553,7 @@ void handle_debug_string(char *s);
             REG_2 & 31);                                                       \
     dbg_strptr += strlen(dbg_strptr);                                          \
     if (!bListing) {                                                           \
-      sprintf(dbg_strptr, ": (%" PRIx64 ")", state.r[REG_2]);                     \
+      sprintf(dbg_strptr, ": (%" PRIx64 ")", state.r[REG_2]);                  \
       dbg_strptr += strlen(dbg_strptr);                                        \
     }                                                                          \
   }
@@ -529,7 +568,7 @@ void handle_debug_string(char *s);
             REG_2 & 31);                                                       \
     dbg_strptr += strlen(dbg_strptr);                                          \
     if (!bListing) {                                                           \
-      sprintf(dbg_strptr, ": (%" PRIx64 ")", state.r[REG_2]);                     \
+      sprintf(dbg_strptr, ": (%" PRIx64 ")", state.r[REG_2]);                  \
       dbg_strptr += strlen(dbg_strptr);                                        \
     }                                                                          \
   }
@@ -546,7 +585,7 @@ void handle_debug_string(char *s);
     sprintf(dbg_strptr, #mnemonic " f%d, f%d", FREG_2, FREG_3);                \
     dbg_strptr += strlen(dbg_strptr);                                          \
     if (!bListing) {                                                           \
-      sprintf(dbg_strptr, ": (%" PRIx64 ")", state.f[FREG_2]);                    \
+      sprintf(dbg_strptr, ": (%" PRIx64 ")", state.f[FREG_2]);                 \
       dbg_strptr += strlen(dbg_strptr);                                        \
     }                                                                          \
   }
@@ -556,18 +595,27 @@ void handle_debug_string(char *s);
 #define POST_F2_F3 POST_X64(state.f[FREG_3]);
 
 #else
-#ifndef NDEBUG
+/* HRM 6.8.2 Table 6-8: OPCDEC fault is raised for opcodes 1-7, the PALRES
+ * opcodes (0x19/0x1B/0x1D/0x1E/0x1F) when not in PALmode and HWE is clear,
+ * for unimplemented function-field encodings of opcodes 0x14 and 0x1C, and
+ * for invalid CALL_PAL function values. brokenpipe (alphafix) routes all of
+ * these through the same `unallocated_encoding()` -> EXCP_OPCDEC path.
+ *
+ * The printfs are intentional diagnostic noise: if a truly missing opcode case
+ * exists in es40's dispatch, the warning will surface at the host stderr even
+ * though the architectural OPCDEC trap also fires. The hot path under a
+ * working guest workload should never see these. */
 #define UNKNOWN1                                                               \
-  printf("Unknown opcode: %02x   \n", opcode);                                 \
-  return;
+  printf("%%CPU-W-OPCDEC: unknown opcode %02x at pc=%016" PRIx64 "\n", opcode, \
+         state.current_pc);                                                    \
+  GO_PAL(OPCDEC);                                                              \
+  ES40_EXECUTE_END();
 
 #define UNKNOWN2                                                               \
-  printf("Unknown opcode: %02x.%02x   \n", opcode, function);                  \
-  return;
-#else
-#define UNKNOWN1 return;
-#define UNKNOWN2 return;
-#endif
+  printf("%%CPU-W-OPCDEC: unknown opcode %02x.%02x at pc=%016" PRIx64 "\n",    \
+         opcode, function, state.current_pc);                                  \
+  GO_PAL(OPCDEC);                                                              \
+  ES40_EXECUTE_END();
 #endif
 #if defined(IDB)
 
@@ -582,7 +630,7 @@ void handle_debug_string(char *s);
   }                                                                            \
   POST_##format;                                                               \
   handle_debug_string(dbg_string);                                             \
-  return;
+  ES40_EXECUTE_END();
 
 // Execute a function rather than a DO_<mnemonic> macro for an instruction
 #define OP_FNC(mnemonic, format)                                               \
@@ -592,7 +640,7 @@ void handle_debug_string(char *s);
   }                                                                            \
   POST_##format;                                                               \
   handle_debug_string(dbg_string);                                             \
-  return;
+  ES40_EXECUTE_END();
 
 #else // defined(IDB)
 
@@ -601,10 +649,10 @@ void handle_debug_string(char *s);
 // Execute the DO_<mnemonic> macro for an instruction.
 #define OP(mnemonic, format)                                                   \
   DO_##mnemonic;                                                               \
-  return;
+  ES40_EXECUTE_END();
 
 // Execute a function rather than a DO_<mnemonic> macro for an instruction
 #define OP_FNC(mnemonic, format)                                               \
   mnemonic();                                                                  \
-  return;
+  ES40_EXECUTE_END();
 #endif // defined(IDB)

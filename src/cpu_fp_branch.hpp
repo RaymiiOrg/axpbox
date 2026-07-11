@@ -26,70 +26,46 @@
  * serve the general public.
  */
 
-#if defined(HAVE_NEW_FP)
+/**
+ * \file
+ * Contains code macros for the processor floating-point branch instructions.
+ * Based on ARM chapter 4.9.
+ **/
+#define FP_IS_ZERO(val) (((val) & ~FPR_SIGN) == 0)
+#define FP_IS_NEGATIVE(val) (((val)&FPR_SIGN) != 0)
+
+// Branch if equal to zero (+0 or -0)
 #define DO_FBEQ                                                                \
   FPSTART;                                                                     \
-  if ((state.f[FREG_1] & ~FPR_SIGN) == 0) /* +0 or - 0? */                     \
+  if (FP_IS_ZERO(state.f[FREG_1]))                                             \
     add_pc(DISP_21 * 4);
 
+// Branch if >= 0 (positive or zero, including -0)
 #define DO_FBGE                                                                \
   FPSTART;                                                                     \
-  if (state.f[FREG_1] <= FPR_SIGN) /* +0 to + n? */                            \
+  if (!FP_IS_NEGATIVE(state.f[FREG_1]) || FP_IS_ZERO(state.f[FREG_1]))         \
     add_pc(DISP_21 * 4);
 
+// Branch if > 0 (positive and non-zero)
 #define DO_FBGT                                                                \
   FPSTART;                                                                     \
-  if (!(state.f[FREG_1] & FPR_SIGN) && (state.f[FREG_1] != 0))                 \
-                                                                               \
-    /* not - and not 0? */                                                     \
+  if (!FP_IS_NEGATIVE(state.f[FREG_1]) && !FP_IS_ZERO(state.f[FREG_1]))        \
     add_pc(DISP_21 * 4);
 
+// Branch if <= 0 (negative or zero)
 #define DO_FBLE                                                                \
   FPSTART;                                                                     \
-  if ((state.f[FREG_1] & FPR_SIGN) || (state.f[FREG_1] == 0))                  \
-                                                                               \
-    /* - or 0? */                                                              \
+  if (FP_IS_NEGATIVE(state.f[FREG_1]) || FP_IS_ZERO(state.f[FREG_1]))          \
     add_pc(DISP_21 * 4);
 
+// Branch if < 0 (negative and non-zero)
 #define DO_FBLT                                                                \
   FPSTART;                                                                     \
-  if (state.f[FREG_1] > FPR_SIGN) /* -0 to -n? */                              \
+  if (FP_IS_NEGATIVE(state.f[FREG_1]) && !FP_IS_ZERO(state.f[FREG_1]))         \
     add_pc(DISP_21 * 4);
 
+// Branch if not equal to zero
 #define DO_FBNE                                                                \
   FPSTART;                                                                     \
-  if ((state.f[FREG_1] & ~FPR_SIGN) != 0) /* not +0 or -0? */                  \
+  if (!FP_IS_ZERO(state.f[FREG_1]))                                            \
     add_pc(DISP_21 * 4);
-
-#else
-#define DO_FBEQ                                                                \
-  FPSTART;                                                                     \
-  if (state.f[FREG_1] == U64(0x0000000000000000) ||                            \
-      state.f[FREG_1] == U64(0x8000000000000000))                              \
-    add_pc(DISP_21 * 4);
-#define DO_FBGE                                                                \
-  FPSTART;                                                                     \
-  if (!(state.f[FREG_1] & U64(0x8000000000000000)) ||                          \
-      state.f[FREG_1] == U64(0x8000000000000000))                              \
-    add_pc(DISP_21 * 4);
-#define DO_FBGT                                                                \
-  FPSTART;                                                                     \
-  if (!(state.f[FREG_1] & U64(0x8000000000000000)) &&                          \
-      state.f[FREG_1] != U64(0x0000000000000000))                              \
-    add_pc(DISP_21 * 4);
-#define DO_FBLE                                                                \
-  FPSTART;                                                                     \
-  if ((state.f[FREG_1] & U64(0x8000000000000000)) ||                           \
-      state.f[FREG_1] == U64(0x0000000000000000))                              \
-    add_pc(DISP_21 * 4);
-#define DO_FBLT                                                                \
-  FPSTART;                                                                     \
-  if ((state.f[FREG_1] & U64(0x8000000000000000)) &&                           \
-      state.f[FREG_1] != U64(0x8000000000000000))                              \
-    add_pc(DISP_21 * 4);
-#define DO_FBNE                                                                \
-  FPSTART;                                                                     \
-  if (state.f[FREG_1] != U64(0x0000000000000000) &&                            \
-      state.f[FREG_1] != U64(0x8000000000000000))                              \
-    add_pc(DISP_21 * 4);
-#endif

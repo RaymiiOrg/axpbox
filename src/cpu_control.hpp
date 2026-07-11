@@ -26,6 +26,11 @@
  * serve the general public.
  */
 
+/**
+ * \file
+ * Contains code macros for the processor control instructions.
+ * Based on ARM chapter 4.3
+ **/
 #define DO_BEQ                                                                 \
   if (!state.r[REG_1])                                                         \
     add_pc(DISP_21 * 4);
@@ -58,6 +63,12 @@
   if (state.r[REG_1])                                                          \
     add_pc(DISP_21 * 4);
 
+/* BR/BSR/JMP link store: per HRM 3.1.1, PC<1:0> read as zero — the
+   architectural link value has both bits clear. ES40 uses pc<0> internally
+   as a PALmode marker instead of a environment flag like other emulations
+   It must be stripped when exposing PC as an integer in a GPR (PAL code,
+   dispatch tables, and pointer arithmetic on the link expect a clean byte
+   address). */
 #define DO_BR                                                                  \
   {                                                                            \
     state.r[REG_1] = state.pc & ~U64(0x3);                                     \

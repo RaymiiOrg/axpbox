@@ -33,7 +33,7 @@ public:
   virtual bool init(const char *devid_string, CConfigurator *cfg);
   virtual int send(const u8 *data, int len);
   virtual int receive(const u8 **data, int *len);
-  virtual void set_filter(u8 mac_list[][6], int num_macs, bool promiscuous);
+  virtual void set_filter(const NetworkFilter &filter);
   virtual void close();
 
 private:

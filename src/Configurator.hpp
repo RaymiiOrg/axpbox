@@ -26,13 +26,17 @@
  * serve the general public.
  */
 
+/**
+ * \file
+ * Contains the definitions for the configuration file interpreter.
+ **/
 #if !defined(__CONFIGURATOR_H__)
 #define __CONFIGURATOR_H__
 
+#include "StdAfx.hpp"
+
 #define CFG_MAX_CHILDREN 25
 #define CFG_MAX_VALUES 50
-
-#include "StdAfx.hpp"
 
 typedef enum {
   c_none,
@@ -49,12 +53,15 @@ typedef enum {
   c_ali,
   c_ali_ide,
   c_ali_usb,
+  c_ali_pmu,
   c_s3,
   c_cirrus,
   c_radeon,
   c_dec21143,
   c_sym53c895,
   c_sym53c810,
+  c_mpu401,
+  c_es1370,
 
   // disk devices
   c_file,

@@ -26,8 +26,13 @@
  * serve the general public.
  */
 
+/**
+ * \file
+ * Contains definitions for the SCSI device base class.
+ **/
 #include "SCSIDevice.hpp"
 #include "SCSIBus.hpp"
+#include "StdAfx.hpp"
 
 /**
  * \brief Constructor.

@@ -26,6 +26,10 @@
  * source code that might serve the general public.
  */
 
+/**
+ * \file
+ * Contains the code for the emulated Ali M1543C IDE chipset part.
+ **/
 #ifdef DEBUG_IDE_LOCKS
 #define DEBUG_LOCKS
 #endif
@@ -33,7 +37,7 @@
 #include "StdAfx.hpp"
 #include "System.hpp"
 
-#include <cmath>
+#include <math.h>
 
 #include "gui/keymap.hpp"
 #include "gui/scancodes.hpp"
@@ -204,9 +208,12 @@ void CAliM1543C_ide::init() {
   add_function(0, AliM1543C_ide_cfg_data, AliM1543C_ide_cfg_mask);
 
   add_legacy_io(PRI_COMMAND, 0x1f0, 8);
-  add_legacy_io(PRI_CONTROL, 0x3f6, 2);
+  // In compatibility mode the control block is the
+  // alternate-status/device-control port at 3F6h; 3F7h remains available to the
+  // legacy floppy path.
+  add_legacy_io(PRI_CONTROL, 0x3f6, 1);
   add_legacy_io(SEC_COMMAND, 0x170, 8);
-  add_legacy_io(SEC_CONTROL, 0x376, 2);
+  add_legacy_io(SEC_CONTROL, 0x376, 1);
   add_legacy_io(PRI_BUSMASTER, 0xf000, 8);
   add_legacy_io(SEC_BUSMASTER, 0xf008, 8);
 
@@ -219,19 +226,11 @@ void CAliM1543C_ide::init() {
 
   // start controller threads
   StopThread = false;
-  mtRegisters[0] = new CRWLock("ide0-registers");
-  mtRegisters[1] = new CRWLock("ide1-registers");
-  mtBusMaster[0] = new CRWLock("ide0-busmaster");
-  mtBusMaster[1] = new CRWLock("ide1-busmaster");
 
   for (int i = 0; i < 2; i++) {
-    semController[i] = new CSemaphore(0, 1);      // disk controller
-    semControllerReady[i] = new CSemaphore(0, 1); // disk controller ready
-    semBusMaster[i] = new CSemaphore(0, 1);       // bus master
-    semBusMasterReady[i] = new CSemaphore(0, 1);  // bus master ready
-    semControllerReady[i]->set();
-    semBusMasterReady[i]->set();
-    thrController[i] = 0;
+    semController[i] = new CSemaphore(0, 1); // disk controller
+    semBusMaster[i] = new CSemaphore(0, 1);  // bus master
+    thrController[i] = nullptr;
   }
 
   printf("%%IDE-I-INIT: New IDE emulator initialized.\n");
@@ -242,21 +241,19 @@ void CAliM1543C_ide::start_threads() {
   for (int i = 0; i < 2; i++) {
     if (!thrController[i]) {
       sprintf(buffer, "ide%d", i);
-      thrController[i] =
-          std::make_unique<std::thread>([this, i]() { this->run(i); });
       printf(" %s", buffer);
       StopThread = false;
+      thrController[i] =
+          std::make_unique<std::thread>([this, i]() { this->run(i); });
     }
   }
 }
 
 void CAliM1543C_ide::stop_threads() {
-  char buffer[5];
   StopThread = true;
   for (int i = 0; i < 2; i++) {
     if (thrController[i]) {
-      sprintf(buffer, "ide%d", i);
-      printf(" %s", buffer);
+      printf(" ide%d", i);
       semController[i]->set();
       thrController[i]->join();
       thrController[i] = nullptr;
@@ -385,19 +382,19 @@ u32 CAliM1543C_ide::ReadMem_Legacy(int index, u32 address, int dsize) {
   switch (index) {
   case SEC_COMMAND:
     channel = 1;
-
+    [[fallthrough]];
   case PRI_COMMAND:
     return ide_command_read(channel, address, dsize);
 
   case SEC_CONTROL:
     channel = 1;
-
+    [[fallthrough]];
   case PRI_CONTROL:
     return ide_control_read(channel, address);
 
   case SEC_BUSMASTER:
     channel = 1;
-
+    [[fallthrough]];
   case PRI_BUSMASTER:
     return ide_busmaster_read(channel, address, dsize);
   }
@@ -411,14 +408,14 @@ void CAliM1543C_ide::WriteMem_Legacy(int index, u32 address, int dsize,
   switch (index) {
   case SEC_COMMAND:
     channel = 1;
-
+    [[fallthrough]];
   case PRI_COMMAND:
     ide_command_write(channel, address, dsize, data);
     break;
 
   case SEC_CONTROL:
     channel = 1;
-
+    [[fallthrough]];
   case PRI_CONTROL:
     ide_control_write(channel, address, data);
     break;
@@ -465,14 +462,14 @@ void CAliM1543C_ide::WriteMem_Bar(int func, int bar, u32 address, int dsize,
   switch (bar) {
   case BAR_SEC_COMMAND:
     channel = 1;
-
+    [[fallthrough]];
   case BAR_PRI_COMMAND:
     ide_command_write(channel, address, dsize, data);
     return;
 
   case BAR_SEC_CONTROL:
     channel = 1;
-
+    [[fallthrough]];
   case BAR_PRI_CONTROL:
     // we have to offset by two because the BAR starts at 3f4 vs 3f6
     ide_control_write(channel, address - 2, data);
@@ -529,7 +526,6 @@ u32 CAliM1543C_ide::ide_command_read(int index, u32 address, int dsize) {
         SEL_STATUS(index).busy = true;
         SEL_STATUS(index).drive_ready = false;
         UPDATE_ALT_STATUS(index);
-        semControllerReady[index]->wait();
         semController[index]->set(); // wake up the controller.
 #if defined(DEBUG_IDE_MULTIPLE) || defined(DEBUG_IDE_PACKET)
         printf("Command still in progress, waking up controller.\n");
@@ -579,7 +575,7 @@ u32 CAliM1543C_ide::ide_command_read(int index, u32 address, int dsize) {
 
     // get the status and clear the interrupt.
     data = get_status(index);
-    theAli->pic_deassert(1, 6 + index);
+    deassert_interrupt(index);
 #ifdef DEBUG_IDE_INTERRUPT
     printf("%%IDE-I-INTERRUPT: Interrupt Acknowledged on %d.\n", index);
 #endif
@@ -634,7 +630,6 @@ void CAliM1543C_ide::ide_command_write(int index, u32 address, int dsize,
       SEL_STATUS(index).drq = false;
       SEL_STATUS(index).busy = true;
       UPDATE_ALT_STATUS(index);
-      semControllerReady[index]->wait();
       semController[index]->set(); // wake the controller up.
     }
 
@@ -684,7 +679,7 @@ void CAliM1543C_ide::ide_command_write(int index, u32 address, int dsize,
     break;
 
   case REG_COMMAND_COMMAND:
-    theAli->pic_deassert(1, 6 + index); // interrupt is cleared on write.
+    deassert_interrupt(index); // interrupt is cleared on write.
     if (!SEL_DISK(index)) {
 #ifdef DEBUG_IDE
       printf("%%IDE-I-NODEV: Command to non-existing device %d.%d. cmd=%x\n",
@@ -697,7 +692,7 @@ void CAliM1543C_ide::ide_command_write(int index, u32 address, int dsize,
       // we're already working, why is another command being issued?
 #ifdef DEBUG_IDE
       printf("%%IDE-W-CIP: Command is already in progress.\n");
-      PAUSE("dang it!");
+      PAUSE("dang it!\n");
 #endif
     }
 
@@ -720,7 +715,6 @@ void CAliM1543C_ide::ide_command_write(int index, u32 address, int dsize,
       UPDATE_ALT_STATUS(index);
       SEL_COMMAND(index).command_in_progress = true;
       SEL_COMMAND(index).packet_phase = PACKET_NONE;
-      semControllerReady[index]->wait();
       semController[index]->set(); // wake up the controller.
     } else {
 
@@ -736,11 +730,12 @@ void CAliM1543C_ide::ide_command_write(int index, u32 address, int dsize,
 u32 CAliM1543C_ide::ide_control_read(int index, u32 address) {
   u32 data = 0;
   switch (address) {
-  case 0:
-    // Compute status live from current state rather than using cached
-    // alt_status, to avoid stale values when the controller thread has
-    // updated status fields but not yet called UPDATE_ALT_STATUS.
-    // Unlike get_status(), this does not affect index_pulse or clear interrupts.
+  case 0: {
+    SCOPED_READ_LOCK(mtRegisters[index]);
+    // Compute live from current status flags rather than reading the
+    // cached alt_status, which only gets refreshed at UPDATE_ALT_STATUS
+    // call sites and can lag the controller thread (causing SRM read
+    // timeouts when busy goes false → drq true between updates).
     if (SEL_DISK(index)) {
       data = (SEL_STATUS(index).busy ? 0x80 : 0x00) |
              (SEL_STATUS(index).drive_ready ? 0x40 : 0x00) |
@@ -759,7 +754,9 @@ u32 CAliM1543C_ide::ide_control_read(int index, u32 address) {
 
     last_data = data;
 #endif
-    break;
+  }
+
+  break;
 
   case 1:
 
@@ -814,7 +811,9 @@ void CAliM1543C_ide::ide_control_write(int index, u32 address, u32 data) {
       CONTROLLER(index).reset_in_progress = true;
       SEL_REGISTERS(index).error = 0x01; // no error
       COMMAND(index, 0).current_command = 0;
-      CONTROLLER(index).disable_irq = false;
+      // Do NOT force disable_irq=false here: the OS commonly writes
+      // SRST|nIEN (0x06) to suppress IRQs during reset.  Honor the
+      // nIEN bit the OS just programmed two lines above.
     } else if (prev_reset && !CONTROLLER(index).reset) {
 #ifdef DEBUG_IDE_REG_CONTROL
       printf("IDE reset on index %d ended.\n", index);
@@ -827,6 +826,7 @@ void CAliM1543C_ide::ide_control_write(int index, u32 address, u32 data) {
 
       set_signature(index, 0);
       set_signature(index, 1);
+      CONTROLLER(index).selected = 0; // ATA: drive 0 is selected after reset
     }
     break;
 
@@ -840,14 +840,36 @@ void CAliM1543C_ide::ide_control_write(int index, u32 address, u32 data) {
 /**
  * Read from the IDE controller busmaster interface.
  **/
+u8 CAliM1543C_ide::ide_busmaster_status(int index) {
+  u8 status = CONTROLLER(index).busmaster[2] & 0x07;
+
+  if (usedma) {
+    CDisk *drive0 = get_disk(index, 0);
+    CDisk *drive1 = get_disk(index, 1);
+
+    // ATAPI DMA is not reliable in this controller model: the worker can
+    // block in a packet phase while the guest is still waiting for BSY to
+    // drop. Keep disk DMA available, but present packet devices as PIO-only.
+    if (drive0 && !drive0->cdrom())
+      status |= 0x20;
+    if (drive1 && !drive1->cdrom())
+      status |= 0x40;
+  }
+
+  return status;
+}
+
 u32 CAliM1543C_ide::ide_busmaster_read(int index, u32 address, int dsize) {
   u32 data = 0;
   switch (dsize) {
   case 8:
+    if (address == 2)
+      CONTROLLER(index).busmaster[2] = ide_busmaster_status(index);
     data = CONTROLLER(index).busmaster[address];
     break;
 
   case 32:
+    CONTROLLER(index).busmaster[2] = ide_busmaster_status(index);
     data = *(u32 *)(&CONTROLLER(index).busmaster[address]);
     break;
 
@@ -907,7 +929,6 @@ void CAliM1543C_ide::ide_busmaster_write(int index, u32 address, u32 data,
 
       // set the status register
       CONTROLLER(index).busmaster[2] |= 0x01;
-      semBusMasterReady[index]->wait();
       semBusMaster[index]->set(); // wake up the controller for busmastering
     } else {
 
@@ -924,13 +945,20 @@ void CAliM1543C_ide::ide_busmaster_write(int index, u32 address, u32 data,
     // bit 2 = interrupt (write 1 to reset)
     // bit 1 = error (write 1 to reset)
     // bit 0 = busmaster active.
-    CONTROLLER(index).busmaster[2] = data & 0x67;
-    if (data & 0x04) // interrupt
-      CONTROLLER(index).busmaster[2] &= ~0x04;
-    if (data & 0x02) // error
-      CONTROLLER(index).busmaster[2] &= ~0x02;
-    if (data & 0x01) // busy
-      CONTROLLER(index).busmaster[2] &= ~0x01;
+    {
+      u8 status = CONTROLLER(index).busmaster[2];
+      if (data & 0x04) // interrupt
+        status &= ~0x04;
+      if (data & 0x02) // error
+        status &= ~0x02;
+      if (data & 0x01) // active; several ALi drivers write this to work around
+                       // sticky active
+        status &= ~0x01;
+      CONTROLLER(index).busmaster[2] =
+          (status & 0x07) | (ide_busmaster_status(index) & 0x60);
+      if ((data & 0x04) || (data & 0x01))
+        deassert_interrupt(index);
+    }
     break;
 
   case 4: // descriptor table pointer register(s)
@@ -952,7 +980,7 @@ void CAliM1543C_ide::ide_busmaster_write(int index, u32 address, u32 data,
       do_pci_read(prd_address + 4, &control, 4, 1);
       printf("-IDE-I-PRD: base: %x, control: %x  \n", base, control);
       prd_address += 8;
-    } while (base & 0x80 == 0);
+    } while ((control & 0x80000000) == 0);
 #endif
     break;
 
@@ -970,13 +998,25 @@ void CAliM1543C_ide::set_signature(int index, int id) {
   if (get_disk(index, id)) {
     if (!get_disk(index, id)->cdrom()) {
       REGISTERS(index, id).cylinder_no = 0;
-      CONTROLLER(index).selected = 0; // XXX: This may not be correct.
     } else {
       REGISTERS(index, id).cylinder_no = 0xeb14;
     }
   } else {
+    // No drive at this slot - registers should all float high (0xFF)
     REGISTERS(index, id).cylinder_no = 0xffff;
+    REGISTERS(index, id).head_no = 0xff;
+    REGISTERS(index, id).sector_count = 0xff;
+    REGISTERS(index, id).sector_no = 0xff;
   }
+}
+
+// PCI IDE programming-interface bit per channel (cfg byte 0x09):
+//   bit 0 = primary native, bit 2 = secondary native; 0 = compat mode.
+// Compat mode:  ISA IRQ 14/15 via 8259 cascade — no PCI INTx.
+// Native mode:  shared PCI INTA — no 8259 IRQ.
+bool CAliM1543C_ide::channel_is_native(int index) {
+  const u8 prog_if = (endian_32(pci_state.config_data[0][0x02]) >> 8) & 0xff;
+  return (prog_if >> (index ? 2 : 0)) & 1;
 }
 
 void CAliM1543C_ide::raise_interrupt(int index) {
@@ -988,13 +1028,39 @@ void CAliM1543C_ide::raise_interrupt(int index) {
 #if !defined(IDE_YIELD_INTERRUPTS)
     {
       SCOPED_WRITE_LOCK(mtBusMaster[index]);
-      CONTROLLER(index).busmaster[2] |= 0x04;
+      if (CONTROLLER(index).busmaster[0] & 0x01)
+        CONTROLLER(index).busmaster[2] |= 0x04;
     }
     UPDATE_ALT_STATUS(index);
-    theAli->pic_interrupt(1, 6 + index);
+    CONTROLLER(index).interrupt_pending = true;
+    if (channel_is_native(index))
+      do_pci_interrupt(0, true);
+    else
+      theAli->pic_interrupt(1, 6 + index);
 #else
     CONTROLLER(index).interrupt_pending = true;
 #endif
+  }
+}
+
+void CAliM1543C_ide::deassert_interrupt(int index) {
+  bool keep_asserted = false;
+  {
+    SCOPED_READ_LOCK(mtBusMaster[index]);
+    keep_asserted = (CONTROLLER(index).busmaster[2] & 0x04) &&
+                    (CONTROLLER(index).busmaster[0] & 0x01);
+  }
+  if (keep_asserted)
+    return;
+
+  CONTROLLER(index).interrupt_pending = false;
+  if (channel_is_native(index)) {
+    // PCI INTA is shared between both channels; only drop the line
+    // when neither channel still has work pending.
+    if (!CONTROLLER(0).interrupt_pending && !CONTROLLER(1).interrupt_pending)
+      do_pci_interrupt(0, false);
+  } else {
+    theAli->pic_deassert(1, 6 + index);
   }
 }
 
@@ -1005,7 +1071,9 @@ u8 CAliM1543C_ide::get_status(int index) {
     printf("%%IDE-I-STATUS: Read status for nonexiting device %d.%d\n", index,
            CONTROLLER(index).selected);
 #endif
-    return 0;
+    // Absent drive: real hardware pulls all data lines high, so the
+    // host reads 0xff.
+    return 0xff;
   }
 
   data = (SEL_STATUS(index).busy ? 0x80 : 0x00) |
@@ -1082,7 +1150,7 @@ void CAliM1543C_ide::identify_drive(int index, bool packet) {
   strcpy(serial_number, "                    ");
   i = strlen(SEL_DISK(index)->get_serial());
   i = (i > 20) ? 20 : i;
-  memcpy(model_number, SEL_DISK(index)->get_serial(), i);
+  memcpy(serial_number, SEL_DISK(index)->get_serial(), i);
   for (i = 0; i < 10; i++)
     CONTROLLER(index).data[10 + i] =
         (serial_number[i * 2] << 8) | serial_number[i * 2 + 1];
@@ -1091,7 +1159,7 @@ void CAliM1543C_ide::identify_drive(int index, bool packet) {
   strcpy(rev_number, "        ");
   i = strlen(SEL_DISK(index)->get_rev());
   i = (i > 8) ? 8 : i;
-  memcpy(model_number, SEL_DISK(index)->get_rev(), i);
+  memcpy(rev_number, SEL_DISK(index)->get_rev(), i);
   for (i = 0; i < 4; i++)
     CONTROLLER(index).data[23 + i] =
         (rev_number[i * 2] << 8) | rev_number[i * 2 + 1];
@@ -1112,7 +1180,7 @@ void CAliM1543C_ide::identify_drive(int index, bool packet) {
   if (!packet) {
     CONTROLLER(index).data[49] = 0x0300;
   } else {
-    CONTROLLER(index).data[49] = 0x0b00; // dma, iordy
+    CONTROLLER(index).data[49] = 0x0a00; // iordy; packet devices are PIO-only
   }
 
   // capabilities (2)
@@ -1124,8 +1192,14 @@ void CAliM1543C_ide::identify_drive(int index, bool packet) {
   // validity:  bit 2 = #88 valid, 1 = 64-70 valid, 0 = 54-58 valid
   CONTROLLER(index).data[53] = 7;
 
-  // geometry
-  CONTROLLER(index).data[54] = (u16)(SEL_DISK(index)->get_cylinders());
+  // geometry: word 54 is the "current" CHS cylinder count.  ATA/ATAPI-4
+  // caps it at 16383 just like word 1 — without the cap, a >=16384-cyl
+  // disk reports e.g. 0x4000 here while word 1 reports 0x3fff and NT
+  // logs "current CHS differs from default CHS".
+  {
+    u32 cyl = (u32)SEL_DISK(index)->get_cylinders();
+    CONTROLLER(index).data[54] = (u16)(cyl > 16383 ? 16383 : cyl);
+  }
   CONTROLLER(index).data[55] = (u16)(SEL_DISK(index)->get_heads());
   CONTROLLER(index).data[56] = (u16)(SEL_DISK(index)->get_sectors());
   CONTROLLER(index).data[57] =
@@ -1148,7 +1222,7 @@ void CAliM1543C_ide::identify_drive(int index, bool packet) {
 
   // multiword dma capability (10-8: modes selected, 2-0, modes
   // supported)
-  if (usedma)
+  if (usedma && !packet)
     CONTROLLER(index).data[63] =
         CONTROLLER(index).dma_mode << 8 | 0x01; // dma 0 supported
   else
@@ -1198,6 +1272,53 @@ void CAliM1543C_ide::identify_drive(int index, bool packet) {
   CONTROLLER(index).data[88] = 0x0000;
 }
 
+u32 CAliM1543C_ide::get_disk_lba(int index) {
+  if (SEL_REGISTERS(index).lba_mode) {
+    return (SEL_REGISTERS(index).head_no << 24) |
+           (SEL_REGISTERS(index).cylinder_no << 8) |
+           SEL_REGISTERS(index).sector_no;
+  }
+
+  long heads = SEL_DISK(index)->get_heads();
+  long sectors = SEL_DISK(index)->get_sectors();
+  if (heads <= 0 || sectors <= 0 || SEL_REGISTERS(index).head_no >= heads ||
+      SEL_REGISTERS(index).sector_no < 1 ||
+      SEL_REGISTERS(index).sector_no > sectors) {
+    FAILURE(InvalidArgument, "Invalid CHS disk address");
+  }
+
+  return (u32)((((off_t_large)SEL_REGISTERS(index).cylinder_no * heads) +
+                SEL_REGISTERS(index).head_no) *
+                   sectors +
+               (SEL_REGISTERS(index).sector_no - 1));
+}
+
+void CAliM1543C_ide::advance_disk_address(int index, int sectors) {
+  if (sectors <= 0)
+    return;
+
+  if (SEL_REGISTERS(index).lba_mode) {
+    u32 lba = get_disk_lba(index) + sectors;
+    SEL_REGISTERS(index).sector_no = lba & 0xff;
+    SEL_REGISTERS(index).cylinder_no = (lba >> 8) & 0xffff;
+    SEL_REGISTERS(index).head_no = (lba >> 24) & 0x0f;
+    return;
+  }
+
+  long heads = SEL_DISK(index)->get_heads();
+  long sectors_per_track = SEL_DISK(index)->get_sectors();
+  if (heads <= 0 || sectors_per_track <= 0) {
+    FAILURE(InvalidArgument, "Invalid CHS disk geometry");
+  }
+
+  int sector = (SEL_REGISTERS(index).sector_no - 1) + sectors;
+  SEL_REGISTERS(index).sector_no = (sector % sectors_per_track) + 1;
+
+  int head = SEL_REGISTERS(index).head_no + (sector / sectors_per_track);
+  SEL_REGISTERS(index).head_no = head % heads;
+  SEL_REGISTERS(index).cylinder_no += head / heads;
+}
+
 void CAliM1543C_ide::command_aborted(int index, u8 command) {
   printf("ide%d.%d aborting on command 0x%02x \n", index,
          CONTROLLER(index).selected, command);
@@ -1241,19 +1362,17 @@ void CAliM1543C_ide::ide_status(int index) {
  * Check if threads are still running.
  **/
 void CAliM1543C_ide::check_state() {
-  if (thrController[0] && thrControllerDead[0].load())
-    FAILURE(Thread, "IDE 0 thread has died");
-
-  if (thrController[1] && thrControllerDead[1].load())
-    FAILURE(Thread, "IDE 1 thread has died");
+  if (myThreadDead.load())
+    FAILURE(Thread, "IDE thread has died");
 }
 
 void CAliM1543C_ide::execute(int index) {
   if (SEL_DISK(index) == NULL && SEL_COMMAND(index).current_command != 0x90) {
-
-    // this device doesn't exist (and its not execute device
-    // diagnostic)
-    // so we'll just timeout
+    // Command issued to a nonexistent device.  Clear BSY/DRQ that
+    // REG_COMMAND_COMMAND set so the host's next status read returns
+    // 0xff (via get_status()'s absent-drive path).
+    SEL_STATUS(index).busy = false;
+    SEL_STATUS(index).drq = false;
     SEL_COMMAND(index).command_in_progress = false;
   } else {
 #ifdef DEBUG_IDE_COMMAND
@@ -1335,12 +1454,8 @@ void CAliM1543C_ide::execute(int index) {
       if (!SEL_STATUS(index).drq) {
 
         // buffer is empty, so lets fill it.
-        if (!SEL_REGISTERS(index).lba_mode) {
-          FAILURE(NotImplemented, "Non-LBA disk read");
-        } else {
-          u32 lba = (SEL_REGISTERS(index).head_no << 24) |
-                    (SEL_REGISTERS(index).cylinder_no << 8) |
-                    SEL_REGISTERS(index).sector_no;
+        {
+          u32 lba = get_disk_lba(index);
 
           SEL_DISK(index)->seek_block(lba);
           SEL_DISK(index)->read_blocks(&(CONTROLLER(index).data[0]), 1);
@@ -1366,20 +1481,10 @@ void CAliM1543C_ide::execute(int index) {
           } else {
 
             // set the next block to read.
-            // increment the lba.
-            SEL_REGISTERS(index).sector_no++;
-            if (SEL_REGISTERS(index).sector_no > 255) {
-              SEL_REGISTERS(index).sector_no = 0;
-              SEL_REGISTERS(index).cylinder_no++;
-              if (SEL_REGISTERS(index).cylinder_no > 65535) {
-                SEL_REGISTERS(index).cylinder_no = 0;
-                SEL_REGISTERS(index).head_no++;
-              }
-            }
+            advance_disk_address(index, 1);
           }
         }
-        
-        UPDATE_ALT_STATUS(index);
+
         raise_interrupt(index);
       }
       break;
@@ -1406,12 +1511,8 @@ void CAliM1543C_ide::execute(int index) {
         if (!SEL_STATUS(index).drq) {
 
           // the buffer is full.  Do something with the data.
-          if (!SEL_REGISTERS(index).lba_mode) {
-            FAILURE(NotImplemented, "Non-LBA disk write");
-          } else {
-            u32 lba = (SEL_REGISTERS(index).head_no << 24) |
-                      (SEL_REGISTERS(index).cylinder_no << 8) |
-                      SEL_REGISTERS(index).sector_no;
+          {
+            u32 lba = get_disk_lba(index);
 
 #if defined(ES40_BIG_ENDIAN)
             {
@@ -1445,16 +1546,7 @@ void CAliM1543C_ide::execute(int index) {
             } else {
 
               // set the next block to read.
-              // increment the lba.
-              SEL_REGISTERS(index).sector_no++;
-              if (SEL_REGISTERS(index).sector_no > 255) {
-                SEL_REGISTERS(index).sector_no = 0;
-                SEL_REGISTERS(index).cylinder_no++;
-                if (SEL_REGISTERS(index).cylinder_no > 65535) {
-                  SEL_REGISTERS(index).cylinder_no = 0;
-                  SEL_REGISTERS(index).head_no++;
-                }
-              }
+              advance_disk_address(index, 1);
             }
           }
 
@@ -1463,10 +1555,33 @@ void CAliM1543C_ide::execute(int index) {
       }
       break;
 
-    /*
-     * case 0x40, 0x41: read verify sector(s) is mandatory for
-     * non-packet (no w/packet
-     */
+    case 0x40: // read verify sectors with retries
+    case 0x41: // read verify sectors without retries
+      if (SEL_DISK(index)->cdrom()) {
+        command_aborted(index, SEL_COMMAND(index).current_command);
+      } else {
+        if (SEL_REGISTERS(index).sector_count == 0)
+          SEL_REGISTERS(index).sector_count = 256;
+
+        u32 lba = get_disk_lba(index);
+        int sectors = SEL_REGISTERS(index).sector_count;
+        if ((off_t_large)lba + sectors > SEL_DISK(index)->get_lba_size()) {
+          command_aborted(index, SEL_COMMAND(index).current_command);
+        } else {
+          advance_disk_address(index, sectors);
+          SEL_REGISTERS(index).sector_count = 0;
+          SEL_STATUS(index).busy = false;
+          SEL_STATUS(index).drive_ready = true;
+          SEL_STATUS(index).seek_complete = true;
+          SEL_STATUS(index).fault = false;
+          SEL_STATUS(index).drq = false;
+          SEL_STATUS(index).err = false;
+          SEL_COMMAND(index).command_in_progress = false;
+          raise_interrupt(index);
+        }
+      }
+      break;
+
     case 0x70: // seek
       if (SEL_DISK(index)->cdrom()) {
         command_aborted(index, SEL_COMMAND(index).current_command);
@@ -1482,9 +1597,9 @@ void CAliM1543C_ide::execute(int index) {
       }
       break;
 
-    /*
-     * 0x90: execute device diagnostic: mandatory
-     */
+      /*
+       * 0x90: execute device diagnostic: mandatory
+       */
     case 0x91: // initialize device parameters
       SEL_COMMAND(index).command_in_progress = false;
       if (SEL_DISK(index)->cdrom()) {
@@ -1555,8 +1670,10 @@ void CAliM1543C_ide::execute(int index) {
             SEL_STATUS(index).SERV = false;
             CONTROLLER(index).data_ptr = 0;
             CONTROLLER(index).data_size = 6;
-            SEL_COMMAND(index).packet_dma =
-                (SEL_REGISTERS(index).features & 0x01) ? true : false;
+            SEL_COMMAND(index).packet_sense = 0;
+            SEL_COMMAND(index).packet_asc = 0;
+            SEL_COMMAND(index).packet_ascq = 0;
+            SEL_COMMAND(index).packet_dma = false;
             SEL_COMMAND(index).packet_phase = PACKET_DP1;
 
             // we drop out of the thread and shut down the
@@ -1610,6 +1727,19 @@ void CAliM1543C_ide::execute(int index) {
                 switch (scsi_get_phase(index)) {
                 case SCSI_PHASE_DATA_IN: {
                   size_t num_bytes = scsi_expected_xfer(index);
+                  // ATAPI BYTE_COUNT register is 16 bits and *some* drivers
+                  // don't honor the spec's BYTE_COUNT==0 means 65536
+                  // convention. Cap each chunk at 65534 (and to host-provided
+                  // packet_buffersize if smaller, even-aligned for 16-bit PIO).
+                  // If the SCSI engine has more data, scsi_xfer_done leaves us
+                  // in the DATA_IN phase and DP34 below loops back to DP2 for
+                  // the next chunk.
+                  size_t chunk_max = SEL_COMMAND(index).packet_buffersize;
+                  if (chunk_max == 0 || chunk_max > 65534)
+                    chunk_max = 65534;
+                  chunk_max &= ~(size_t)1;
+                  if (num_bytes > chunk_max)
+                    num_bytes = chunk_max;
                   void *data_ptr = scsi_xfer_ptr(index, num_bytes);
                   memcpy(CONTROLLER(index).data, data_ptr, num_bytes);
                   scsi_xfer_done(index);
@@ -1620,18 +1750,39 @@ void CAliM1543C_ide::execute(int index) {
                   CONTROLLER(index).data_ptr = 0;
                 } break;
 
-                case SCSI_PHASE_DATA_OUT:
-                  FAILURE(NotImplemented,
-                          "ATAPI for now does not support write operations");
-                  break;
+                case SCSI_PHASE_DATA_OUT: {
+                  size_t num_bytes = scsi_expected_xfer(index);
+                  if (SEL_COMMAND(index).packet_dma) {
+                    void *data_ptr = scsi_xfer_ptr(index, num_bytes);
+                    do_dma_transfer(index, (u8 *)data_ptr, (u32)num_bytes,
+                                    true);
+                    scsi_xfer_done(index);
+                  } else {
+                    SEL_COMMAND(index).packet_phase = PACKET_DP34;
+                    SEL_REGISTERS(index).BYTE_COUNT = (int)num_bytes;
+                    CONTROLLER(index).data_size =
+                        ((int)num_bytes + 1) / 2; // word count
+                    CONTROLLER(index).data_ptr = 0;
+                    SEL_STATUS(index).busy = false;
+                    SEL_STATUS(index).drq = true;
+                    SEL_REGISTERS(index).REASON =
+                        0; // data transfer from host to device
+                    raise_interrupt(index);
+                    yield = true;
+                  }
+                } break;
 
-                case SCSI_PHASE_STATUS:
-                  scsi_xfer_ptr(index, scsi_expected_xfer(index));
+                case SCSI_PHASE_STATUS: {
+                  size_t num_bytes = scsi_expected_xfer(index);
+                  if (num_bytes) {
+                    void *status_ptr = scsi_xfer_ptr(index, num_bytes);
+                    SEL_COMMAND(index).packet_sense = ((u8 *)status_ptr)[0];
+                  }
                   scsi_xfer_done(index);
                   if (scsi_get_phase(index) != SCSI_PHASE_FREE)
                     FAILURE(IllegalState, "SCSI bus free phase expected");
                   SEL_COMMAND(index).packet_phase = PACKET_DI;
-                  break;
+                } break;
 
                 default:
                   FAILURE(IllegalState, "Unexpected SCSI phase");
@@ -1647,6 +1798,16 @@ void CAliM1543C_ide::execute(int index) {
               break;
 
             case PACKET_DP34:
+              if (scsi_get_phase(index) == SCSI_PHASE_DATA_OUT) {
+                size_t num_bytes = scsi_expected_xfer(index);
+                void *data_ptr = scsi_xfer_ptr(index, num_bytes);
+                memcpy(data_ptr, CONTROLLER(index).data, num_bytes);
+                scsi_xfer_done(index);
+                SEL_COMMAND(index).packet_phase = PACKET_DP2;
+                yield = false;
+                break;
+              }
+
               if (SEL_COMMAND(index).packet_dma) {
 
                 // send back via dma
@@ -1654,11 +1815,18 @@ void CAliM1543C_ide::execute(int index) {
                 printf("Sending ATAPI data back via DMA.\n");
 #endif
 
-                do_dma_transfer(index, (u8 *)(&CONTROLLER(index).data[0]),
-                                SEL_REGISTERS(index).BYTE_COUNT, false);
+                u8 status =
+                    do_dma_transfer(index, (u8 *)(&CONTROLLER(index).data[0]),
+                                    SEL_REGISTERS(index).BYTE_COUNT, false);
                 if (scsi_get_phase(index) != SCSI_PHASE_STATUS)
                   FAILURE(IllegalState, "SCSI status phase expected");
-                scsi_xfer_ptr(index, scsi_expected_xfer(index));
+                {
+                  size_t num_bytes = scsi_expected_xfer(index);
+                  if (num_bytes) {
+                    void *status_ptr = scsi_xfer_ptr(index, num_bytes);
+                    SEL_COMMAND(index).packet_sense = ((u8 *)status_ptr)[0];
+                  }
+                }
                 scsi_xfer_done(index);
                 if (scsi_get_phase(index) != SCSI_PHASE_FREE)
                   FAILURE(IllegalState, "SCSI bus free phase expected");
@@ -1672,57 +1840,88 @@ void CAliM1543C_ide::execute(int index) {
                 printf("Sending ATAPI data back via PIO.\n");
 #endif
 #if 0
-                if((!SEL_STATUS(index).drq) && (CONTROLLER(index).data_ptr == 0))
-                {
+								if ((!SEL_STATUS(index).drq) && (CONTROLLER(index).data_ptr == 0))
+								{
 
-                  // first time through: no data
-                  // transferred, and drq=0
+									// first time through: no data
+									// transferred, and drq=0
+									SEL_STATUS(index).drq = true;
+									SEL_STATUS(index).busy = false;
+									SEL_REGISTERS(index).REASON = IR_IO;
+									raise_interrupt(index);
+									yield = true;
+								}
+								else
+								{
+									if (!SEL_STATUS(index).drq)
+									{
+										// all of the data has been read
+										// from the buffer.
+										// for now I assume that it is
+										// everything.
+										if (scsi_get_phase(index) != SCSI_PHASE_STATUS)
+											FAILURE(IllegalState, "SCSI status phase expected");
+										scsi_xfer_ptr(index, scsi_expected_xfer(index));
+										scsi_xfer_done(index);
+										if (scsi_get_phase(index) != SCSI_PHASE_FREE)
+											FAILURE(IllegalState, "SCSI bus free phase expected");
+#ifdef DEBUG_IDE_PACKET
+										printf("Finished transferring!\n");
+#endif
+										SEL_COMMAND(index).packet_phase = PACKET_DI;
+										yield = false;
+									}
+								}
+
+#else
+
+                // PIO data-in delivery, chunked.
+                // First entry from DP2 (data_ptr==0, !DRQ): publish the
+                // chunk -- DRQ=1, REASON=I/O, raise IRQ, yield.  Host
+                // reads STATUS/BYTE_COUNT then drains the buffer.
+                // Re-entry (host has drained): if SCSI still in DATA_IN,
+                // loop back to DP2 for the next chunk.  Otherwise pick
+                // up the SCSI status byte and let DI raise the final
+                // command-complete IRQ.
+                if (CONTROLLER(index).data_ptr == 0 && !SEL_STATUS(index).drq) {
+#ifdef DEBUG_IDE_PACKET
+                  printf("Sending ATAPI PIO chunk (%d bytes).\n",
+                         SEL_REGISTERS(index).BYTE_COUNT);
+#endif
                   SEL_STATUS(index).drq = true;
                   SEL_STATUS(index).busy = false;
                   SEL_REGISTERS(index).REASON = IR_IO;
                   raise_interrupt(index);
                   yield = true;
+                  break;
                 }
-                else
-                {
-                  if(!SEL_STATUS(index).drq)
-                  {
-                    // all of the data has been read
-                    // from the buffer.
-                    // for now I assume that it is
-                    // everything.
-                    if(scsi_get_phase(index) != SCSI_PHASE_STATUS)
-                      FAILURE(IllegalState, "SCSI status phase expected");
-                    scsi_xfer_ptr(index, scsi_expected_xfer(index));
-                    scsi_xfer_done(index);
-                    if(scsi_get_phase(index) != SCSI_PHASE_FREE)
-                      FAILURE(IllegalState, "SCSI bus free phase expected");
+
+                if (scsi_get_phase(index) == SCSI_PHASE_DATA_IN) {
 #ifdef DEBUG_IDE_PACKET
-                    printf("Finished transferring!\n");
+                  printf("PIO chunk drained, fetching next.\n");
 #endif
-                    SEL_COMMAND(index).packet_phase = PACKET_DI;
-                    yield = false;
-                  }
+                  SEL_COMMAND(index).packet_phase = PACKET_DP2;
+                  yield = false;
+                  break;
                 }
 
-#else
-
-                // do the transfer
-                SEL_STATUS(index).drq = true;
-                SEL_STATUS(index).busy = false;
-                SEL_REGISTERS(index).REASON = IR_IO;
                 if (scsi_get_phase(index) != SCSI_PHASE_STATUS)
                   FAILURE(IllegalState, "SCSI status phase expected");
-                scsi_xfer_ptr(index, scsi_expected_xfer(index));
+                {
+                  size_t num_bytes = scsi_expected_xfer(index);
+                  if (num_bytes) {
+                    void *status_ptr = scsi_xfer_ptr(index, num_bytes);
+                    SEL_COMMAND(index).packet_sense = ((u8 *)status_ptr)[0];
+                  }
+                }
                 scsi_xfer_done(index);
                 if (scsi_get_phase(index) != SCSI_PHASE_FREE)
                   FAILURE(IllegalState, "SCSI Bus free phase expected");
 #ifdef DEBUG_IDE_PACKET
                 printf("Finished Transferring\n");
 #endif
-                raise_interrupt(index);
                 SEL_COMMAND(index).packet_phase = PACKET_DI;
-                yield = true;
+                yield = false;
 #endif
               }
               break;
@@ -1734,7 +1933,19 @@ void CAliM1543C_ide::execute(int index) {
               SEL_STATUS(index).busy = false;
               SEL_STATUS(index).drive_ready = true;
               SEL_STATUS(index).SERV = false;
-              SEL_STATUS(index).CHK = false;
+              SEL_STATUS(index).CHK = (SEL_COMMAND(index).packet_sense != 0);
+              SEL_STATUS(index).err = SEL_STATUS(index).CHK;
+              if (SEL_STATUS(index).CHK) {
+                SEL_REGISTERS(index).error = SEL_COMMAND(index).packet_sense;
+                printf("%%IDE-W-ATAPI: controller %d device %d packet command",
+                       index, CONTROLLER(index).selected);
+                for (int i = 0; i < 12; i++)
+                  printf(" %02x", SEL_COMMAND(index).packet_command[i]);
+                printf(" returned SCSI status %02x\n",
+                       SEL_COMMAND(index).packet_sense);
+              } else {
+                SEL_REGISTERS(index).error = 0;
+              }
               SEL_STATUS(index).drq = false;
               raise_interrupt(index);
               SEL_COMMAND(index).command_in_progress = false;
@@ -1784,12 +1995,8 @@ void CAliM1543C_ide::execute(int index) {
         if (!SEL_STATUS(index).drq) {
 
           // buffer is empty, so lets fill it.
-          if (!SEL_REGISTERS(index).lba_mode) {
-            FAILURE(NotImplemented, "Non-LBA disk read");
-          } else {
-            u32 lba = (SEL_REGISTERS(index).head_no << 24) |
-                      (SEL_REGISTERS(index).cylinder_no << 8) |
-                      SEL_REGISTERS(index).sector_no;
+          {
+            u32 lba = get_disk_lba(index);
 
             if (SEL_REGISTERS(index).sector_count >=
                 SEL_PER_DRIVE(index).multiple_size) {
@@ -1807,6 +2014,8 @@ void CAliM1543C_ide::execute(int index) {
               SEL_REGISTERS(index).sector_count = 0;
             }
 
+            int sectors_read = CONTROLLER(index).data_size / 256;
+
 #ifdef DEBUG_IDE_MULTIPLE
             printf("IDE %d.%d: Reading %d sectors, %d sectors left.\n", index,
                    CONTROLLER(index).selected,
@@ -1819,7 +2028,7 @@ void CAliM1543C_ide::execute(int index) {
                 CONTROLLER(index).data_size /
                     256); // actual number of blocks we want.
 #if defined(ES40_BIG_ENDIAN)
-            for (int i = 0; i < 256; i++)
+            for (int i = 0; i < CONTROLLER(index).data_size; i++)
               CONTROLLER(index).data[i] = endian_16(CONTROLLER(index).data[i]);
 #endif
             SEL_STATUS(index).busy = false;
@@ -1837,17 +2046,7 @@ void CAliM1543C_ide::execute(int index) {
             } else {
 
               // set the next block to read.
-              // increment the lba.
-              SEL_REGISTERS(index).sector_no +=
-                  CONTROLLER(index).data_size / 256; // # sectors read.
-              if (SEL_REGISTERS(index).sector_no > 255) {
-                SEL_REGISTERS(index).sector_no = 0;
-                SEL_REGISTERS(index).cylinder_no++;
-                if (SEL_REGISTERS(index).cylinder_no > 65535) {
-                  SEL_REGISTERS(index).cylinder_no = 0;
-                  SEL_REGISTERS(index).head_no++;
-                }
-              }
+              advance_disk_address(index, sectors_read);
             }
           }
 
@@ -1890,12 +2089,9 @@ void CAliM1543C_ide::execute(int index) {
           if (!SEL_STATUS(index).drq) {
 
             // the buffer is full.  Do something with the data.
-            if (!SEL_REGISTERS(index).lba_mode) {
-              FAILURE(NotImplemented, "Non-LBA disk write");
-            } else {
-              u32 lba = (SEL_REGISTERS(index).head_no << 24) |
-                        (SEL_REGISTERS(index).cylinder_no << 8) |
-                        SEL_REGISTERS(index).sector_no;
+            {
+              u32 lba = get_disk_lba(index);
+              int sectors_written = CONTROLLER(index).data_size / 256;
 
 #if defined(ES40_BIG_ENDIAN)
               {
@@ -1927,6 +2123,8 @@ void CAliM1543C_ide::execute(int index) {
                 SEL_COMMAND(index).command_in_progress = false;
               } else {
 
+                advance_disk_address(index, sectors_written);
+
                 // prepare for next block
                 if (SEL_REGISTERS(index).sector_count >=
                     SEL_PER_DRIVE(index).multiple_size) {
@@ -1938,18 +2136,6 @@ void CAliM1543C_ide::execute(int index) {
                   CONTROLLER(index).data_size =
                       256 * SEL_REGISTERS(index).sector_count;
                   SEL_REGISTERS(index).sector_count = 0;
-                }
-
-                // set the next block to read.
-                // increment the lba.
-                SEL_REGISTERS(index).sector_no++;
-                if (SEL_REGISTERS(index).sector_no > 255) {
-                  SEL_REGISTERS(index).sector_no = 0;
-                  SEL_REGISTERS(index).cylinder_no++;
-                  if (SEL_REGISTERS(index).cylinder_no > 65535) {
-                    SEL_REGISTERS(index).cylinder_no = 0;
-                    SEL_REGISTERS(index).head_no++;
-                  }
                 }
               }
             }
@@ -1965,10 +2151,8 @@ void CAliM1543C_ide::execute(int index) {
         command_aborted(index, SEL_COMMAND(index).current_command);
       } else {
         SEL_PER_DRIVE(index).multiple_size = SEL_REGISTERS(index).sector_count;
-#ifdef DEBUG_IDE_MULTIPLE
         printf("Set multiple mode: sector_count = %d\n",
                SEL_REGISTERS(index).sector_count);
-#endif
         SEL_STATUS(index).busy = false;
         SEL_STATUS(index).drive_ready = true;
         SEL_STATUS(index).fault = false;
@@ -1994,9 +2178,7 @@ void CAliM1543C_ide::execute(int index) {
                SEL_REGISTERS(index).sector_count * 512);
 #endif
 
-        u32 lba = (SEL_REGISTERS(index).head_no << 24) |
-                  (SEL_REGISTERS(index).cylinder_no << 8) |
-                  SEL_REGISTERS(index).sector_no;
+        u32 lba = get_disk_lba(index);
 
         SEL_DISK(index)->seek_block(lba);
 
@@ -2004,8 +2186,8 @@ void CAliM1543C_ide::execute(int index) {
                                      SEL_REGISTERS(index).sector_count);
 
         u8 *ptr = (u8 *)(&CONTROLLER(index).data[0]);
-        do_dma_transfer(index, ptr, SEL_REGISTERS(index).sector_count * 512,
-                        false);
+        u8 status = do_dma_transfer(
+            index, ptr, SEL_REGISTERS(index).sector_count * 512, false);
         SEL_COMMAND(index).command_in_progress = false;
         SEL_STATUS(index).drive_ready = true;
         SEL_STATUS(index).seek_complete = true;
@@ -2037,11 +2219,9 @@ void CAliM1543C_ide::execute(int index) {
 #endif
 
           u8 *ptr = (u8 *)(&CONTROLLER(index).data[0]);
-          do_dma_transfer(index, ptr, SEL_REGISTERS(index).sector_count * 512,
-                          true);
-          u32 lba = (SEL_REGISTERS(index).head_no << 24) |
-                    (SEL_REGISTERS(index).cylinder_no << 8) |
-                    SEL_REGISTERS(index).sector_no;
+          u8 status = do_dma_transfer(
+              index, ptr, SEL_REGISTERS(index).sector_count * 512, true);
+          u32 lba = get_disk_lba(index);
 
           SEL_DISK(index)->seek_block(lba);
           SEL_DISK(index)->write_blocks(&(CONTROLLER(index).data[0]),
@@ -2059,13 +2239,13 @@ void CAliM1543C_ide::execute(int index) {
 
 #if 0
 
-    case 0xe5:  // check power mode
-      ide_status(index);
-      command_aborted(index, SEL_COMMAND(index).current_command);
-      SEL_COMMAND(index).command_in_progress = false;
+		case 0xe5:  // check power mode
+			ide_status(index);
+			command_aborted(index, SEL_COMMAND(index).current_command);
+			SEL_COMMAND(index).command_in_progress = false;
 
-      // raise_interrupt(index);
-      break;
+			// raise_interrupt(index);
+			break;
 #endif
 
     case 0xec: // identify
@@ -2142,13 +2322,16 @@ void CAliM1543C_ide::execute(int index) {
       }
       break;
 
-    /***
-     * Special cases:  commands we don't support, but return success.
-     ***/
+      /***
+       * Special cases:  commands we don't support, but return success.
+       ***/
+    case 0xde: // door lock on removable drives
+    case 0xdf: // door unlock on removable drives
     case 0xe0: // standby now
     case 0xe1: // idle immediate
     case 0xe2: // standby
     case 0xe3: // idle
+    case 0xe5: // check power mode
     case 0xe6: // sleep
     case 0xe7: // flush cache
     case 0xea: // flush cache ext
@@ -2211,6 +2394,7 @@ int CAliM1543C_ide::do_dma_transfer(int index, u8 *buffer, u32 buffersize,
            xfer);
 #endif
     if (xfersize + size > buffersize) {
+
       // only copy as much data as we have from the disk.
       size = buffersize - xfersize;
       status = 2;
@@ -2241,6 +2425,7 @@ int CAliM1543C_ide::do_dma_transfer(int index, u8 *buffer, u32 buffersize,
     }
 
     if (buffersize == xfersize && xfer != 0x80) {
+
       // we're done, but there's more prd nodes.
       status = 2;
     }
@@ -2271,7 +2456,6 @@ int CAliM1543C_ide::do_dma_transfer(int index, u8 *buffer, u32 buffersize,
     break;
   }
 
-  semBusMasterReady[index]->set();
   return status;
 }
 
@@ -2297,19 +2481,23 @@ void CAliM1543C_ide::run(int index) {
         if (CONTROLLER(index).interrupt_pending) {
           {
             SCOPED_WRITE_LOCK(mtBusMaster[index]);
-            CONTROLLER(index).busmaster[2] |= 0x04;
+            if (CONTROLLER(index).busmaster[0] & 0x01)
+              CONTROLLER(index).busmaster[2] |= 0x04;
           }
-          theAli->pic_interrupt(1, 6 + index);
+          if (channel_is_native(index))
+            do_pci_interrupt(0, true);
+          else
+            theAli->pic_interrupt(1, 6 + index);
         }
 #endif
       }
-      semControllerReady[index]->set();
     }
   }
 
   catch (CException &e) {
     printf("Exception in IDE thread: %s.\n", e.displayText().c_str());
-    thrControllerDead[index].store(true);
+    myThreadDead.store(true);
+
     // Let the thread die...
   }
 }

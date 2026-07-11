@@ -6,3 +6,11 @@ build**/
 CMakeSettings.json
 run/
 img/
+third_party/asmjit/
+# test media / transient artifacts (fetched or generated per run)
+test/vms/vms-disk.img
+test/**/*.ppm
+test/**/*.png
+test/vms/*.log
+test/arc/*.log
+test/arc/*.out

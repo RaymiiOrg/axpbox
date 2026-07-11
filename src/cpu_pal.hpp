@@ -26,6 +26,11 @@
  * serve the general public.
  */
 
+/**
+ * \file
+ * Contains code macros for the processor PALmode instructions.
+ * Based on HRM.
+ **/
 #define DO_HW_MFPR                                                             \
   if ((function & 0xc0) == 0x40) { /* PCTX */                                  \
     state.r[REG_1] = ((u64)state.asn << 39) | ((u64)state.astrr << 9) |        \
@@ -121,7 +126,7 @@
       break;                                                                   \
                                                                                \
     case 0xc3: /* VA_FORM */                                                   \
-      state.r[REG_1] = va_form(state.fault_va, false);                         \
+      state.r[REG_1] = va_form(state.va_form_va, false);                       \
       break;                                                                   \
                                                                                \
     default:                                                                   \
@@ -131,8 +136,11 @@
 
 #define DO_HW_MTPR                                                             \
   if ((function & 0xc0) == 0x40) {                                             \
-    if (function & 1)                                                          \
+    if (function & 1) {                                                        \
       state.asn = (int)(state.r[REG_2] >> 39) & 0xff;                          \
+      flush_data_page_cache();                                                 \
+      jit_note_asn_change();                                                   \
+    }                                                                          \
     if (function & 2) {                                                        \
       state.aster = (int)(state.r[REG_2] >> 5) & 0xf;                          \
       state.check_int = true;                                                  \
@@ -175,7 +183,7 @@
     case 0x0b: /* IER_CM */                                                    \
       state.cm = (int)(state.r[REG_2] >> 3) & 3;                               \
       state.check_int = true;                                                  \
-                                                                               \
+      [[fallthrough]];                                                         \
     case 0x0a: /* IER */                                                       \
       state.asten = (int)(state.r[REG_2] >> 13) & 1;                           \
       state.sien = (int)(state.r[REG_2] >> 13) & 0xfffe;                       \
@@ -202,10 +210,12 @@
       break;                                                                   \
                                                                                \
     case 0x11: /* i_ctl */                                                     \
-      state.i_ctl_other = state.r[REG_2] & U64(0x00000000007e2f67);            \
+      /* Bit 20 (CALL_PAL_R23 / ST_WAIT_64K) is hardwired-on for EV6/EV68 */   \
+      state.i_ctl_other = (state.r[REG_2] & U64(0x00000000006e2f67)) |         \
+                          U64(0x0000000000100000);                             \
       state.i_ctl_vptb =                                                       \
           sext_u64_48(state.r[REG_2] & U64(0x0000ffffc0000000));               \
-      state.i_ctl_spe = (int)(state.r[REG_2] >> 3) & 3;                        \
+      state.i_ctl_spe = (int)((state.r[REG_2] >> 3) & 7);                      \
       state.sde = (state.r[REG_2] >> 7) & 1;                                   \
       state.hwe = (state.r[REG_2] >> 12) & 1;                                  \
       state.i_ctl_va_mode = (int)(state.r[REG_2] >> 15) & 3;                   \
@@ -236,19 +246,20 @@
       break;                                                                   \
                                                                                \
     case 0x20: /* DTB_TAG0 */                                                  \
-      state.last_tb_virt = state.r[REG_2];                                     \
+      last_dtb_virt[0] = state.r[REG_2];                                       \
       break;                                                                   \
                                                                                \
     case 0x21: /* DTB_PTE0 */                                                  \
-      add_tb_d(state.last_tb_virt, state.r[REG_2]);                            \
+      add_tb_d(last_dtb_virt[0], state.r[REG_2], 0);                           \
       break;                                                                   \
                                                                                \
     case 0x24: /* DTB_IS0 */                                                   \
-      tbis(state.r[REG_2], ACCESS_READ);                                       \
+      tbis_d(state.r[REG_2], state.asn0);                                      \
       break;                                                                   \
                                                                                \
     case 0x25: /* DTB_ASN0 */                                                  \
       state.asn0 = (int)(state.r[REG_2] >> 56);                                \
+      flush_data_page_cache();                                                 \
       break;                                                                   \
                                                                                \
     case 0x26: /* DTB_ALTMODE */                                               \
@@ -258,6 +269,7 @@
     case 0x28: /* M_CTL */                                                     \
       state.smc = (int)(state.r[REG_2] >> 4) & 3;                              \
       state.m_ctl_spe = (int)(state.r[REG_2] >> 1) & 7;                        \
+      flush_data_page_cache();                                                 \
       break;                                                                   \
                                                                                \
     case 0x29: /* DC_CTL */                                                    \
@@ -269,11 +281,11 @@
       break;                                                                   \
                                                                                \
     case 0xa0: /* DTB_TAG1 */                                                  \
-      state.last_tb_virt = state.r[REG_2];                                     \
+      last_dtb_virt[1] = state.r[REG_2];                                       \
       break;                                                                   \
                                                                                \
     case 0xa1: /* DTB_PTE1 */                                                  \
-      add_tb_d(state.last_tb_virt, state.r[REG_2]);                            \
+      add_tb_d(last_dtb_virt[1], state.r[REG_2], 1);                           \
       break;                                                                   \
                                                                                \
     case 0xa2: /* DTB_IAP */                                                   \
@@ -285,11 +297,12 @@
       break;                                                                   \
                                                                                \
     case 0xa4: /* DTB_IS1 */                                                   \
-      tbis(state.r[REG_2], ACCESS_READ);                                       \
+      tbis_d(state.r[REG_2], state.asn1);                                      \
       break;                                                                   \
                                                                                \
     case 0xa5: /* DTB_ASN1 */                                                  \
       state.asn1 = (int)(state.r[REG_2] >> 56);                                \
+      flush_data_page_cache();                                                 \
       break;                                                                   \
                                                                                \
     case 0xc0: /* CC */                                                        \
@@ -305,6 +318,8 @@
       state.va_ctl_vptb =                                                      \
           sext_u64_48(state.r[REG_2] & U64(0x0000ffffc0000000));               \
       state.va_ctl_va_mode = (int)(state.r[REG_2] >> 1) & 3;                   \
+      flush_data_page_cache();                                                 \
+      tbia(ACCESS_READ);                                                       \
       break;                                                                   \
                                                                                \
     default:                                                                   \
@@ -312,43 +327,75 @@
     }                                                                          \
   }
 
-#define DO_HW_RET set_pc(state.r[REG_2])
+/*
+ * HW_RET (HRM 6.4.3) is a simple jump-to-target on EV6/EV68.
+ */
+#define DO_HW_RET                                                              \
+  do {                                                                         \
+    u64 target = state.r[REG_2] & ~U64(0x2);                                   \
+    set_pc(target);                                                            \
+  } while (0)
+
 #define DO_HW_LDL                                                              \
   switch (function) {                                                          \
   case 0: /* longword physical */                                              \
     phys_address = state.r[REG_2] + DISP_12;                                   \
     state.r[REG_1] = READ_PHYS_NT(32);                                         \
+    state.r[REG_1] = sext_u64_32(                                              \
+        state.r[REG_1]); /* HW_LDL canonical longword (vmspal hw_ldl) */       \
     break;                                                                     \
                                                                                \
   case 2: /* longword physical locked */                                       \
+  {                                                                            \
     phys_address = state.r[REG_2] + DISP_12;                                   \
-    cSystem->cpu_lock(state.iProcNum, phys_address);                           \
+    CSystem::CLLSCDRAMGuard _llsc_guard(cSystem, phys_address < dram_size);    \
     state.r[REG_1] = READ_PHYS_NT(32);                                         \
+    state.r[REG_1] = sext_u64_32(                                              \
+        state.r[REG_1]); /* HW_LDL canonical longword (vmspal hw_ldl*/         \
+    cSystem->cpu_lock(state.iProcNum, phys_address, state.r[REG_1]);           \
+    break;                                                                     \
+  }                                                                            \
+                                                                               \
+  case 4: /* longword virtual VPTE (HRM 6.4.1 TYPE 0102: LD_VPTE) --           \
+           * page-table-entry fetch; access checked against KERNEL             \
+           * mode regardless of executing CM. virt2phys forces cm=0            \
+           * when the VPTE flag is set. */                                     \
+    DATA_PHYS_NT(state.r[REG_2] + DISP_12, ACCESS_READ | VPTE);                \
+    state.r[REG_1] = READ_PHYS_NT(32);                                         \
+    state.r[REG_1] = sext_u64_32(                                              \
+        state.r[REG_1]); /* HW_LDL canonical longword (vmspal hw_ldl,) */      \
     break;                                                                     \
                                                                                \
-  case 4: /* longword virtual vpte                 chk   alt    vpte */        \
-    DATA_PHYS_NT(state.r[REG_2] + DISP_12, ACCESS_READ | NO_CHECK | VPTE);     \
-    state.r[REG_1] = READ_PHYS_NT(32);                                         \
-    break;                                                                     \
-                                                                               \
-  case 8: /* longword virtual */                                               \
-    DATA_PHYS_NT(state.r[REG_2] + DISP_12, ACCESS_READ | NO_CHECK);            \
-    state.r[REG_1] = READ_PHYS_NT(32);                                         \
-    break;                                                                     \
-                                                                               \
-  case 10: /* longword virtual check */                                        \
+  case 8: /* longword virtual (HRM 6.4.1 TYPE 1002) -- access checked          \
+           * against current mode */                                           \
     DATA_PHYS_NT(state.r[REG_2] + DISP_12, ACCESS_READ);                       \
     state.r[REG_1] = READ_PHYS_NT(32);                                         \
+    state.r[REG_1] = sext_u64_32(                                              \
+        state.r[REG_1]); /* HW_LDL canonical longword (vmspal hw_ldl) */       \
     break;                                                                     \
                                                                                \
-  case 12: /* longword virtual alt */                                          \
-    DATA_PHYS_NT(state.r[REG_2] + DISP_12, ACCESS_READ | NO_CHECK | ALT);      \
+  case 10: /* longword virtual check (HRM 6.4.1 TYPE 1012: WrChk) */           \
+    DATA_PHYS_NT(state.r[REG_2] + DISP_12, ACCESS_READ | WRCHK);               \
     state.r[REG_1] = READ_PHYS_NT(32);                                         \
+    state.r[REG_1] = sext_u64_32(                                              \
+        state.r[REG_1]); /* HW_LDL canonical longword (vmspal hw_ldl) */       \
     break;                                                                     \
                                                                                \
-  case 14: /* longword virtual alt check */                                    \
+  case 12: /* longword virtual alt (HRM 6.4.1 TYPE 1102) -- access             \
+            * checked using DTB_ALT_MODE, matching QEMU brokenpipe             \
+            * AlphaMMUIdx_AltMode (was incorrectly bypassed via                \
+            * NO_CHECK). */                                                    \
     DATA_PHYS_NT(state.r[REG_2] + DISP_12, ACCESS_READ | ALT);                 \
     state.r[REG_1] = READ_PHYS_NT(32);                                         \
+    state.r[REG_1] = sext_u64_32(                                              \
+        state.r[REG_1]); /* HW_LDL canonical longword (vmspal hw_ldl) */       \
+    break;                                                                     \
+                                                                               \
+  case 14: /* longword virtual alt check (HRM TYPE 1112: WrChk/Alt) */         \
+    DATA_PHYS_NT(state.r[REG_2] + DISP_12, ACCESS_READ | ALT | WRCHK);         \
+    state.r[REG_1] = READ_PHYS_NT(32);                                         \
+    state.r[REG_1] = sext_u64_32(                                              \
+        state.r[REG_1]); /* HW_LDL canonical longword (vmspal hw_ldl) */       \
     break;                                                                     \
                                                                                \
   default:                                                                     \
@@ -363,33 +410,37 @@
     break;                                                                     \
                                                                                \
   case 3: /* quadword physical locked */                                       \
+  {                                                                            \
     phys_address = state.r[REG_2] + DISP_12;                                   \
-    cSystem->cpu_lock(state.iProcNum, phys_address);                           \
+    CSystem::CLLSCDRAMGuard _llsc_guard(cSystem, phys_address < dram_size);    \
+    state.r[REG_1] = READ_PHYS_NT(64);                                         \
+    cSystem->cpu_lock(state.iProcNum, phys_address, state.r[REG_1]);           \
+    break;                                                                     \
+  }                                                                            \
+                                                                               \
+  case 5: /* quadword virtual VPTE (HRM 6.4.1 TYPE 0102: LD_VPTE) --           \
+           * see HW_LDL case 4 for full notes. */                              \
+    DATA_PHYS_NT(state.r[REG_2] + DISP_12, ACCESS_READ | VPTE);                \
     state.r[REG_1] = READ_PHYS_NT(64);                                         \
     break;                                                                     \
                                                                                \
-  case 5: /* quadword virtual vpte                 chk   alt    vpte */        \
-    DATA_PHYS_NT(state.r[REG_2] + DISP_12, ACCESS_READ | NO_CHECK | VPTE);     \
-    state.r[REG_1] = READ_PHYS_NT(64);                                         \
-    break;                                                                     \
-                                                                               \
-  case 9: /* quadword virtual */                                               \
-    DATA_PHYS_NT(state.r[REG_2] + DISP_12, ACCESS_READ | NO_CHECK);            \
-    state.r[REG_1] = READ_PHYS_NT(64);                                         \
-    break;                                                                     \
-                                                                               \
-  case 11: /* quadword virtual check */                                        \
+  case 9: /* quadword virtual (HRM 6.4.1 TYPE 1002) -- see case 8 */           \
     DATA_PHYS_NT(state.r[REG_2] + DISP_12, ACCESS_READ);                       \
     state.r[REG_1] = READ_PHYS_NT(64);                                         \
     break;                                                                     \
                                                                                \
-  case 13: /* quadword virtual alt */                                          \
-    DATA_PHYS_NT(state.r[REG_2] + DISP_12, ACCESS_READ | NO_CHECK | ALT);      \
+  case 11: /* quadword virtual check (HRM 6.4.1 TYPE 1012: WrChk) */           \
+    DATA_PHYS_NT(state.r[REG_2] + DISP_12, ACCESS_READ | WRCHK);               \
     state.r[REG_1] = READ_PHYS_NT(64);                                         \
     break;                                                                     \
                                                                                \
-  case 15: /* quadword virtual alt check */                                    \
+  case 13: /* quadword virtual alt (HRM 6.4.1 TYPE 1102) -- see case 12 */     \
     DATA_PHYS_NT(state.r[REG_2] + DISP_12, ACCESS_READ | ALT);                 \
+    state.r[REG_1] = READ_PHYS_NT(64);                                         \
+    break;                                                                     \
+                                                                               \
+  case 15: /* quadword virtual alt check (HRM TYPE 1112: WrChk/Alt) */         \
+    DATA_PHYS_NT(state.r[REG_2] + DISP_12, ACCESS_READ | ALT | WRCHK);         \
     state.r[REG_1] = READ_PHYS_NT(64);                                         \
     break;                                                                     \
                                                                                \
@@ -405,21 +456,42 @@
     break;                                                                     \
                                                                                \
   case 2: /* longword physical conditional */                                  \
-    if (cSystem->cpu_unlock(state.iProcNum)) {                                 \
-      phys_address = state.r[REG_2] + DISP_12;                                 \
-      WRITE_PHYS_NT(state.r[REG_1], 32);                                       \
-      state.r[REG_1] = 1;                                                      \
-    } else                                                                     \
-      state.r[REG_1] = 0;                                                      \
+    phys_address = state.r[REG_2] + DISP_12;                                   \
+    {                                                                          \
+      u64 _stc_exp = 0;                                                        \
+      bool _stc_same_address = false;                                          \
+      CSystem::CLLSCDRAMGuard _llsc_guard(cSystem, phys_address < dram_size);  \
+      if (cSystem->cpu_take_lock(state.iProcNum, phys_address, &_stc_exp,      \
+                                 &_stc_same_address)) {                        \
+        if (phys_address < dram_size) {                                        \
+          if (_stc_same_address)                                               \
+            state.r[REG_1] =                                                   \
+                dram_cas(dram_ptr, phys_address, _stc_exp, state.r[REG_1], 32) \
+                    ? 1                                                        \
+                    : 0;                                                       \
+          else {                                                               \
+            dram_write(dram_ptr, phys_address, 32, state.r[REG_1]);            \
+            state.r[REG_1] = 1;                                                \
+          }                                                                    \
+        } else {                                                               \
+          cSystem->WriteMem(phys_address, 32, state.r[REG_1], this);           \
+          state.r[REG_1] = 1;                                                  \
+        }                                                                      \
+      } else                                                                   \
+        state.r[REG_1] = 0;                                                    \
+    }                                                                          \
     break;                                                                     \
                                                                                \
-  case 4: /* longword virtual                      chk   alt    vpte */        \
-    DATA_PHYS_NT(state.r[REG_2] + DISP_12, ACCESS_READ | NO_CHECK);            \
+  case 4: /* longword virtual (HRM 6.4.1 Table 6-4 TYPE 0102) -- write         \
+           * checked against current mode, matching QEMU brokenpipe            \
+           * AlphaMMUIdx_Privileged. */                                        \
+    DATA_PHYS_NT(state.r[REG_2] + DISP_12, ACCESS_WRITE);                      \
     WRITE_PHYS_NT(state.r[REG_1], 32);                                         \
     break;                                                                     \
                                                                                \
-  case 12: /* longword virtual alt */                                          \
-    DATA_PHYS_NT(state.r[REG_2] + DISP_12, ACCESS_READ | NO_CHECK | ALT);      \
+  case 12: /* longword virtual alt (HRM TYPE 1102) -- write checked            \
+            * using DTB_ALT_MODE, matching brokenpipe AlphaMMUIdx_AltMode.*/   \
+    DATA_PHYS_NT(state.r[REG_2] + DISP_12, ACCESS_WRITE | ALT);                \
     WRITE_PHYS_NT(state.r[REG_1], 32);                                         \
     break;                                                                     \
                                                                                \
@@ -435,21 +507,40 @@
     break;                                                                     \
                                                                                \
   case 3: /* quadword physical conditional */                                  \
-    if (cSystem->cpu_unlock(state.iProcNum)) {                                 \
-      phys_address = state.r[REG_2] + DISP_12;                                 \
-      WRITE_PHYS_NT(state.r[REG_1], 64);                                       \
-      state.r[REG_1] = 1;                                                      \
-    } else                                                                     \
-      state.r[REG_1] = 0;                                                      \
+    phys_address = state.r[REG_2] + DISP_12;                                   \
+    {                                                                          \
+      u64 _stc_exp = 0;                                                        \
+      bool _stc_same_address = false;                                          \
+      CSystem::CLLSCDRAMGuard _llsc_guard(cSystem, phys_address < dram_size);  \
+      if (cSystem->cpu_take_lock(state.iProcNum, phys_address, &_stc_exp,      \
+                                 &_stc_same_address)) {                        \
+        if (phys_address < dram_size) {                                        \
+          if (_stc_same_address)                                               \
+            state.r[REG_1] =                                                   \
+                dram_cas(dram_ptr, phys_address, _stc_exp, state.r[REG_1], 64) \
+                    ? 1                                                        \
+                    : 0;                                                       \
+          else {                                                               \
+            dram_write(dram_ptr, phys_address, 64, state.r[REG_1]);            \
+            state.r[REG_1] = 1;                                                \
+          }                                                                    \
+        } else {                                                               \
+          cSystem->WriteMem(phys_address, 64, state.r[REG_1], this);           \
+          state.r[REG_1] = 1;                                                  \
+        }                                                                      \
+      } else                                                                   \
+        state.r[REG_1] = 0;                                                    \
+    }                                                                          \
     break;                                                                     \
                                                                                \
-  case 5: /* quadword virtual                      chk    alt    vpte */       \
-    DATA_PHYS_NT(state.r[REG_2] + DISP_12, ACCESS_READ | NO_CHECK);            \
+  case 5: /* quadword virtual (HRM 6.4.1 Table 6-4 TYPE 0102) --               \
+           * see HW_STL case 4. */                                             \
+    DATA_PHYS_NT(state.r[REG_2] + DISP_12, ACCESS_WRITE);                      \
     WRITE_PHYS_NT(state.r[REG_1], 64);                                         \
     break;                                                                     \
                                                                                \
-  case 13: /* quadword virtual alt */                                          \
-    DATA_PHYS_NT(state.r[REG_2] + DISP_12, ACCESS_READ | NO_CHECK | ALT);      \
+  case 13: /* quadword virtual alt (HRM TYPE 1102) -- see HW_STL 12. */        \
+    DATA_PHYS_NT(state.r[REG_2] + DISP_12, ACCESS_WRITE | ALT);                \
     WRITE_PHYS_NT(state.r[REG_1], 64);                                         \
     break;                                                                     \
                                                                                \

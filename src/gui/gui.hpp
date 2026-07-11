@@ -31,6 +31,11 @@
  *  Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307 USA
  */
 
+/**
+ * \file
+ * Contains the definitions for the bx_gui_c base class used for interfacing
+ *with SDL and other device interfaces.
+ **/
 #ifndef __GUI_H__
 #define __GUI_H__
 
@@ -111,6 +116,8 @@ public:
 
   void lock();
   void unlock();
+  virtual void graphics_frame_update(const u32 *pixels, unsigned width,
+                                     unsigned height);
 
 protected:
   CMutex *guiMutex;
@@ -291,7 +298,8 @@ protected:
 //   static bx_sdl_gui_c *theGui;
 #define IMPLEMENT_GUI_PLUGIN_CODE(gui_name)                                    \
   int lib##gui_name##_LTX_plugin_init(CConfigurator *cfg) {                    \
-    printf("%%GUI-I-INS: Installing %s module as the ES40 GUI\n", #gui_name);  \
+    printf("%%GUI-I-INS: Installing %s module as the AXPbox GUI\n",            \
+           #gui_name);                                                         \
     theGui = new bx_##gui_name##_gui_c(cfg);                                   \
     bx_gui = theGui;                                                           \
     return (0); /* Success */                                                  \

@@ -31,6 +31,11 @@
  *  Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307 USA
  */
 
+/**
+ * \file
+ * Contains the code for the bx_keymap_c class used for keyboard
+ * interfacing with SDL and other device interfaces.
+ **/
 #include "keymap.hpp"
 #include "../StdAfx.hpp"
 #include "../System.hpp"

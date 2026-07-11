@@ -26,39 +26,16 @@
  * serve the general public.
  */
 
+/**
+ * \file
+ * Contains the definitions for the ISA part of the emulated Ali M1543C chipset.
+ **/
 #if !defined(INCLUDED_ALIM1543C_H_)
 #define INCLUDED_ALIM1543C_H_
 
 #include "PCIDevice.hpp"
 
-#define PIT_OFFSET_MAX 6
-
-// RTC register A (MC_BASE_32_KHz is a divider bits configuration)
-#define RTC_REG_A 0x0a
-#define RTC_UIP 0x80
-#define MC_BASE_32_KHz 0x20
-
-// RTC register B (here most options reside; 0x08 is the unused square wave
-// enable pin)
-#define RTC_REG_B 0x0b
-#define RTC_SET 0x80
-#define RTC_PIE 0x40
-#define RTC_AIE 0x20
-#define RTC_UIE 0x10
-#define RTC_DM 0x04
-#define RTC_2412 0x02
-#define RTC_DSE 0x01
-
-// RTC register C (rest of register is always zero)
-#define RTC_REG_C 0x0c
-#define RTC_IRQF 0x80
-#define RTC_PF 0x40
-#define RTC_AF 0x20
-#define RTC_UF 0x10
-
-// RTC register D (rest of register is always zero)
-#define RTC_REG_D 0x0d
-#define RTC_VRT 0x80
+#include <chrono>
 
 /**
  * \brief Emulated ISA part of the ALi M1543C chipset.
@@ -69,8 +46,6 @@
  * Documentation consulted:
  *  - Ali M1543C B1 South Bridge Version 1.20
  *(http://mds.gotdns.com/sensors/docs/ali/1543dScb1-120.pdf)
- *  - MC146818 RTC
- *(https://www.nxp.com/docs/en/data-sheet/MC146818.pdf)
  *  - Keyboard Scancodes, by Andries Brouwer
  *(http://www.win.tue.nl/~aeb/linux/kbd/scancodes.html)
  *  .
@@ -80,6 +55,9 @@ public:
   virtual int SaveState(FILE *f);
   virtual int RestoreState(FILE *f);
 
+  //    void instant_tick();
+  //    void interrupt(int number);
+  virtual void run();
   virtual void check_state();
   virtual void WriteMem_Legacy(int index, u32 address, int dsize, u32 data);
   virtual u32 ReadMem_Legacy(int index, u32 address, int dsize);
@@ -90,19 +68,24 @@ public:
   virtual ~CAliM1543C();
   void pic_interrupt(int index, int intno);
   void pic_deassert(int index, int intno);
+  void pic_set_line(int index, int intno, bool active);
+
+  void set_floppy_presence(bool driveA, bool driveB);
 
   void init();
   void start_threads();
   void stop_threads();
-  void run();
 
 private:
   std::unique_ptr<std::thread> myThread;
   std::atomic_bool myThreadDead{false};
-  CMutex *myRegLock;
   bool StopThread;
 
-  struct tm get_time();
+  std::mutex picLock;
+  // Unlocked inner helpers — called only while picLock is held.
+  void pic_interrupt_inner(int index, int intno);
+  void pic_deassert_inner(int index, int intno);
+  void pic_set_line_inner(int index, int intno, bool active);
 
   // REGISTER 61 (NMI)
   u8 reg_61_read();
@@ -111,58 +94,142 @@ private:
   // REGISTERS 70 - 73: TOY
   u8 toy_read(u32 address);
   void toy_write(u32 address, u8 data);
-  void toy_handle_periodic_interrupt(u8 data);
-  void toy_update_irqf();
 
   // Timer/Counter
   u8 pit_read(u32 address);
   void pit_write(u32 address, u8 data);
   void pit_clock();
+  bool pit_out(int c);
 
+  // Wall-clock pacing for the 8254: elapsed host time is converted to
+  // 1.193182 MHz input clocks; m_pit_acc carries the sub-clock remainder
+  // (in ns * PIT_CLOCK_HZ units). m_pit_epoch marks each channel's last
+  // counter load so pit_out() can derive the output pin analytically
+  // (jitter-free) instead of from thread-tick decrements.
+  // Not saved state - re-primed on restore.
+  std::chrono::steady_clock::time_point m_pit_last;
+  std::chrono::steady_clock::time_point m_pit_epoch[3];
+  u64 m_pit_acc;
+
+public:
+  // Period in ns of the MC146818 SQW output (rate from TOY reg A).
+  // CPU thread reads this every batch boundary to pace b_irq<2>.
+  u64 get_interval_period_ns() const;
+
+private:
   // interrupt controller
   u8 pic_read(int index, u32 address);
   void pic_write(int index, u32 address, u8 data);
   u8 pic_read_vector();
   u8 pic_read_edge_level(int index);
   void pic_write_edge_level(int index, u8 data);
+  u8 pic_control_read(u32 address);
+  void pic_control_write(u32 address, u8 data);
+  int pic_get_irq(int index);
+  void pic_update_output(int index);
+  void pic_intack(int index, int irq);
+  void pic_init_reset(int index);
 
   // LPT controller
   u8 lpt_read(u32 address);
   void lpt_write(u32 address, u8 data);
   void lpt_reset();
 
+  // Built-in Super I/O configuration interface
+  void superio_reset();
+  u8 superio_read(u32 address);
+  void superio_write(u32 address, u8 data);
+  u8 superio_current_reg() const;
+  void superio_apply_ldn(int ldn);
+
+  // ISA Plug-and-Play protocol (ports 0x279 ADDRESS, 0xA79 WRITE_DATA,
+  // and an OS-selectable READ_DATA port in 0x203-0x3FF).  We expose no
+  // PnP cards, so the implementation only tracks enough protocol state
+  // to swallow the OS's enumeration cleanly and answer "no cards".
+  enum {
+    PNP_WAIT_FOR_KEY = 0,
+    PNP_SLEEP = 1,
+    PNP_ISOLATION = 2,
+    PNP_CONFIG = 3
+  };
+  void isapnp_addr_write(u8 data);
+  void isapnp_data_write(u8 data);
+  u8 isapnp_data_read(u32 address);
+  static const u8 isapnp_init_key[32];
+
   /// The state structure contains all elements that need to be saved to the
   /// statefile.
   struct SAli_state {
+
     // REGISTER 61 (NMI)
     u8 reg_61;
 
     // REGISTERS 70 - 73: TOY
     u8 toy_stored_data[256];
     u8 toy_access_ports[4];
-
-    // TOY periodic interrupt last fire
-    clock_t toy_pi_last_fire;
+    long toy_offset; // seconds: (user-set time) - (host time)
 
     // Timer/Counter
     u32 pit_counter[9];
+#define PIT_OFFSET_LATCH 3
+#define PIT_OFFSET_MAX 6
     u8 pit_status[4];
     u8 pit_mode[4];
 
-    // interrupt controller
-    int pic_mode[2];
-    u8 pic_intvec[2];
-    u8 pic_mask[2];
-    u8 pic_asserted[2];
-    u8 pic_edge_level[2];
+    // interrupt controller  IRR (request) and ISR (in-service) are kept
+    // separate so an edge that arrives while a higher-priority IRQ is in
+    // service is still latched and re-fires after EOI.
+    u8 pic_irr[2];             // raw interrupt request register
+    u8 pic_imr[2];             // interrupt mask register (1 = masked)
+    u8 pic_isr[2];             // in-service register
+    u8 pic_last_irr[2];        // line history for edge detection
+    u8 pic_irq_base[2];        // ICW2 vector base (was pic_intvec)
+    u8 pic_priority_add[2];    // priority rotation offset
+    u8 pic_read_reg_select[2]; // OCW3 bit 0: 0=IRR, 1=ISR readback
+    u8 pic_poll[2];            // OCW3 poll-mode pending
+    u8 pic_special_mask[2];    // OCW3 special mask mode
+    u8 pic_init_state[2];      // 0=normal, 1=ICW2, 2=ICW3, 3=ICW4
+    u8 pic_auto_eoi[2];        // ICW4 AEOI bit
+    u8 pic_rotate_on_aeoi[2];  // OCW2 rotate-on-AEOI
+    u8 pic_special_fnm[2];     // ICW4 special fully nested mode
+    u8 pic_init4[2];           // ICW1 bit 0: ICW4 needed
+    u8 pic_single_mode[2];     // ICW1 bit 1: single PIC, no slave
+    u8 pic_elcr[2];            // edge/level control register (ELCR)
+    u8 pic_ltim[2];            // ICW1 bit 3: level-trigger global mode
+    u8 pic_control_index;      // latched index for 0x22/0x23 backdoor
+    u8 pic_control_regs[6]{};  // currently unused
 
     u8 lpt_data;
     u8 lpt_control;
     u8 lpt_status;
     bool lpt_init;
+
+    // SuperIO
+    bool superio_config_mode = false;
+    u8 superio_unlock_state = 0;
+    u8 superio_index = 0;
+    u8 superio_ldn = 0;
+    u8 superio_chip_regs[256]{};
+    u8 superio_ldn_regs[16][256]{};
+
+    // ISA Plug-and-Play
+    int isapnp_state = 0; // PNP_WAIT_FOR_KEY at boot
+    int isapnp_key_pos = 0;
+    u8 isapnp_reg = 0;      // last register selected via 0x279
+    u16 isapnp_rd_port = 0; // OS-set RD_DATA port in 0x203-0x3FF
+    u8 isapnp_wake_csn = 0;
   } state;
 
   FILE *lpt;
+
+  // sys0 "arc_year_compat" config: when true, encode TOY year as offset
+  // from 1980 so the ARC console displays the correct year. Off by default
+  // because OpenVMS writes the BBW year in its own (year - 2000) format on
+  // SET TIME / shutdown, which would shift internal time forward 20 years
+  // here. VMS users wanting ARC to also display correctly should leave
+  // this off and accept ARC's year-20 display, or set it true and answer
+  // the boot time prompts
+  bool arc_year_compat;
 };
 
 extern CAliM1543C *theAli;

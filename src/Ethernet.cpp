@@ -29,7 +29,12 @@
  * Anders Gavare.  All rights reserved.
  */
 
+/**
+ * \file
+ * Contains the code for the packet queue and other NIC support routines.
+ **/
 #include "Ethernet.hpp"
+#include "StdAfx.hpp"
 #include "telnet.hpp"
 
 /**

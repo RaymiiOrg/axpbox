@@ -95,12 +95,11 @@ private:
 inline void CSemaphoreImpl::setImpl() {
   if (pthread_mutex_lock(&_mutex))
     throw CSystemException("cannot signal semaphore (lock)");
+  // Saturate at _max instead of throwing: device models signal "work
+  // pending" semaphores without tracking whether the worker has already
+  // been woken (matches the ES40-Emu semaphore semantics).
   if (_n < _max) {
     ++_n;
-  } else {
-    pthread_mutex_unlock(&_mutex);
-    throw CSystemException(
-        "cannot signal semaphore: count would exceed maximum");
   }
   if (pthread_cond_signal(&_cond)) {
     pthread_mutex_unlock(&_mutex);

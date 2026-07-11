@@ -44,6 +44,24 @@
  * POSSIBILITY OF SUCH DAMAGE.
  */
 
+/**
+ * \file
+ * Contains the definitions for the registers for the emulated DEC 21143
+ * NIC device.
+ *
+ * $Id$
+ *
+ * X-1.3        Camiel Vanderhoeven                             02-JAN-2008
+ *      Cleanup.
+ *
+ * X-1.2        Camiel Vanderhoeven                             15-NOV-2007
+ *      Added newline at end to avoid warnings.
+ *
+ * X-1.1        Camiel Vanderhoeven                             14-NOV-2007
+ *      Initial version for ES40 emulator.
+ *
+ * \author Camiel Vanderhoeven (camiel@camicom.com / http://www.camicom.com)
+ **/
 #ifndef __volatile
 #define __volatile
 #endif
@@ -366,13 +384,13 @@
 #define STATUS_RWT 0x00000200    /* receive watchdog timeout */
 #define STATUS_AT                                                              \
   0x00000400 /* SIA AUI/TP pin changed                                         \
-                      (21040) */
+(21040) */
 #define STATUS_ETI                                                             \
   0x00000400 /* early transmit interrupt                                       \
-                      (21142) */
+(21142) */
 #define STATUS_FD                                                              \
   0x00000800                         /* full duplex short frame                \
-                                              received (21040) */
+          received (21040) */
 #define STATUS_TM 0x00000800         /* timer expired (21041) */
 #define STATUS_LNF 0x00001000        /* link fail (21040) */
 #define STATUS_SE 0x00002000         /* system error */
@@ -383,34 +401,34 @@
 #define STATUS_RS_STOPPED 0x00000000 /* Stopped */
 #define STATUS_RS_FETCH                                                        \
   0x00020000 /* Running - fetch receive                                        \
-                      descriptor */
+descriptor */
 #define STATUS_RS_CHECK                                                        \
   0x00040000                           /* Running - check for end              \
-                                                of receive */
+            of receive */
 #define STATUS_RS_WAIT 0x00060000      /* Running - wait for packet */
 #define STATUS_RS_SUSPENDED 0x00080000 /* Suspended */
 #define STATUS_RS_CLOSE                                                        \
   0x000a0000 /* Running - close receive                                        \
-                      descriptor */
+descriptor */
 #define STATUS_RS_FLUSH                                                        \
   0x000c0000 /* Running - flush current                                        \
-                      frame from FIFO */
+frame from FIFO */
 #define STATUS_RS_QUEUE                                                        \
   0x000e0000                         /* Running - queue current                \
-                                              frame from FIFO into             \
-                                              buffer */
+          frame from FIFO into                                   \
+          buffer */
 #define STATUS_TS 0x00700000         /* transmit process state */
 #define STATUS_TS_STOPPED 0x00000000 /* Stopped */
 #define STATUS_TS_FETCH                                                        \
   0x00100000 /* Running - fetch transmit                                       \
-                      descriptor */
+descriptor */
 #define STATUS_TS_WAIT                                                         \
   0x00200000 /* Running - wait for end                                         \
-                      of transmission */
+of transmission */
 #define STATUS_TS_READING                                                      \
   0x00300000                           /* Running - read buffer from           \
-                                                memory and queue into          \
-                                                FIFO */
+            memory and queue into                                \
+            FIFO */
 #define STATUS_TS_RESERVED 0x00400000  /* RESERVED */
 #define STATUS_TS_SETUP 0x00500000     /* Running - Setup packet */
 #define STATUS_TS_SUSPENDED 0x00600000 /* Suspended */
@@ -479,13 +497,13 @@
 #define MISSED_MFC 0x0000ffff /* missed packet count */
 #define MISSED_MFO                                                             \
   0x00010000 /* missed packet count                                            \
-                      overflowed */
+overflowed */
 #define MISSED_FOC                                                             \
   0x0ffe0000 /* fifo overflow counter                                          \
-                      (21140) */
+(21140) */
 #define MISSED_OCO                                                             \
   0x10000000 /* overflow counter overflowed                                    \
-                      (21140) */
+(21140) */
 
 #define MISSED_GETMFC(x) ((x)&MISSED_MFC)
 #define MISSED_GETFOC(x) (((x)&MISSED_FOC) >> 17)
@@ -507,8 +525,8 @@
 #define MIIROM_MDO 0x00020000    /* MII data out */
 #define MIIROM_MIIDIR                                                          \
   0x00040000                  /* MII direction mode                            \
-                                       1 = PHY in read,                        \
-                                       0 = PHY in write */
+   1 = PHY in read,                                              \
+   0 = PHY in write */
 #define MIIROM_MDI 0x00080000 /* MII data in */
 #define MIIROM_DN 0x80000000  /* data not valid (21040) */
 
@@ -548,13 +566,12 @@
 #define SIASTAT_DAO 0x00000080   /* PLL all one */
 #define SIASTAT_SRA 0x00000100   /* selected port receive activity (21041) */
 #define SIASTAT_ARA 0x00000100   /* AUI receive activity (21142) */
-#define SIASTAT_NRA                                                            \
-  0x00000200                   /* non-selected port receive activity (21041)   \
-                                */
-#define SIASTAT_TRA 0x00000200 /* 10base-T receive activity (21142) */
-#define SIASTAT_NSN 0x00000400 /* non-stable NLPs detected (21041) */
-#define SIASTAT_TRF 0x00000800 /* transmit remote fault (21041) */
-#define SIASTAT_ANS 0x00007000 /* autonegotiation state (21041) */
+#define SIASTAT_NRA 0x00000200   /* non-selected port receive activity (21041) \
+                                  */
+#define SIASTAT_TRA 0x00000200   /* 10base-T receive activity (21142) */
+#define SIASTAT_NSN 0x00000400   /* non-stable NLPs detected (21041) */
+#define SIASTAT_TRF 0x00000800   /* transmit remote fault (21041) */
+#define SIASTAT_ANS 0x00007000   /* autonegotiation state (21041) */
 #define SIASTAT_ANS_DIS 0x00000000       /*     disabled */
 #define SIASTAT_ANS_TXDIS 0x00001000     /*     transmit disabled */
 #define SIASTAT_ANS_START 0x00001000     /*     (MX98715AEC) */
@@ -575,8 +592,7 @@
 #define SIACONN_AUI 0x00000008 /* select AUI (0 = TP) */
 #define SIACONN_EDP 0x00000010 /* SIA PLL external input enable (21040) */
 #define SIACONN_ENI 0x00000020 /* encoder input multiplexer (21040) */
-#define SIACONN_SIM                                                            \
-  0x00000040                   /* serial interface input multiplexer (21040)   \
+#define SIACONN_SIM 0x00000040 /* serial interface input multiplexer (21040)   \
                                 */
 #define SIACONN_ASE 0x00000080 /* APLL start enable (21040) */
 #define SIACONN_SEL                                                            \

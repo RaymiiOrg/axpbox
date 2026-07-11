@@ -26,6 +26,10 @@
  * serve the general public.
  */
 
+/**
+ * \file
+ * Contains definitions for the disk base class.
+ **/
 #if !defined(__DISK_H__)
 #define __DISK_H__
 
@@ -33,8 +37,8 @@
 #include "SCSIBus.hpp"
 #include "SCSIDevice.hpp"
 
-#define DATO_BUFSZ 256 * 1024
-#define DATI_BUFSZ 256 * 1024
+#define DATO_BUFSZ (256 * 1024)
+#define DATI_BUFSZ (256 * 1024)
 
 /**
  * \brief Abstract base class for disks (connects to a CDiskController)
@@ -55,12 +59,14 @@ public:
   void set_atapi_mode() { atapi_mode = true; };
 
   int do_scsi_command();
+  int mode_sense_page(int page, bool changeable, int q);
   int do_scsi_message();
-  void do_scsi_error(int errcode);
+  void do_scsi_error(int errcode, int info = 0);
 
   virtual bool seek_byte(off_t_large byte) = 0;
   virtual size_t read_bytes(void *dest, size_t bytes) = 0;
   virtual size_t write_bytes(void *src, size_t bytes) = 0;
+  virtual void flush(){}; // Override in subclasses that need to sync to storage
 
   bool seek_block(off_t_large lba) {
     return seek_byte(lba * state.block_size);
@@ -178,6 +184,8 @@ protected:
       } sense;
 
       bool locked; /**< Media is locked (for CD-ROM type devices). **/
+
+      int media_changed;
 
       // bool disconnect_priv;       /**< Initiator has allowed us to
       // disconnect/reconnect. **/ bool will_disconnect;       /**< We intend to

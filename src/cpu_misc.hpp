@@ -26,7 +26,36 @@
  * serve the general public.
  */
 
-#define DO_AMASK state.r[REG_3] = V_2 & ~CPU_AMASK;
+/**
+ * \file
+ * Contains code macros for miscellaneous processor instructions.
+ * Based on ARM chapter 4.11.
+ **/
+#include <atomic>
+
+#define DO_AMASK                                                               \
+  do {                                                                         \
+    /* RA must be R31 per AHB / QEMU */                                        \
+    if (REG_1 != 31) {                                                         \
+      GO_PAL(OPCDEC);                                                          \
+    } else {                                                                   \
+      state.r[REG_3] = V_2 & ~CPU_AMASK;                                       \
+    }                                                                          \
+  } while (0)
+
+#define SAVE_CALL_PAL_R23()                                                    \
+  do {                                                                         \
+    state.r[(state.sde ? 32 : 0) + 23] = state.pc & ~U64(0x2);                 \
+  } while (0)
+
+#define ENTER_NATIVE_CALL_PAL()                                                \
+  do {                                                                         \
+    state.exc_addr = state.current_pc;                                         \
+    SAVE_CALL_PAL_R23();                                                       \
+    set_pc(state.pal_base | (1 << 13) | ((function & 0x80) << 5) |             \
+           ((function & 0x3f) << 6) | 1);                                      \
+    TRC(true, false)                                                           \
+  } while (0)
 
 #define DO_CALL_PAL                                                            \
   if (((function < 0x40) && ((state.cm != 0))) ||                              \
@@ -68,7 +97,7 @@
         break;                                                                 \
                                                                                \
       case 0x09: /* CSERVE */                                                  \
-        vmspal_call_cserve();                                                  \
+        ENTER_NATIVE_CALL_PAL();                                               \
         break;                                                                 \
                                                                                \
       case 0x0b: /* MFPR_FEN */                                                \
@@ -236,32 +265,47 @@
         break;                                                                 \
                                                                                \
       default:                                                                 \
-        state.r[32 + 23] = state.pc;                                           \
-        set_pc(state.pal_base | (1 << 13) | ((function & 0x80) << 5) |         \
-               ((function & 0x3f) << 6) | 1);                                  \
-        TRC(true, false)                                                       \
+        ENTER_NATIVE_CALL_PAL();                                               \
       }                                                                        \
     } else {                                                                   \
-      state.r[32 + 23] = state.pc;                                             \
-      set_pc(state.pal_base | (1 << 13) | ((function & 0x80) << 5) |           \
-             ((function & 0x3f) << 6) | 1);                                    \
-      TRC(true, false)                                                         \
+      ENTER_NATIVE_CALL_PAL();                                                 \
     }                                                                          \
   }
 
 #define DO_IMPLVER state.r[REG_3] = CPU_IMPLVER;
 
+// state.cc is wall-clock in both engines (advanced at batch boundaries by real
+// elapsed time * cpu_hz), so the live cycle count is simply state.cc; _cc_accum
+// only feeds cc_large for the legacy check_state speed-factor feedback.
 #define DO_RPCC                                                                \
-  state.r[REG_1] = ((u64)state.cc_offset) << 32 | (state.cc & U64(0xffffffff));
+  state.r[REG_1] = ((u64)state.cc_offset) << 32 | (state.cc & U64(0xffffffff))
 
 // The following ops have no function right now (at least, not until multiple
-// CPU's are supported).
-#define DO_TRAPB ;
-#define DO_EXCB ;
-#define DO_MB ;
-#define DO_WMB ;
-#define DO_FETCH ;
-#define DO_FETCH_M ;
-#define DO_ECB ;
-#define DO_WH64 ;
-#define DO_WH64EN ;
+// CPU's are supported). well, let's set up to have that happen soon.... Alpha
+// ordering approximations (conservative): TRAPB: serialize exceptions + memory;
+// use full fence.
+#define DO_TRAPB std::atomic_thread_fence(std::memory_order_seq_cst);
+// EXCB/MB: full fence (data+io ordering).
+#define DO_EXCB std::atomic_thread_fence(std::memory_order_seq_cst);
+#define DO_MB std::atomic_thread_fence(std::memory_order_seq_cst);
+// WMB: HRM 4.11.1 requires WMB to order all prior stores from this CPU
+// before all subsequent stores, as observed by every other CPU/DMA agent.
+// A standalone atomic_thread_fence(release) only synchronizes with a matching
+// acquire fence/load on another thread; it does NOT impose store-store
+// ordering visible to unsynchronized observers.
+#define DO_WMB std::atomic_thread_fence(std::memory_order_seq_cst);
+// FETCH/FETCH_M/ECB/WH64/WH64EN are hints — safe as no-ops.
+#define DO_FETCH ;   /* hint: no effect */
+#define DO_FETCH_M ; /* hint: no effect */
+#define DO_ECB ;     /* cache hint: no effect */
+#define DO_WH64 ;    /* write hint: no effect */
+#define DO_WH64EN ;  /* write hint enable: no effect */
+
+// IMB (Instruction Memory Barrier): ensure instruction fetch observes prior
+// stores. Architecturally this invalidates any stale I-cache state visible to
+// this CPU.
+#define DO_IMB                                                                 \
+  do {                                                                         \
+    flush_icache();                                                            \
+    tbia(ACCESS_EXEC);                                                         \
+  } while (0)

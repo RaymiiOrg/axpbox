@@ -29,6 +29,12 @@
  *  Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307 USA
  */
 
+/**
+ * \file
+ * Contains the definitions for use with bx_..._gui_c classes used for
+ * interfacing with SDL and other device interfaces.
+ **/
+
 /////////////////////////////////////////////////////////////////////////
 //
 // This file provides macros and types needed for plugins.  It is based on

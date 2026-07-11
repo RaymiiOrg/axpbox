@@ -26,6 +26,12 @@
  * serve the general public.
  */
 
+/**
+ * \file
+ * Contains routines that replace parts of the VMS PALcode for the emulated
+ * DecChip 21264CB EV68 Alpha processor. Based on disassembly of original VMS
+ * PALcode, HRM, and OpenVMS AXP Internals and Data Structures.
+ **/
 #include "AlphaCPU.hpp"
 #include "StdAfx.hpp"
 
@@ -84,8 +90,8 @@
 #define r30 state.r[30]
 #define r31 state.r[31]
 
-#define hw_stq(a, b) cSystem->WriteMem(a & ~U64(0x7), 64, b, this)
-#define hw_stl(a, b) cSystem->WriteMem(a & ~U64(0x3), 32, b, this)
+#define hw_stq(a, b) cSystem->WriteMem((a) & ~U64(0x7), 64, b, this)
+#define hw_stl(a, b) cSystem->WriteMem((a) & ~U64(0x3), 32, b, this)
 #define stq(a, b)                                                              \
   if (virt2phys(a, &phys_address, ACCESS_WRITE, NULL, 0))                      \
     return -1;                                                                 \
@@ -106,8 +112,9 @@
   if (virt2phys(a, &phys_address, ACCESS_READ, NULL, 0))                       \
     return -1;                                                                 \
   b = (char)(cSystem->ReadMem(phys_address, 8, this));
-#define hw_ldq(a, b) b = cSystem->ReadMem(a & ~U64(0x7), 64, this)
-#define hw_ldl(a, b) b = sext_u64_32(cSystem->ReadMem(a & ~U64(0x3), 32, this));
+#define hw_ldq(a, b) b = cSystem->ReadMem((a) & ~U64(0x7), 64, this)
+#define hw_ldl(a, b)                                                           \
+  b = sext_u64_32(cSystem->ReadMem((a) & ~U64(0x3), 32, this));
 #define hw_ldbu(a, b) b = cSystem->ReadMem(a, 8, this)
 
 /**
@@ -199,6 +206,8 @@ void CAlphaCPU::vmspal_call_swpctx() {
   state.asn0 = (int)p6;
   state.asn1 = (int)p6;
   state.asn = (int)p6;
+  flush_data_page_cache();
+  jit_note_asn_change();
   state.aster = (int)p4 & 0xf;
   state.astrr = (int)(p4 >> 4) & 0xf;
   state.fpen = (int)p5 & 1;
@@ -250,6 +259,10 @@ void CAlphaCPU::vmspal_call_mtpr_astsr() {
 
 /**
  * Implementation of CALL_PAL CSERVE opcode.
+ * FLAWED IF NOT USING SPECIFIC PAL VERSION
+ * OpenVMS PALcode V1.98-104, Tru64 UNIX PALcode V1.92-105
+ * DO NOT CALL UNLESS USING SPECIFICALLY THAT PAL OR
+ * UPDATED FOR OTHER PAL VERSIONS
  **/
 void CAlphaCPU::vmspal_call_cserve() {
   p23 = state.pc;
@@ -784,6 +797,19 @@ void CAlphaCPU::vmspal_call_write_unq() {
 int CAlphaCPU::vmspal_int_initiate_exception() {
   u64 phys_address;
 
+  // Track nesting so virt2phys can divert pathological re-entry (garbage
+  // page tables during early boot) to the real PALcode vectors.
+  struct ExcDepthGuard {
+    int &d;
+    explicit ExcDepthGuard(int &dd) : d(dd) { ++d; }
+    ~ExcDepthGuard() { --d; }
+  } exc_depth_guard(vmspal_exc_depth);
+
+  /* HRM 4.2.4: a taken exception clears lock_flag so a STx_C interrupted by
+     it fails. Reached only for real exceptions (transparent TB fills return
+     from vmspal_ent_dtbm_single without coming here). */
+  cSystem->cpu_clear_lock(state.iProcNum);
+
   p4 = p22 & U64(0x18);
   hw_ldq(p21 + U64(0x10), p20);
   if (p4) {
@@ -834,6 +860,10 @@ int CAlphaCPU::vmspal_int_initiate_exception() {
  **/
 int CAlphaCPU::vmspal_int_initiate_interrupt() {
   u64 phys_address;
+
+  /* HRM 4.2.4: a taken interrupt clears lock_flag so an in-progress
+     LDx_L/STx_C sequence interrupted here correctly fails its STx_C. */
+  cSystem->cpu_clear_lock(state.iProcNum);
 
   p4 = p22 & U64(0x18);
   hw_ldq(p21 + U64(0x10), p20);
@@ -937,7 +967,15 @@ int CAlphaCPU::vmspal_ent_ext_int(int ei) {
   state.exc_addr = state.current_pc;
   p23 = state.current_pc;
   p7 = ei;
-  if (ei & 0x04) {
+  if (ei & 0x08) {
+    // Interprocessor interrupt (b_irq<3>, HRM 6.3.3). clear_ipi() acks it (no
+    // device deasserts the line), then vector via the OpenVMS IPINTR SCB slot.
+    // Highest b_irq => checked before timer/device.
+    cSystem->clear_ipi(state.iProcNum);
+    p20 = 0x610;
+    p7 = 0x16;
+    do_11670 = true;
+  } else if (ei & 0x04) {
 
     // TIMER interrupt
     cSystem->clear_clock_int(state.iProcNum);
@@ -1099,7 +1137,7 @@ int CAlphaCPU::vmspal_ent_dtbm_single(int flags) {
 
     p4 <<= 0x20;
     p4 |= p5;
-    add_tb_d(p6, p4);
+    add_tb_d(p6, p4, 0);
     return 0;
   }
 
@@ -1180,7 +1218,7 @@ int CAlphaCPU::vmspal_ent_dtbm_single(int flags) {
     return vmspal_int_initiate_exception();
   }
 
-  add_tb_d(p6, p4);
+  add_tb_d(p6, p4, 0);
   return 0;
 }
 
@@ -1261,7 +1299,7 @@ int CAlphaCPU::vmspal_ent_dtbm_double_3(int flags) {
     t25 += t26;
     hw_ldq(t25, t25);
     if (t25 & 1) {
-      add_tb_d(p4, t25);
+      add_tb_d(p4, t25, 0);
       return 0;
     }
   }

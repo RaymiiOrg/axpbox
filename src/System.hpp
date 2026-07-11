@@ -29,6 +29,9 @@
 
 #include "SystemComponent.hpp"
 #include "TraceEngine.hpp"
+#include "i2c_spd.hpp"
+#include <atomic>
+#include <mutex>
 
 #if !defined(INCLUDED_SYSTEM_H)
 #define INCLUDED_SYSTEM_H
@@ -101,6 +104,13 @@ struct SConfig {
  *bus.
  *   .
  **/
+/// Host-side open-drain drivers for the Tsunami MPD I2C pins.
+struct MPDState {
+  // Host open-drain drivers (1 = released high, 0 = pulling low)
+  bool cks_out = true; // SCL
+  bool ds_out = true;  // SDA
+};
+
 class CSystem {
 public:
   void DumpMemory(unsigned int filenum);
@@ -121,6 +131,23 @@ public:
   void init();
   void start_threads();
   void stop_threads();
+
+  // Firmware-triggered system reset support (LFU writes to the TIG SRCR
+  // registers after a flash update). The CPU thread polls
+  // IsSystemResetRequested() and parks until the main thread processes it.
+  void RequestSystemReset();
+  bool IsSystemResetRequested() const;
+  bool ProcessPendingReset();
+  void ResetChipsetState();
+
+  // True while we are performing an in-process reset (stop/reset/start).
+  // Devices (S3/SDL) use this to PAUSE instead of destroying the window.
+  void SetResetInProgress(bool v) {
+    m_reset_in_progress.store(v, std::memory_order_release);
+  }
+  bool IsResetInProgress() const {
+    return m_reset_in_progress.load(std::memory_order_acquire);
+  }
 
   int RegisterMemory(CSystemComponent *component, int index, u64 base,
                      u64 length);
@@ -144,14 +171,41 @@ public:
 #define PANIC_ASKSHUTDOWN 2
 #define PANIC_LISTING 4
   void clear_clock_int(int ProcNum);
+  // ack interprocessor interrupt: clear MISC<IPINTR>, drop b_irq<3>
+  void clear_ipi(int ProcNum);
   u64 get_c_misc();
   u64 get_c_dir(int ProcNum);
   u64 get_c_dim(int ProcNum);
   void set_c_dim(int ProcNum, u64 value);
 
-  void cpu_lock(int cpuid, u64 address);
-  bool cpu_unlock(int cpuid);
-  void cpu_break_lock(int cpuid, CSystemComponent *source);
+  class CLLSCDRAMGuard {
+  public:
+    CLLSCDRAMGuard(CSystem *system, bool active);
+    ~CLLSCDRAMGuard();
+    CLLSCDRAMGuard(const CLLSCDRAMGuard &) = delete;
+    CLLSCDRAMGuard &operator=(const CLLSCDRAMGuard &) = delete;
+
+  private:
+    CSystem *system;
+  };
+
+  class CPCIDMAWriteGuard {
+  public:
+    CPCIDMAWriteGuard(CSystem *system, bool active);
+    ~CPCIDMAWriteGuard();
+    CPCIDMAWriteGuard(const CPCIDMAWriteGuard &) = delete;
+    CPCIDMAWriteGuard &operator=(const CPCIDMAWriteGuard &) = delete;
+    void invalidate(u64 address, size_t bytes);
+
+  private:
+    CSystem *system;
+  };
+
+  // LDx_L: record locked range + loaded value
+  void cpu_lock(int cpuid, u64 address, u64 value);
+  bool cpu_take_lock(int cpuid, u64 address, u64 *expected, bool *same_address);
+  // exception/interrupt: drop the lock
+  void cpu_clear_lock(int cpuid);
 
 private:
   u64 cchip_csr_read(u32 address, CSystemComponent *source);
@@ -163,13 +217,43 @@ private:
   u8 tig_read(u32 address);
   void tig_write(u32 address, u8 data);
 
-  int iNumCPUs;
-  CFastMutex *cpu_lock_mutex;
+  // --- MPD / SPD wiring ---
+  MPDState m_mpd;
+  I2CBus m_mpd_bus;
 
+  // Build SPD images that match configured memory.
+  void init_spd_from_config_mb(uint32_t total_mb);
+  static std::vector<uint8_t> build_sdram_spd(uint32_t dimm_mb,
+                                              bool registered_ecc = true);
+  static std::vector<uint32_t> split_mb_into_dimms(uint32_t total_mb);
+
+  std::atomic<bool> m_reset_requested{false};
+  std::atomic<bool> m_reset_in_progress{false};
+
+  // Serializes drir RMW + delivery in interrupt() across device threads. On
+  // CSystem (not in saved 'state'), so SaveState is unaffected.
+  std::mutex drir_lock;
+
+  int iNumCPUs;
+  u64 cpu_lock_value[4]; // per-CPU LDx_L value, for same-address STx_C
+
+  // writer bit + active LL/SC operation count
+  std::atomic<u32> cpu_llsc_dma_gate{0};
+
+  void cpu_llsc_enter();
+  void cpu_llsc_leave();
+  void pci_dma_write_enter();
+  void pci_dma_write_leave();
+
+public:
+  // Model the EV68 invalidating probe for reservation lines touched by DMA.
+  void cpu_clear_external_locks(u64 address, size_t bytes);
+
+private:
   /// The state structure contains all elements that need to be saved to the
   /// statefile.
   struct SSys_state {
-    int cpu_lock_flags;
+    std::atomic<int> cpu_lock_flags;
     u64 cpu_lock_address[4];
 
     /**
@@ -185,6 +269,7 @@ private:
       u8 FwWrite;
       u8 HaltA;
       u8 HaltB;
+      u8 ModInfo;
     } tig;
 
     /**

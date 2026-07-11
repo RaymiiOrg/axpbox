@@ -26,32 +26,10 @@
  * serve the general public.
  */
 
-/* Copyright notice from Simh/alpha/alpha_fpv.c:
-
-   Copyright (c) 2003-2006, Robert M Supnik
-
-   Permission is hereby granted, free of charge, to any person obtaining a
-   copy of this software and associated documentation files (the "Software"),
-   to deal in the Software without restriction, including without limitation
-   the rights to use, copy, modify, merge, publish, distribute, sublicense,
-   and/or sell copies of the Software, and to permit persons to whom the
-   Software is furnished to do so, subject to the following conditions:
-
-   The above copyright notice and this permission notice shall be included in
-   all copies or substantial portions of the Software.
-
-   THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-   IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-   FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
-   ROBERT M SUPNIK BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER
-   IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
-   CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
-
-   Except as contained in this notice, the name of Robert M Supnik shall not be
-   used in advertising or otherwise to promote the sale, use or other dealings
-   in this Software without prior written authorization from Robert M Supnik.
-*/
-
+/**
+ * \file
+ * Contains VAX floating point code for the Alpha CPU.
+ **/
 #include "AlphaCPU.hpp"
 #include "StdAfx.hpp"
 #include "cpu_debug.hpp"
@@ -81,8 +59,8 @@
  * the VAX byte-order, and widen the exponent and fraction fields.
  *
  * \param op	32-bit VAX F-floating value in memory format.
- * \return		The value op converted to 64-bit VAX floating in
- *register format.
+ * \return		The value op converted to 64-bit VAX floating in register
+ *format.
  **/
 u64 CAlphaCPU::vax_ldf(u32 op) {
   u32 exp = F_GETEXP(op);
@@ -119,20 +97,8 @@ u64 CAlphaCPU::vax_ldg(u64 op) { return SWAP_VAXG(op); /* swizzle bits */ }
  *format.
  **/
 u32 CAlphaCPU::vax_stf(u64 op) {
-  u32 sign = FPR_GETSIGN(op) ? F_SIGN : 0;
-
-  // u32 exp = ((u32) (op >> (FPR_V_EXP - F_V_EXP))) & F_EXP;
-  u32 exp = FPR_GETEXP(op);
-  if (exp != 0)
-    exp = exp + F_BIAS - G_BIAS; /* zero? */
-  exp = (exp << F_V_EXP) & F_EXP;
-
-  u32 frac = (u32)(op >> F_V_FRAC);
-
-  u32 res = sign | exp | (SWAP_VAXF(frac) & ~(F_SIGN | F_EXP));
-
-  // printf("vax_stf: %016" PRIx64 " -> %08x.\n", op, res);
-  return res;
+  return (u32)((((op >> 29) & 0xFFFF) << 16) | (((op >> 62) & 0x3) << 14) |
+               ((op >> 45) & 0x3FFF));
 }
 
 /**
@@ -476,7 +442,7 @@ void CAlphaCPU::vax_unpack_d(u64 op, UFP *r, u32 ins) {
   r->frac = FDR_GETFRAC(op); /* get fraction */
   if (r->exp == 0)           /* exp = 0? */
   {
-    if (op != 0) /* rsvd op? */
+    if (r->sign != 0) /* rsvd op? */
       vax_trap(TRAP_INV, ins);
     r->frac = r->sign = 0;
     return;
