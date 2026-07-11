@@ -353,6 +353,18 @@ CConfigurator::CConfigurator(class CConfigurator *parent, char *name,
 
           strip_string(cur_value);
 
+          for (int dup = 0; dup < iNumChildren; dup++) {
+            if (!strcmp(pChildren[dup]->get_myName(), cur_name)) {
+              printf("%%SYS-W-DUPSECTION: \"%s\" is defined more than once "
+                     "in the configuration file. Each definition creates its "
+                     "own device (a later telnet serial section overrides an "
+                     "earlier null_attach one, etc.) -- remove the "
+                     "duplicate.\n",
+                     cur_name);
+              break;
+            }
+          }
+
           pChildren[iNumChildren++] = new CConfigurator(
               this, cur_name, cur_value, &text[child_start], child_len);
         }
