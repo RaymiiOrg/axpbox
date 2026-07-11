@@ -17,7 +17,9 @@ cmake -S . -B build -DCMAKE_BUILD_TYPE=Release && cmake --build build -j$(nproc)
 
 Three lanes must always compile (see the `build-lanes` skill):
 
-- `build` — interpreter, SDL3 GUI (default)
+- `build` — interpreter, SDL3 GUI (default). SDL3 comes from the system
+  when available, else built statically from the `third_party/SDL`
+  submodule (`git submodule update --init`)
 - `build-jit` — `-DES40_DISABLE_ASMJIT=OFF`; needs asmjit cloned at pin
   `0bd5787b54b575ed94bf32ac452153b34385c514` into `third_party/asmjit`
   (gitignored plain clone)

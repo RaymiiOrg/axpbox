@@ -2,7 +2,7 @@
 
 AXPbox is a fork of the discontinued es40 emulator. It could theoretically used for running any operating system that runs on the OpenVMS or Tru64 PALcode (e.g. OpenVMS, Windows 2000, Tru64 UNIX, Linux, NetBSD),).
 
-The emulator supports SCSI, sound, IDE, serial ports, Ethernet (using PCAP) and [VGA graphics](https://github.com/lenticularis39/axpbox/wiki/VGA) (using SDL).
+The emulator supports SCSI, sound, IDE, serial ports, Ethernet (using pcap, or TUN/TAP on Linux) and [VGA graphics](https://github.com/lenticularis39/axpbox/wiki/VGA) (using SDL).
 
 A lot of newer features are ported from [ES40-Emu/es40](https://github.com/ES40-Emu/es40) using Claude. You should check out that fork if you do not want to use AI code.
 
@@ -20,7 +20,70 @@ Windows 2000 build 2128 running on AXPbox. [Full guide to install Windows 2000 h
 
 Pre-built binaries for generic Linux amd64, Windows 11 amd64 and macOS amd64 are available for each release, and also as artifacts produced for each commit in CI. T2 SDE has an [official package](http://t2sde.org/packages/axpbox) for AXPbox, and openSUSE's Emulators project has an [AXPbox package](https://build.opensuse.org/package/show/Emulators/axpbox), too. The former gets updated the same day when a release happens, while requests are submitted now the latter that undergo approval of Emulators maintainers.
 
-You can also build from source using CMake; you need a C++17 compiler, optional dependencies are PCAP for networking and SDL3 or X11 for graphics support.
+You can also build from source using CMake, see the next section.
+
+## Building from source
+
+You need CMake (3.24+) and a C++17 compiler. Optional dependencies are
+pcap for networking and SDL3 or X11 for graphics. SDL3 is bundled as a
+git submodule (`third_party/SDL`) and is built in statically whenever no
+system SDL3 is found, so clone with submodules:
+
+```
+git clone --recurse-submodules https://github.com/lenticularis39/axpbox
+cd axpbox
+# or, for an existing clone:
+git submodule update --init
+```
+
+### Linux
+
+```
+sudo apt install build-essential cmake libpcap-dev
+# GUI (only needed when building the bundled SDL3; skip for headless):
+sudo apt install libx11-dev libxext-dev libxrandr-dev libxcursor-dev \
+                 libxi-dev libxtst-dev libxfixes-dev libxss-dev libxkbcommon-dev libwayland-dev libegl-dev
+# a distro-packaged SDL3 (libsdl3-dev) is used instead when available
+
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+cmake --build build -j$(nproc)
+```
+
+The binary is `build/axpbox`. For a headless build (no GUI) add
+`-DDISABLE_SDL=yes -DDISABLE_X11=yes` to the configure step; to build
+without networking add `-DDISABLE_PCAP=yes`.
+
+### Windows
+
+Requirements:
+
+- Visual Studio 2022 with the "Desktop development with C++" workload
+  (MSVC x64), plus CMake
+- the [npcap SDK](https://npcap.com/dist/npcap-sdk-1.13.zip) for
+  networking support at build time — unzip it e.g. to `C:\pcap`
+- [Npcap](https://npcap.com/#download) installed for networking at *run*
+  time (any install mode works; `wpcap.dll` is located at run time, the
+  exe also starts fine without Npcap, just without networking)
+
+SDL3 needs no separate install — the submodule is compiled in
+statically. From a developer command prompt (or any shell with CMake on
+the PATH):
+
+```
+git clone --recurse-submodules https://github.com/lenticularis39/axpbox
+cd axpbox
+cmake -S . -B build -G "Visual Studio 17 2022" -A x64 ^
+      -DPCAP_INCLUDE_DIR=C:/pcap/Include ^
+      -DPCAP_LIBRARY=C:/pcap/Lib/x64/wpcap.lib
+cmake --build build --config Release
+```
+
+The binary is `build\Release\axpbox.exe`, self-contained (SDL3 is linked
+statically and pcap is loaded dynamically).
+
+### JIT
+
+See the x86-64 JIT section below for the optional asmjit-based JIT lane.
 
 ## Usage
 
@@ -64,18 +127,32 @@ The S3 Trio64 emulation (ported from [ES40-Emu/es40](https://github.com/ES40-Emu
   note the emulator then **waits at startup** until a client connects
   (`nc localhost 21264`). Ports left out of the config entirely are
   synthesized as `null_attach` automatically.
-- **Networking**: the DEC 21143 NIC (`pci0.4 = dec21143`) bridges to a host
-  interface via pcap. Set `adapter = "eth0";` (Linux) or the
-  `\Device\NPF_{...}` name (Windows/npcap). On Linux, grant the binary
-  capture permission once:
-  ```
-  sudo setcap cap_net_raw,cap_net_admin+eip ./axpbox
-  ```
-  otherwise startup fails with "Error opening adapter". Don't leave
-  `adapter` unset on unattended runs — the emulator interactively asks
-  which adapter to use. Optional values: `mac` (default
+- **Networking**: the DEC 21143 NIC (`pci0.4 = dec21143`) connects to the
+  host through one of two backends, selected with `type` in the nic
+  config section:
+  - `type = "pcap"` (default): captures on an existing host interface.
+    Set `adapter = "eth0";` (Linux) or the `\Device\NPF_{...}` name
+    (Windows/Npcap). On Linux, grant the binary capture permission once:
+    ```
+    sudo setcap cap_net_raw,cap_net_admin+eip ./axpbox
+    ```
+    otherwise startup fails with "Error opening adapter". On Windows,
+    install [Npcap](https://npcap.com/#download); `wpcap.dll` is located
+    automatically at run time. Don't leave `adapter` unset on unattended
+    runs — the emulator interactively asks which adapter to use.
+  - `type = "tap"` (Linux only): uses a TUN/TAP device instead of
+    capturing — the guest becomes reachable from the host (and can be
+    bridged onto the LAN). Options: `adapter = "tap0";` (device name,
+    created if needed — requires CAP_NET_ADMIN or root),
+    `host_ip = "10.0.0.1/24";` (optional host-side IP for the tap),
+    `bridge = "br0";` (optional: create a bridge and add the tap to it),
+    `uplink = "eno1";` (optional: also add this physical NIC to the
+    bridge), `tap_create = true;`.
+
+  Optional values for both backends: `mac` (default
   `08-00-2B-E5-40-<nic#>`), `queue` (rx queue depth, default 1024),
-  `crc`, `trace_packets`.
+  `crc`, `trace_packets`. The sample [es40.cfg](es40.cfg) documents
+  every option.
 - **Sound**: `pci1.1 = es1370 {}` adds an Ensoniq AudioPCI ES1370 (SDL
   builds). Guest drivers exist for Windows NT 4; other guests ignore it.
 - **Mouse**: click the window to grab, Ctrl+F10 to release; `mouse.speed`,
@@ -139,7 +216,7 @@ XWayland.) Diagnose mouse problems with `AXPBOX_MOUSE_DEBUG=1`: motion
 lines with `grab=1` mean host input reaches the guest; none after a
 `grab -> 1` line means the host backend isn't delivering relative motion.
 
-## Changes in comparison with es40
+## Changes in comparison with the original es40
 
 - Renamed from es40 to AXPbox to avoid confusion with the physical machine (AlphaServer ES40)
 - CMake is used for compilation instead of autotools
