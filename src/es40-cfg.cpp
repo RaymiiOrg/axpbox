@@ -49,91 +49,7 @@
 #include <vector>
 
 #if defined(HAVE_PCAP)
-#ifdef _WIN32
-#include <winsock.h>
-typedef int bpf_int32;
-typedef unsigned int bpf_u_int32;
-
-/*
- * The instruction data structure.
- */
-struct bpf_insn {
-  unsigned short code;
-  unsigned char jt;
-  unsigned char jf;
-  bpf_u_int32 k;
-};
-
-/*
- * Structure for "pcap_compile()", "pcap_setfilter()", etc..
- */
-struct bpf_program {
-  unsigned int bf_len;
-  struct bpf_insn *bf_insns;
-};
-
-typedef struct pcap_if pcap_if_t;
-
-#define PCAP_ERRBUF_SIZE 256
-
-struct pcap_pkthdr {
-  struct timeval ts;
-  bpf_u_int32 caplen;
-  bpf_u_int32 len;
-};
-
-struct pcap_if {
-  struct pcap_if *next;
-  char *name;
-  char *description;
-  void *addresses;
-  bpf_u_int32 flags;
-};
-
-struct pcap_send_queue {
-  unsigned int maxlen; /* Maximum size of the queue, in bytes. This
-           variable contains the size of the buffer field. */
-  unsigned int len;    /* Current size of the queue, in bytes. */
-  char *buffer;        /* Buffer containing the packets to be sent. */
-};
-
-typedef struct pcap_send_queue pcap_send_queue;
-
-typedef void (*pcap_handler)(unsigned char *user, const struct pcap_pkthdr *h,
-                             const unsigned char *bytes);
-
-typedef struct pcap pcap_t;
-typedef struct pcap_dumper pcap_dumper_t;
-typedef struct pcap_if pcap_if_t;
-typedef struct pcap_addr pcap_addr_t;
-
-/* Pointers to the real functions. */
-static const char *(*f_pcap_lib_version)(void);
-static int (*f_pcap_findalldevs)(pcap_if_t **, char *);
-static void (*f_pcap_freealldevs)(void *);
-static pcap_t *(*f_pcap_open_live)(const char *, int, int, int, char *);
-static int (*f_pcap_compile)(void *, void *, const char *, int, bpf_u_int32);
-static int (*f_pcap_setfilter)(void *, void *);
-static const unsigned char *(*f_pcap_next)(void *, void *);
-static int (*f_pcap_sendpacket)(void *, const unsigned char *, int);
-static void (*f_pcap_close)(void *);
-static int (*f_pcap_setnonblock)(void *, int, char *);
-static int (*f_pcap_set_immediate_mode)(void *, int);
-static int (*f_pcap_set_promisc)(void *, int);
-static int (*f_pcap_set_snaplen)(void *, int);
-static int (*f_pcap_dispatch)(void *, int, pcap_handler callback,
-                              unsigned char *user);
-static void *(*f_pcap_create)(const char *, char *);
-static int (*f_pcap_activate)(void *);
-static void *(*f_pcap_geterr)(void *);
-static pcap_t *(*f_pcap_open)(const char *source, int snaplen, int flags,
-                              int read_timeout, struct pcap_rmtauth *auth,
-                              char *errbuf);
-static int (*f_pcap_next_ex)(pcap_t *, struct pcap_pkthdr **,
-                             const unsigned char **);
-#else
-#include <pcap.h>
-#endif
+#include "NetworkPcap.hpp"
 #endif
 
 using namespace std;
@@ -372,69 +288,10 @@ int main_cfg(int argc, char *argv[]) {
   /* Banner
    */
 #if defined _WIN32 && defined HAVE_PCAP
-  char npcap_dir[512];
-  GetSystemDirectoryA(npcap_dir, 480);
-  strcat(npcap_dir, "\\Npcap");
-  SetDllDirectoryA(npcap_dir);
-  auto libhandle = LoadLibraryA("wpcap.dll");
-  SetDllDirectoryA(NULL); /* reset the DLL search path */
-  if (!libhandle) {
-    printf("Failed to load wpcap.dll");
+  if (!load_wpcap()) {
+    printf("Failed to load wpcap.dll; is Npcap installed?\n");
     return -1;
   }
-  f_pcap_lib_version =
-      (const char *(*)())GetProcAddress(libhandle, "pcap_lib_version");
-  f_pcap_findalldevs = (int (*)(pcap_if_t **, char *))GetProcAddress(
-      libhandle, "pcap_findalldevs");
-  f_pcap_freealldevs =
-      (void (*)(void *))GetProcAddress(libhandle, "pcap_freealldevs");
-  f_pcap_open_live = (pcap_t * (*)(const char *, int, int, int, char *))
-      GetProcAddress(libhandle, "pcap_open_live");
-  f_pcap_open =
-      (pcap_t * (*)(const char *, int, int, int, pcap_rmtauth *, char *))
-          GetProcAddress(libhandle, "pcap_open");
-  f_pcap_compile =
-      (int (*)(void *, void *, const char *, int, bpf_u_int32))GetProcAddress(
-          libhandle, "pcap_compile");
-  f_pcap_setfilter =
-      (int (*)(void *, void *))GetProcAddress(libhandle, "pcap_setfilter");
-  f_pcap_next = (const unsigned char *(*)(void *, void *))GetProcAddress(
-      libhandle, "pcap_next");
-  f_pcap_sendpacket =
-      (int (*)(void *, const unsigned char *, int))GetProcAddress(
-          libhandle, "pcap_sendpacket");
-  f_pcap_close = (void (*)(void *))GetProcAddress(libhandle, "pcap_close");
-  f_pcap_setnonblock = (int (*)(void *, int, char *))GetProcAddress(
-      libhandle, "pcap_setnonblock");
-  f_pcap_set_immediate_mode = (int (*)(void *, int))GetProcAddress(
-      libhandle, "pcap_set_immediate_mode");
-  f_pcap_set_promisc =
-      (int (*)(void *, int))GetProcAddress(libhandle, "pcap_set_promisc");
-  f_pcap_set_snaplen =
-      (int (*)(void *, int))GetProcAddress(libhandle, "pcap_set_snaplen");
-  f_pcap_dispatch =
-      (int (*)(void *, int, pcap_handler callback,
-               unsigned char *user))GetProcAddress(libhandle, "pcap_dispatch");
-  f_pcap_create =
-      (void *(*)(const char *, char *))GetProcAddress(libhandle, "pcap_create");
-  f_pcap_geterr = (void *(*)(void *))GetProcAddress(libhandle, "pcap_geterr");
-  f_pcap_next_ex =
-      (int (*)(pcap *, pcap_pkthdr **, const unsigned char **))GetProcAddress(
-          libhandle, "pcap_next_ex");
-
-#define pcap_findalldevs f_pcap_findalldevs
-#define pcap_open f_pcap_open
-#define pcap_sendpacket f_pcap_sendpacket
-#define pcap_close f_pcap_close
-#define pcap_setnonblock f_pcap_setnonblock
-#define pcap_setfilter f_pcap_setfilter
-#define pcap_compile f_pcap_compile
-#define pcap_geterr f_pcap_geterr
-#define pcap_next_ex f_pcap_next_ex
-
-#define PCAP_ERROR -1
-#define PCAP_OPENFLAG_PROMISCUOUS 0x00000001
-#define PCAP_OPENFLAG_NOCAPTURE_LOCAL 0x00000008
 #endif
   print_axpbox_banner("AXPbox Alpha Emulator configuration utility");
 
@@ -957,7 +814,7 @@ int main_cfg(int argc, char *argv[]) {
   card_q.setExplanation("Choose what PCI card you'd like to add. Choose none "
                         "if you have no more cards to add.");
   card_q.addAnswer("none", "", "No more cards to add");
-#if defined(HAVE_PCAP)
+#if defined(HAVE_PCAP) || defined(__linux__)
   card_q.addAnswer("nic", "dec21143", "DEC 21143 Network Interface (1 max)");
 #endif
   card_q.addAnswer("scsi", "sym53c810",
@@ -1000,37 +857,72 @@ int main_cfg(int argc, char *argv[]) {
        */
       card_q.dropChoice("nic");
 
+#if defined(HAVE_PCAP) || defined(__linux__)
+      MultipleChoiceQuestion type_q;
+      type_q.setQuestion("What network backend type should be used?");
+      type_q.setExplanation("pcap uses libpcap (promiscuous capture); tap uses "
+                            "Linux TAP device (bridgeable, host-reachable).");
 #if defined(HAVE_PCAP)
-      MultipleChoiceQuestion if_q;
-      if_q.setQuestion("What host network interface should we connect to "
-                       "(answer ? for a list)?");
-      if_q.setExplanation("Choose 'list' to get a list at run-time.");
-      if_q.addAnswer("list", "", "Get a list at run-time");
+      type_q.addAnswer("pcap", "pcap", "libpcap (capture host interface)");
+      type_q.setDefault("pcap");
+#endif
+#if defined(__linux__)
+      type_q.addAnswer("tap", "tap",
+                       "Linux TAP (virtual interface, bridgeable)");
+#if !defined(HAVE_PCAP)
+      type_q.setDefault("tap");
+#endif
+#endif
+      string net_type = type_q.ask();
+      os << "    type = \"" << net_type << "\";\n";
 
-      /* Get a list of network interfaces and
-       * add them to the list.
-       */
-      pcap_if_t *alldevs;
-      pcap_if_t *d;
-      char errbuf[PCAP_ERRBUF_SIZE];
+      if (net_type == "pcap") {
+#if defined(HAVE_PCAP)
+        MultipleChoiceQuestion if_q;
+        if_q.setQuestion("What host network interface should we connect to "
+                         "(answer ? for a list)?");
+        if_q.setExplanation("Choose 'list' to get a list at run-time.");
+        if_q.addAnswer("list", "", "Get a list at run-time");
 
-      if (pcap_findalldevs(&alldevs, errbuf) == -1) {
-        /* No devices to add.
-         */
-        printf("Error in pcap_findalldevs_ex: %s", errbuf);
-      } else {
-        int i = 1;
-        for (d = alldevs; d; d = d->next) {
-          const char *description =
-              d->description ? d->description : "No description available";
-          if_q.addAnswer(i2s(i), d->name,
-                         string(d->name) + " (" + description + ")");
-          i++;
+        pcap_if_t *alldevs;
+        pcap_if_t *d;
+        char errbuf[PCAP_ERRBUF_SIZE];
+
+        if (pcap_findalldevs(&alldevs, errbuf) == -1) {
+          printf("Error in pcap_findalldevs_ex: %s", errbuf);
+        } else {
+          int i = 1;
+          for (d = alldevs; d; d = d->next) {
+            const char *description =
+                d->description ? d->description : "No description available";
+            if_q.addAnswer(i2s(i), d->name,
+                           string(d->name) + " (" + description + ")");
+            i++;
+          }
         }
-      }
 
-      if (if_q.ask() != "")
-        os << "    adapter = \"" << if_q.getAnswer() << "\";\n";
+        if (if_q.ask() != "")
+          os << "    adapter = \"" << if_q.getAnswer() << "\";\n";
+#endif
+      } else if (net_type == "tap") {
+        FreeTextQuestion tap_q;
+        tap_q.setQuestion("What TAP device name should be used?");
+        tap_q.setExplanation(
+            "The TAP device will be created if it doesn't exist "
+            "(requires CAP_NET_ADMIN or root).");
+        tap_q.setDefault("tap0");
+        os << "    adapter = \"" << tap_q.ask() << "\";\n";
+
+        FreeTextQuestion bridge_q;
+        bridge_q.setQuestion(
+            "Bridge to add TAP device to (leave empty for none)?");
+        bridge_q.setExplanation(
+            "If specified, the TAP device will be added to this bridge.");
+        bridge_q.setDefault("");
+        string bridge = bridge_q.ask();
+        if (!bridge.empty())
+          os << "    bridge = \"" << bridge << "\";\n";
+      }
 
       FreeTextQuestion mac_q;
       mac_q.setQuestion("What should the NIC's MAC address be?");

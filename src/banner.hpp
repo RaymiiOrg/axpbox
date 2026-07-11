@@ -74,7 +74,7 @@ static inline void print_axpbox_banner(const char *title) {
   banner_line("  2018       Tim Stark (fsword7)", false);
   banner_line("  2020-2023  Tomas Glozar", false);
   banner_line("  2020-2026  Remy van Elst", false);
-  banner_line("  2023-2026  Gary (gdwnldsKSC) and the ES40-Emu project", false);
+  banner_line("  2023-2026  gdwnldsKSC and the ES40-Emu project", false);
   banner_line("", false);
   banner_line("Website: https://github.com/lenticularis39/axpbox", false);
   banner_line("", false);

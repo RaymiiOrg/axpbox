@@ -170,7 +170,7 @@ window titles (sdl/x11/win32), the startup banner
 (`src/banner.hpp` — `print_axpbox_banner`, shows axpbox's own
 `VERSION`, credits authors by era: Camiel Vanderhoeven 2007-2010,
 Tim Stark/fsword7 2018, Tomas Glozar 2020-2023, Remy van Elst
-2020-2026, Gary/gdwnldsKSC 2023-2026), configurator wizard text,
+2020-2026, gdwnldsKSC 2023-2026), configurator wizard text,
 serial telnet greeting, debugger greeting, stat lines.
 
 Do NOT rename GUEST-visible or protocol identifiers: disk serial

@@ -51,7 +51,7 @@
 //#include "Cirrus.hpp" // to be re-added and fixed in the future
 #include "FloppyController.hpp"
 #include "gui/plugin.hpp"
-#if defined(HAVE_PCAP)
+#if defined(HAVE_PCAP) || defined(__linux__)
 #include "DEC21143.hpp"
 #endif
 #include "ES1370.hpp"
@@ -573,8 +573,10 @@ static const char *const kv_ali[] = {"vga_console", "lpt.outfile", "timezone",
                                      0};
 static const char *const kv_ali_ide[] = {"dma", 0};
 static const char *const kv_vga[] = {"rom", 0};
-static const char *const kv_dec21143[] = {"adapter", "mac",           "queue",
-                                          "crc",     "trace_packets", 0};
+static const char *const kv_dec21143[] = {
+    "adapter",       "mac",        "queue",   "crc",
+    "trace_packets", "type",       "host_ip", "bridge",
+    "uplink",        "tap_create", 0};
 static const char *const kv_disk_file[] = {
     "file",    "model_number", "serial_number", "serial_num",      "rev_number",
     "rev_num", "read_only",    "cdrom",         "autocreate_size", 0};
@@ -692,11 +694,11 @@ void CConfigurator::initialize() {
                 myName);
   }
 
-#if !defined(HAVE_PCAP)
+#if !defined(HAVE_PCAP) && !defined(__linux__)
   if (myFlags & IS_NIC)
     FAILURE_2(Configuration,
-              "Class %s for %s needs compilation with libpcap support", myValue,
-              myName);
+              "Class %s for %s needs networking support (libpcap or Linux TAP)",
+              myValue, myName);
 #endif
   if (myFlags & IS_PCI) {
     if (strncmp(myName, "pci", 3))
@@ -850,7 +852,7 @@ void CConfigurator::initialize() {
     break;
 #endif
 
-#if defined(HAVE_PCAP)
+#if defined(HAVE_PCAP) || defined(__linux__)
 
   case c_dec21143:
     myDevice =
