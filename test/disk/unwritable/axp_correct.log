@@ -1,4 +1,28 @@
-%FLS-F-NOREST: Flash could not be restored from flash.rom
-Emulator Failure: Runtime exception: pci0.15(ali_ide).disk0.0(file): file disk-unwritable.img is not writable: DiskFile.cpp, line L
+
+
+   **======================================================================**
+   ||                         AXPbox Alpha Emulator                        ||
+   ||                             Version X.Y.Z                            ||
+   ||                                                                      ||
+   ||  Copyright (C) 2007-2026 by:                                         ||
+   ||    2007-2010  Camiel Vanderhoeven and the ES40 Emulator Project      ||
+   ||    2018       Tim Stark (fsword7)                                    ||
+   ||    2020-2023  Tomas Glozar                                           ||
+   ||    2020-2026  Remy van Elst                                          ||
+   ||    2023-2026  gdwnldsKSC and the ES40-Emu project                    ||
+   ||                                                                      ||
+   ||  Website: https://github.com/lenticularis39/axpbox                   ||
+   ||                                                                      ||
+   ||  This program is free software; you can redistribute it and/or       ||
+   ||  modify it under the terms of the GNU General Public License         ||
+   ||  as published by the Free Software Foundation; either version 2      ||
+   ||  of the License, or (at your option) any later version.              ||
+   **======================================================================**
+
+
+%FLS-I-CREATE: Blank 2 MiB flash image created at flash.rom
+%SYS-W-NOSERIAL: serial1 is not configured; defaulting to null_attach mode.
+pci0.15(ali_ide).disk0.0(file): Could not open file disk-unwritable.img!
+Emulator Failure: Runtime exception: pci0.15(ali_ide).disk0.0(file): File does not exist and could not be created: DiskFile.cpp, line L
 Stop threads:
 Freeing memory in use by system...
